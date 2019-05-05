@@ -16,28 +16,28 @@ class LsstSource(ExtendedSource):
     LSST images.
     """
     def __init__(self, sky_coord, scene, observations, bg_rms, obs_idx=0, thresh=1,
-                 symmetric=False, monotonic=True, center_step=5, delay_thresh=0, **component_kwargs):
+                 symmetric=False, monotonic=True, center_step=5, **component_kwargs):
         try:
             super().__init__(sky_coord, scene, observations, bg_rms, obs_idx, thresh,
-                             symmetric, monotonic, center_step, delay_thresh, **component_kwargs)
+                             symmetric, monotonic, center_step, **component_kwargs)
         except SourceInitError:
             # If the source is too faint for background detection, initialize it as a PointSource
             PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
-                                 center_step, delay_thresh, **component_kwargs)
+                                 center_step, **component_kwargs)
 
-    def get_model(self, observation=None):
+    def get_model(self, numpy=True, observation=None):
         if observation is not None:
             model = super().get_model(False)
-            model = observation.get_model(model)
+            model = observation.get_model(model, numpy)
         else:
-            model = super().get_model()
+            model = super().get_model(numpy)
         return model
 
     def display_model(self, observation=None, ax=None, filters=None, Q=10, stretch=1, show=True):
         import matplotlib.pyplot as plt
         from astropy.visualization import make_lupton_rgb
 
-        model = self.get_model(observation)
+        model = self.get_model(True, observation)
         if ax is None:
             fig = plt.figure(figsize=(10, 10))
             ax = fig.add_subplot(1, 1, 1)
@@ -70,15 +70,15 @@ class LsstSource(ExtendedSource):
         heavy = afwDet.makeHeavyFootprint(tfoot, afwImage.MaskedImageF(timg))
         return heavy
 
-    def modelToHeavy(self, xy0=afwGeom.Point2I(), observation=None):
+    def modelToHeavy(self, filters, xy0=afwGeom.Point2I(), observation=None):
         """Convert the model to a `MultibandFootprint`
         """
-        mHeavy = afwDet.MultibandFootprint.fromArrays("iz", self.get_model(observation))
-        footprint = mHeavy._footprint
+        mHeavy = afwDet.MultibandFootprint.fromArrays(filters, self.get_model(True, observation), xy0=xy0)
         cy, cx = self.pixel_center
         xmin, ymin = xy0
         peakFlux = self.morph[cy, cx]
-        footprint.addPeak(cx+xmin, cy+ymin, peakFlux)
+        for footprint in mHeavy:
+            footprint.addPeak(cx+xmin, cy+ymin, peakFlux)
         return mHeavy
 
 

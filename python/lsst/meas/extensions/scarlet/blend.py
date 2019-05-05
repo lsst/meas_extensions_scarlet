@@ -9,19 +9,19 @@ class LsstBlend(Blend):
     for multiresolution blends. So this class exists for any
     LSST specific changes.
     """
-    def get_model(self, observation=None):
+    def get_model(self, numpy=True, observation=None):
         if observation is not None:
             model = super().get_model(False)
-            model = observation.get_model(model)
+            model = observation.get_model(model, numpy)
         else:
-            model = super().get_model()
+            model = super().get_model(numpy)
         return model
 
     def display_model(self, observation=None, ax=None, filters=None, Q=10, stretch=1, show=True):
         import matplotlib.pyplot as plt
         from astropy.visualization import make_lupton_rgb
 
-        model = self.get_model(observation)
+        model = self.get_model(True, observation)
         if ax is None:
             fig = plt.figure(figsize=(10, 10))
             ax = fig.add_subplot(1, 1, 1)

@@ -54,7 +54,7 @@ def deblend(mExposure, footprint, log, config):
     bbox = footprint.getBBox()
     xmin = bbox.getMinX()
     ymin = bbox.getMinY()
-    peaks = [[pk.Iy-ymin, pk.Ix-xmin] for pk in footprint.peaks]
+    peaks = np.array([[pk.getIy()-ymin, pk.getIx()-xmin] for pk in footprint.peaks])
 
     # Create the data array from the masked images
     images = mExposure.image[:, bbox].array
@@ -67,21 +67,19 @@ def deblend(mExposure, footprint, log, config):
 
     # Use the mask plane to mask bad pixels and
     # the footprint to mask out pixels outside the footprint
-    if config.badMask is None:
-        badMask = ["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"]
     fpMask = afwImage.Mask(bbox)
     footprint.spans.setMask(fpMask, 1)
     fpMask = ~fpMask.getArray().astype(bool)
-    badPixels = mExposure.getMask().getPlaneBitMask(badMask)
-    mask = (mExposure.getMask()[bbox].array & badPixels) | fpMask[None, :]
+    badPixels = mExposure.mask.getPlaneBitMask(config.badMask)
+    mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
     weights[mask > 0] = 0
 
     psfs = mExposure.computePsfImage(footprint.getCentroid()).array
     target_psf = _getTargetPsf(psfs.shape)
 
     observation = LsstObservation(images, psfs)
-    scene = LsstScene(images.shape, psf=target_psf)
-    bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[bbox]])
+    scene = LsstScene(images.shape, psfs=target_psf)
+    bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
         Source = LsstHistory
     else:
@@ -145,12 +143,14 @@ class ScarletDeblendConfig(pexConfig.Config):
     processSingles = pexConfig.Field(
         dtype=bool, default=False,
         doc="Whether or not to process isolated sources in the deblender")
+    storeHistory = pexConfig.Field(dtype=bool, default=False,
+                                   doc="Whether or not to store the history for each source")
 
     # Mask-plane restrictions
-    badMask = pexConfig.Field(
-        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT,SUSPECT"],
+    badMask = pexConfig.ListField(
+        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
         doc="Whether or not to process isolated sources in the deblender")
-    statsMask = pexConfig.Field(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
+    statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
                                 doc="Mask planes to ignore when performing statistics")
     maskLimits = pexConfig.DictField(
         keytype=str,
@@ -218,8 +218,6 @@ class ScarletDeblendTask(pipeBase.Task):
             Passed to Task.__init__.
         """
         pipeBase.Task.__init__(self, **kwargs)
-        if not self.config.conserveFlux and not self.config.saveTemplates:
-            raise ValueError("Either `conserveFlux` or `saveTemplates` must be True")
 
         peakMinimalSchema = afwDet.PeakTable.makeMinimalSchema()
         if peakSchema is None:
@@ -244,6 +242,8 @@ class ScarletDeblendTask(pipeBase.Task):
         """Add deblender specific keys to the schema
         """
         self.runtimeKey = schema.addField('runtime', type=np.float32, doc='runtime in ms')
+        
+        self.iterKey = schema.addField('iterations', type=np.int32, doc='iterations to converge')
 
         self.nChildKey = schema.addField('deblend_nChild', type=np.int32,
                                          doc='Number of children this object has (defaults to 0)')
@@ -399,11 +399,12 @@ class ScarletDeblendTask(pipeBase.Task):
             for f in filters:
                 templateParents[f] = templateCatalogs[f][pk]
                 templateParents[f].set(self.runtimeKey, runtime)
+                templateParents[f].set(self.iterKey, blend.it)
 
             # Add each source to the catalogs in each band
             templateSpans = {f: afwGeom.SpanSet() for f in filters}
             nchild = 0
-            for k, source in blend.sources:
+            for k, source in enumerate(blend.sources):
                 py, px = source.pixel_center
                 if source.morph.sum() == 0 or source.sed.sum() == 0:
                     src.set(self.deblendSkippedKey, True)
@@ -416,7 +417,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     self.log.trace(msg.format(px, py))
                 else:
                     src.set(self.deblendSkippedKey, False)
-                models = source.modelToHeavy(xy0=bbox.getMin())
+                models = source.modelToHeavy(filters, xy0=bbox.getMin(), observation=blend.observations[0])
                 # TODO: We should eventually write the morphology and SED to the catalog
                 # morph = source.morphToHeavy(xy0=bbox.getMin())
                 # sed = source.sed / source.sed.sum()
