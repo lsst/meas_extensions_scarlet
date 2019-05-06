@@ -151,7 +151,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
         doc="Whether or not to process isolated sources in the deblender")
     statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
-                                doc="Mask planes to ignore when performing statistics")
+                                    doc="Mask planes to ignore when performing statistics")
     maskLimits = pexConfig.DictField(
         keytype=str,
         itemtype=float,
@@ -213,7 +213,8 @@ class ScarletDeblendTask(pipeBase.Task):
             to the main source Schema.  If None, no fields will be transferred
             from the Peaks.
         filters: list of str
-            Names of the filters used for the eposures. This is needed to store the SED as a field
+            Names of the filters used for the eposures. This is needed to store
+            the SED as a field
         **kwargs
             Passed to Task.__init__.
         """
@@ -221,7 +222,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         peakMinimalSchema = afwDet.PeakTable.makeMinimalSchema()
         if peakSchema is None:
-            # In this case, the peakSchemaMapper will transfer nothing, but we'll still have one
+            # In this case, the peakSchemaMapper will transfer nothing, but
+            # we'll still have one
             # to simplify downstream code
             self.peakSchemaMapper = afwTable.SchemaMapper(peakMinimalSchema, schema)
         else:
@@ -229,10 +231,12 @@ class ScarletDeblendTask(pipeBase.Task):
             for item in peakSchema:
                 if item.key not in peakMinimalSchema:
                     self.peakSchemaMapper.addMapping(item.key, item.field)
-                    # Because SchemaMapper makes a copy of the output schema you give its ctor, it isn't
-                    # updating this Schema in place.  That's probably a design flaw, but in the meantime,
-                    # we'll keep that schema in sync with the peakSchemaMapper.getOutputSchema() manually,
-                    # by adding the same fields to both.
+                    # Because SchemaMapper makes a copy of the output schema
+                    # you give its ctor, it isn't updating this Schema in
+                    # place. That's probably a design flaw, but in the
+                    # meantime, we'll keep that schema in sync with the
+                    # peakSchemaMapper.getOutputSchema() manually, by adding
+                    # the same fields to both.
                     schema.addField(item.field)
             assert schema == self.peakSchemaMapper.getOutputSchema(), "Logic bug mapping schemas"
         self._addSchemaKeys(schema)
@@ -242,7 +246,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """Add deblender specific keys to the schema
         """
         self.runtimeKey = schema.addField('runtime', type=np.float32, doc='runtime in ms')
-        
+
         self.iterKey = schema.addField('iterations', type=np.int32, doc='iterations to converge')
 
         self.nChildKey = schema.addField('deblend_nChild', type=np.int32,
@@ -264,8 +268,9 @@ class ScarletDeblendTask(pipeBase.Task):
 
         self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
                                                  doc="Deblender skipped this source")
-        # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in (
-        #               self.nChildKey, self.tooManyPeaksKey, self.tooBigKey)))
+        # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
+        #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
+        #               )
 
     @pipeBase.timeMethod
     def run(self, mExposure, mergedSources):
@@ -287,13 +292,15 @@ class ScarletDeblendTask(pipeBase.Task):
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are the flux-conserved catalogs with heavy footprints with
             the image data weighted by the multiband templates.
-            If `self.config.conserveFlux` is `False`, then this item will be None
+            If `self.config.conserveFlux` is `False`, then this item will be
+            None
         templateCatalogs: dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
-            If `self.config.saveTemplates` is `False`, then this item will be None
+            If `self.config.saveTemplates` is `False`, then this item will be
+            None
         """
         return self.deblend(mExposure, mergedSources)
 
@@ -317,13 +324,15 @@ class ScarletDeblendTask(pipeBase.Task):
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are the flux-conserved catalogs with heavy footprints with
             the image data weighted by the multiband templates.
-            If `self.config.conserveFlux` is `False`, then this item will be None
+            If `self.config.conserveFlux` is `False`, then this item will be
+            None
         templateCatalogs: dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
-            If `self.config.saveTemplates` is `False`, then this item will be None
+            If `self.config.saveTemplates` is `False`, then this item will be
+            None
         """
         import time
 
@@ -345,8 +354,8 @@ class ScarletDeblendTask(pipeBase.Task):
             logger.info("id: {0}".format(src["id"]))
             peaks = foot.getPeaks()
 
-            # Since we use the first peak for the parent object, we should propagate its flags
-            # to the parent source.
+            # Since we use the first peak for the parent object, we should
+            # propagate its flags to the parent source.
             src.assign(peaks[0], self.peakSchemaMapper)
 
             # Block of Skipping conditions
@@ -411,14 +420,15 @@ class ScarletDeblendTask(pipeBase.Task):
                     if not self.config.propagateAllPeaks:
                         # We don't care
                         continue
-                    # We need to preserve the peak: make sure we have enough info to create a minimal
-                    # child src
+                    # We need to preserve the peak: make sure we have enough
+                    # info to create a minimal child src
                     msg = "Peak at {0} failed deblending.  Using minimal default info for child."
                     self.log.trace(msg.format(px, py))
                 else:
                     src.set(self.deblendSkippedKey, False)
                 models = source.modelToHeavy(filters, xy0=bbox.getMin(), observation=blend.observations[0])
-                # TODO: We should eventually write the morphology and SED to the catalog
+                # TODO: We should eventually write the morphology and SED to
+                # the catalog
                 # morph = source.morphToHeavy(xy0=bbox.getMin())
                 # sed = source.sed / source.sed.sum()
 
@@ -435,10 +445,11 @@ class ScarletDeblendTask(pipeBase.Task):
                         templateSpans[f] = templateSpans[f].union(models[f].getSpans())
                 nchild += 1
 
-            # Child footprints may extend beyond the full extent of their parent's which
-            # results in a failure of the replace-by-noise code to reinstate these pixels
-            # to their original values.  The following updates the parent footprint
-            # in-place to ensure it contains the full union of itself and all of its
+            # Child footprints may extend beyond the full extent of their
+            # parent's which results in a failure of the replace-by-noise code
+            # to reinstate these pixels to their original values.  The
+            # following updates the parent footprint in-place to ensure it
+            # contains the full union of itself and all of its
             # children's footprints.
             for f in filters:
                 templateParents[f].set(self.nChildKey, nchild)
@@ -453,7 +464,8 @@ class ScarletDeblendTask(pipeBase.Task):
         """Returns whether a Footprint is large
 
         'Large' is defined by thresholds on the area, size and axis ratio.
-        These may be disabled independently by configuring them to be non-positive.
+        These may be disabled independently by configuring them to be
+        non-positive.
 
         This is principally intended to get rid of satellite streaks, which the
         deblender or other downstream processing can have trouble dealing with
