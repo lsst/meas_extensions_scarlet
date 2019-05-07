@@ -21,7 +21,8 @@ class LsstSource(ExtendedSource):
             super().__init__(sky_coord, scene, observations, bg_rms, obs_idx, thresh,
                              symmetric, monotonic, center_step, **component_kwargs)
         except SourceInitError:
-            # If the source is too faint for background detection, initialize it as a PointSource
+            # If the source is too faint for background detection, initialize
+            # it as a PointSource
             PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
                                  center_step, **component_kwargs)
 
