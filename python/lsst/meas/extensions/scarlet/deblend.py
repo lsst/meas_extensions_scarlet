@@ -1,5 +1,7 @@
+
 import numpy as np
 from scarlet.psf import gaussian
+from scarlet.source import BlendFlag
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -151,7 +153,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
         doc="Whether or not to process isolated sources in the deblender")
     statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
-                                doc="Mask planes to ignore when performing statistics")
+                                    doc="Mask planes to ignore when performing statistics")
     maskLimits = pexConfig.DictField(
         keytype=str,
         itemtype=float,
@@ -242,7 +244,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """Add deblender specific keys to the schema
         """
         self.runtimeKey = schema.addField('runtime', type=np.float32, doc='runtime in ms')
-        
+
         self.iterKey = schema.addField('iterations', type=np.int32, doc='iterations to converge')
 
         self.nChildKey = schema.addField('deblend_nChild', type=np.int32,
@@ -256,9 +258,17 @@ class ScarletDeblendTask(pipeBase.Task):
                                          doc='Parent footprint covered too many pixels')
         self.maskedKey = schema.addField('deblend_masked', type='Flag',
                                          doc='Parent footprint was predominantly masked')
-        self.convergenceFailed = schema.addField('deblend_convergenceFailed', type='Flag',
-                                                 doc='scarlet optimization did not converge before'
-                                                     'config.maxIter')
+        self.sedNotConvergedKey = schema.addField('deblend_sedConvergenceFailed', type='Flag',
+                                                  doc='scarlet sed optimization did not converge before'
+                                                      'config.maxIter')
+        self.morphNotConvergedKey = schema.addField('deblend_morphConvergenceFailed', type='Flag',
+                                                    doc='scarlet morph optimization did not converge before'
+                                                        'config.maxIter')
+        self.blendConvergenceFailedKey = schema.addField('deblend_blendConvergenceFailed', type='Flag',
+                                                         doc='at least one source in the blend'
+                                                             'failed to converge')
+        self.edgePixelsKey = schema.addField('deblend_edgePixels', type='Flag',
+                                             doc='Source had flux on the edge of the parent footprint')
         self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',
                                                 doc="Deblending failed on source")
 
@@ -382,6 +392,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 runtime = (tf-t0)*1000
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
+                src.set(self.blendConvergenceFailedKey, not blend.converged)
             except Exception as e:
                 if self.config.catchFailures:
                     self.log.warn("Unable to deblend source %d: %s" % (src.getId(), e))
@@ -427,7 +438,7 @@ class ScarletDeblendTask(pipeBase.Task):
                         err = "Heavy footprint should have a single peak, got {0}"
                         raise ValueError(err.format(len(models[f].peaks)))
                     cat = templateCatalogs[f]
-                    child = self._addChild(parentId, cat, models[f])
+                    child = self._addChild(parentId, cat, models[f], source, blend.converged)
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
@@ -504,7 +515,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 mask.addMaskPlane(self.config.notDeblendedMask)
                 fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
 
-    def _addChild(self, parentId, sources, heavy):
+    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged):
         """Add a child to a catalog
 
         This creates a new child in the source catalog,
@@ -519,4 +530,8 @@ class ScarletDeblendTask(pipeBase.Task):
         src.setFootprint(heavy)
         src.set(self.psfKey, False)
         src.set(self.runtimeKey, 0)
+        src.set(self.sedNotConvergedKey, scarlet_source.flags & BlendFlag.SED_NOT_CONVERGED)
+        src.set(self.morphNotConvergedKey, scarlet_source.flags & BlendFlag.MORPH_NOT_CONVERGED)
+        src.set(self.edgePixelsKey, scarlet_source.flags & BlendFlag.EDGE_PIXELS)
+        src.set(self.blendConvergenceFailedKey, not blend_converged)
         return src
