@@ -9,12 +9,10 @@ class LsstBlend(Blend):
     for multiresolution blends. So this class exists for any
     LSST specific changes.
     """
-    def get_model(self, numpy=True, observation=None):
+    def get_model(self, seds=None, morphs=None, observation=None):
+        model = super().get_model(seds, morphs)
         if observation is not None:
-            model = super().get_model(False)
-            model = observation.get_model(model, numpy)
-        else:
-            model = super().get_model(numpy)
+            model = observation.get_model(model)
         return model
 
     def display_model(self, observation=None, ax=None, filters=None, Q=10, stretch=1, show=True):

@@ -1,4 +1,3 @@
-
 import numpy as np
 from scarlet.psf import gaussian
 from scarlet.component import BlendFlag

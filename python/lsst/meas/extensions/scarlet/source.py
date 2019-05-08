@@ -26,19 +26,17 @@ class LsstSource(ExtendedSource):
             PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
                                  center_step, **component_kwargs)
 
-    def get_model(self, numpy=True, observation=None):
+    def get_model(self, sed=None, morph=None, observation=None):
+        model = super().get_model(sed, morph)
         if observation is not None:
-            model = super().get_model(False)
-            model = observation.get_model(model, numpy)
-        else:
-            model = super().get_model(numpy)
+            model = observation.get_model(model)
         return model
 
     def display_model(self, observation=None, ax=None, filters=None, Q=10, stretch=1, show=True):
         import matplotlib.pyplot as plt
         from astropy.visualization import make_lupton_rgb
 
-        model = self.get_model(True, observation)
+        model = self.get_model(observation=observation)
         if ax is None:
             fig = plt.figure(figsize=(10, 10))
             ax = fig.add_subplot(1, 1, 1)
@@ -74,7 +72,8 @@ class LsstSource(ExtendedSource):
     def modelToHeavy(self, filters, xy0=afwGeom.Point2I(), observation=None):
         """Convert the model to a `MultibandFootprint`
         """
-        mHeavy = afwDet.MultibandFootprint.fromArrays(filters, self.get_model(True, observation), xy0=xy0)
+        mHeavy = afwDet.MultibandFootprint.fromArrays(filters, self.get_model(observation=observation),
+                                                      xy0=xy0)
         cy, cx = self.pixel_center
         xmin, ymin = xy0
         peakFlux = self.morph[cy, cx]
