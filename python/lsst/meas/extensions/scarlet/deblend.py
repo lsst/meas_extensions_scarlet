@@ -1,7 +1,7 @@
 
 import numpy as np
 from scarlet.psf import gaussian
-from scarlet.source import BlendFlag
+from scarlet.component import BlendFlag
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -79,7 +79,7 @@ def deblend(mExposure, footprint, log, config):
     psfs = mExposure.computePsfImage(footprint.getCentroid()).array
     target_psf = _getTargetPsf(psfs.shape)
 
-    observation = LsstObservation(images, psfs)
+    observation = LsstObservation(images, psfs, weights)
     scene = LsstScene(images.shape, psfs=target_psf)
     bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
