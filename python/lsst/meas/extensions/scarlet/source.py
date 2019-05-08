@@ -69,11 +69,11 @@ class LsstSource(ExtendedSource):
         heavy = afwDet.makeHeavyFootprint(tfoot, afwImage.MaskedImageF(timg))
         return heavy
 
-    def modelToHeavy(self, filters, xy0=afwGeom.Point2I(), observation=None):
+    def modelToHeavy(self, filters, xy0=afwGeom.Point2I(), observation=None, dtype=np.float32):
         """Convert the model to a `MultibandFootprint`
         """
-        mHeavy = afwDet.MultibandFootprint.fromArrays(filters, self.get_model(observation=observation),
-                                                      xy0=xy0)
+        model = self.get_model(observation=observation).astype(dtype)
+        mHeavy = afwDet.MultibandFootprint.fromArrays(filters, model, xy0=xy0)
         cy, cx = self.pixel_center
         xmin, ymin = xy0
         peakFlux = self.morph[cy, cx]
