@@ -350,6 +350,9 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Create the output catalogs
         templateCatalogs = {}
+        # This must be returned but is not calculated right now, setting it to
+        # None to be consistent with doc string
+        fluxCatalogs = None
         for f in filters:
             _catalog = afwTable.SourceCatalog(sources.table.clone())
             _catalog.extend(sources)
@@ -468,7 +471,7 @@ class ScarletDeblendTask(pipeBase.Task):
         K = len(list(templateCatalogs.values())[0])
         self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
                       % (n0, nparents, K-n0, K))
-        return templateCatalogs
+        return fluxCatalogs, templateCatalogs
 
     def _isLargeFootprint(self, footprint):
         """Returns whether a Footprint is large
