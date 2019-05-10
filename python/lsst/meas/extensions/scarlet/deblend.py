@@ -539,7 +539,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         assert len(heavy.getPeaks()) == 1
         src = sources.addNew()
-        src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
+        #src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
         src.setParent(parentId)
         src.setFootprint(heavy)
         src.set(self.psfKey, False)
