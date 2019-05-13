@@ -1,3 +1,4 @@
+
 from scarlet.blend import Blend
 
 
@@ -9,8 +10,8 @@ class LsstBlend(Blend):
     for multiresolution blends. So this class exists for any
     LSST specific changes.
     """
-    def get_model(self, seds=None, morphs=None, observation=None):
-        model = super().get_model(seds, morphs)
+    def get_model(self, *parameters, observation=None):
+        model = super().get_model(*parameters)
         if observation is not None:
             model = observation.get_model(model)
         return model
@@ -19,7 +20,7 @@ class LsstBlend(Blend):
         import matplotlib.pyplot as plt
         from astropy.visualization import make_lupton_rgb
 
-        model = self.get_model(True, observation)
+        model = self.get_model(observation=observation)
         if ax is None:
             fig = plt.figure(figsize=(10, 10))
             ax = fig.add_subplot(1, 1, 1)

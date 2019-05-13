@@ -26,8 +26,8 @@ class LsstSource(ExtendedSource):
             PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
                                  center_step, **component_kwargs)
 
-    def get_model(self, sed=None, morph=None, observation=None):
-        model = super().get_model(sed, morph)
+    def get_model(self, *parameters, observation=None):
+        model = super().get_model(*parameters)
         if observation is not None:
             model = observation.get_model(model)
         return model
