@@ -85,7 +85,7 @@ def deblend(mExposure, footprint, log, config):
     else:
         Source = LsstSource
     sources = [
-        Source(center.astype(int), scene, observation, bg_rms, center
+        Source(peak=center, scene=scene, observations=observation, bg_rms=bg_rms,
                symmetric=config.symmetric, monotonic=config.monotonic,
                center_step=config.recenterPeriod)
         for center in footprint.peaks

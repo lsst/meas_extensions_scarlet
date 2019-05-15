@@ -29,8 +29,8 @@ class LsstSource(ExtendedSource):
                                  center_step, **component_kwargs)
         self.detectedPeak = peak
 
-    def get_model(self, sed=None, morph=None, observation=None):
-        model = super().get_model(sed, morph)
+    def get_model(self, *parameters, observation=None):
+        model = super().get_model(*parameters)
         if observation is not None:
             model = observation.get_model(model)
         return model
