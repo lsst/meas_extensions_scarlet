@@ -55,7 +55,6 @@ def deblend(mExposure, footprint, log, config):
     bbox = footprint.getBBox()
     xmin = bbox.getMinX()
     ymin = bbox.getMinY()
-    peaks = np.array([[pk.getIy()-ymin, pk.getIx()-xmin] for pk in footprint.peaks])
 
     # Create the data array from the masked images
     images = mExposure.image[:, bbox].array
@@ -86,10 +85,10 @@ def deblend(mExposure, footprint, log, config):
     else:
         Source = LsstSource
     sources = [
-        Source(center.astype(int), scene, observation, bg_rms,
+        Source(center.astype(int), scene, observation, bg_rms, center
                symmetric=config.symmetric, monotonic=config.monotonic,
                center_step=config.recenterPeriod)
-        for center in peaks
+        for center in footprint.peaks
     ]
 
     blend = LsstBlend(scene, sources, observation)
@@ -278,6 +277,11 @@ class ScarletDeblendTask(pipeBase.Task):
 
         self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
                                                  doc="Deblender skipped this source")
+        self.modelCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
+                                                         doc="Center used to apply constraints in scarlet",
+                                                         unit="Pixel")
+        self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, unit='count',
+                                               doc="The instFlux at the peak position of deblended mode")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -451,7 +455,8 @@ class ScarletDeblendTask(pipeBase.Task):
                         err = "Heavy footprint should have a single peak, got {0}"
                         raise ValueError(err.format(len(models[f].peaks)))
                     cat = templateCatalogs[f]
-                    child = self._addChild(parentId, cat, models[f], source, blend.converged)
+                    child = self._addChild(parentId, cat, models[f], source, blend.converged,
+                                           xy0=bbox.getMin())
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
@@ -530,7 +535,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 mask.addMaskPlane(self.config.notDeblendedMask)
                 fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
 
-    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged):
+    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged, xy0):
         """Add a child to a catalog
 
         This creates a new child in the source catalog,
@@ -540,7 +545,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         assert len(heavy.getPeaks()) == 1
         src = sources.addNew()
-        #src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
+        src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
         src.setParent(parentId)
         src.setFootprint(heavy)
         src.set(self.psfKey, False)
@@ -549,4 +554,9 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.morphNotConvergedKey, scarlet_source.flags & BlendFlag.MORPH_NOT_CONVERGED)
         src.set(self.edgePixelsKey, scarlet_source.flags & BlendFlag.EDGE_PIXELS)
         src.set(self.blendConvergenceFailedKey, not blend_converged)
+        cy, cx = scarlet_source.pixel_center
+        xmin, ymin = xy0
+        bbox = heavy.getBBox()
+        src.set(self.modelCenter, afwGeom.Point2D(cx+xmin, cy+ymin))
+        src.set(self.modelCenterFlux, scarlet_source.morph[cy, cx])
         return src
