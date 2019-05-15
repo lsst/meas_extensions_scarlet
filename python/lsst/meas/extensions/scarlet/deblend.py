@@ -53,8 +53,6 @@ def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
 def deblend(mExposure, footprint, log, config):
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
-    xmin = bbox.getMinX()
-    ymin = bbox.getMinY()
 
     # Create the data array from the masked images
     images = mExposure.image[:, bbox].array
@@ -86,7 +84,7 @@ def deblend(mExposure, footprint, log, config):
         Source = LsstSource
     sources = [
         Source(peak=center, scene=scene, observations=observation, bg_rms=bg_rms,
-               symmetric=config.symmetric, monotonic=config.monotonic,
+               bbox=bbox, symmetric=config.symmetric, monotonic=config.monotonic,
                center_step=config.recenterPeriod)
         for center in footprint.peaks
     ]
@@ -280,7 +278,7 @@ class ScarletDeblendTask(pipeBase.Task):
         self.modelCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
                                                          doc="Center used to apply constraints in scarlet",
                                                          unit="Pixel")
-        self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, unit='count',
+        self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
