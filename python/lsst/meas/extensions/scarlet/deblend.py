@@ -477,6 +477,8 @@ class ScarletDeblendTask(pipeBase.Task):
             nchild = 0
             for k, source in enumerate(blend.sources):
                 py, px = source.pixel_center
+                # Skip any sources with no flux or that scarlet skipped because
+                # it could not initialize
                 if source.morph.sum() == 0 or source.sed.sum() == 0 or source.skipped:
                     src.set(self.deblendSkippedKey, True)
                     if not self.config.propagateAllPeaks:
