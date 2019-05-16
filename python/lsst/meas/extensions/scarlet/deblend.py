@@ -1,4 +1,3 @@
-
 import numpy as np
 from scarlet.psf import gaussian
 from scarlet.component import BlendFlag
@@ -12,7 +11,7 @@ import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
-from lsst.afw.geom import Point2I, Box2I, Point2D, Extent2I
+from lsst.afw.geom import Point2I, Box2I, Point2D
 
 from .source import LsstSource, LsstHistory
 from .blend import LsstBlend
