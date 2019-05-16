@@ -15,8 +15,12 @@ class LsstSource(ExtendedSource):
     default initialization and update constraints for general sources in
     LSST images.
     """
-    def __init__(self, sky_coord, scene, observations, bg_rms, obs_idx=0, thresh=1,
-                 symmetric=False, monotonic=True, center_step=5, **component_kwargs):
+    def __init__(self, peak, scene, observations, bg_rms, bbox, obs_idx=0,
+                 thresh=1, symmetric=False, monotonic=True, center_step=5,
+                 **component_kwargs):
+        xmin = bbox.getMinX()
+        ymin = bbox.getMinY()
+        sky_coord = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
         try:
             super().__init__(sky_coord, scene, observations, bg_rms, obs_idx, thresh,
                              symmetric, monotonic, center_step, **component_kwargs)
@@ -25,6 +29,7 @@ class LsstSource(ExtendedSource):
             # it as a PointSource
             PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
                                  center_step, **component_kwargs)
+        self.detectedPeak = peak
 
     def get_model(self, *parameters, observation=None):
         model = super().get_model(*parameters)
@@ -74,11 +79,10 @@ class LsstSource(ExtendedSource):
         """
         model = self.get_model(observation=observation).astype(dtype)
         mHeavy = afwDet.MultibandFootprint.fromArrays(filters, model, xy0=xy0)
-        cy, cx = self.pixel_center
-        xmin, ymin = xy0
-        peakFlux = self.morph[cy, cx]
+        peakCat = afwDet.PeakCatalog(self.detectedPeak.table)
+        peakCat.append(self.detectedPeak)
         for footprint in mHeavy:
-            footprint.addPeak(cx+xmin, cy+ymin, peakFlux)
+            footprint.setPeakCatalog(peakCat)
         return mHeavy
 
 
