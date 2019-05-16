@@ -606,7 +606,6 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.blendConvergenceFailedKey, not blend_converged)
         cy, cx = scarlet_source.pixel_center
         xmin, ymin = xy0
-        bbox = heavy.getBBox()
         src.set(self.modelCenter, afwGeom.Point2D(cx+xmin, cy+ymin))
         src.set(self.modelCenterFlux, scarlet_source.morph[cy, cx])
         return src
