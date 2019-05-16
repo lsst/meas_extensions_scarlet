@@ -79,26 +79,21 @@ def _computePsfImage(self, position=None):
     # Make the coordinates into a Point2D (if necessary)
     if not isinstance(position, Point2D) and position is not None:
         position = Point2D(position[0], position[1])
-    width = 0
-    height = 0
+
     for single in self.singles:
         if position is None:
-            psf = single.getPsf().computeImage().array
+            psf = single.getPsf().computeImage()
             psfs.append(psf)
         else:
-            psf = single.getPsf().computeImage(position).array
+            psf = single.getPsf().computeImage(position)
             psfs.append(psf)
-        _height, _width = psf.shape
-        if _height > height:
-            height = _height
-        if _width > width:
-            width = _width
-    bbox = Box2I(Point2I(0, 0), Extent2I(width, height))
-    for psf in psfs:
-        if psf.shape != (height, width):
-            psf = afwImage.utils.projectImage(psf, bbox)
-    psfs = np.array(psfs)
-    psfImage = afwImage.MultibandImage(self.filters, array=psfs)
+    left = np.min([psf.getBBox().getMinX() for psf in psfs])
+    bottom = np.min([psf.getBBox().getMinY() for psf in psfs])
+    right = np.max([psf.getBBox().getMaxX() for psf in psfs])
+    top = np.max([psf.getBBox().getMaxY() for psf in psfs])
+    bbox = Box2I(Point2I(left, bottom), Point2I(right, top))
+    psfs = [afwImage.utils.projectImage(psf, bbox) for psf in psfs]
+    psfImage = afwImage.MultibandImage.fromImages(self.filters, psfs)
     return psfImage
 
 
