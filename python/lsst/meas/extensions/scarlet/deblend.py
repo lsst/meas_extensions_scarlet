@@ -62,7 +62,7 @@ def _computePsfImage(self, position=None):
 
     Note: this is a temporary fix during the deblender sprint.
     In the future this function will replace the current method
-    in `afw.MultibandExposure.computePsfImage`.
+    in `afw.MultibandExposure.computePsfImage`: DM-19789
 
     Parameters
     ----------
