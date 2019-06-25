@@ -62,36 +62,6 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         self.assertFloatsAlmostEqual(src.sed/3, self.true_sed)
         self.assertFloatsAlmostEqual(src.morph*3, self.true_morph)
 
-    def test_monotonicity(self):
-        morph = self.true_morph.copy()
-        morph[5, 5] = 2
-
-        images = self.true_sed[:, None, None] * morph[None, :, :]
-        scene = lmeScarlet.Scene(self.shape)
-        observation = lmeScarlet.Observation(images)
-        bg_rms = np.ones_like(self.true_sed) * 1e-3
-        sed, morph = scarlet.source.init_extended_source(self.skycoord, scene, observation, bg_rms,
-                                                         symmetric=False)
-
-        _morph = self.true_morph.copy()
-        _morph[5, 5] = 1.5816233815926433
-        self.assertFloatsAlmostEqual(sed/3, self.true_sed)
-        self.assertFloatsAlmostEqual(morph*3, _morph)
-
-    def test_symmetry(self):
-        morph = self.true_morph.copy()
-        morph[5, 5] = 2
-
-        images = self.true_sed[:, None, None] * morph[None, :, :]
-        scene = lmeScarlet.Scene(self.shape)
-        observation = lmeScarlet.Observation(images)
-        bg_rms = np.ones_like(self.true_sed) * 1e-3
-        sed, morph = scarlet.source.init_extended_source(self.skycoord, scene, observation, bg_rms,
-                                                         monotonic=False)
-
-        self.assertFloatsAlmostEqual(sed/3, self.true_sed)
-        self.assertFloatsAlmostEqual(morph*3, self.true_morph)
-
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
     pass
