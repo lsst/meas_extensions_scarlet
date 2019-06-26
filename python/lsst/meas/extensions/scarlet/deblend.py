@@ -15,7 +15,7 @@ import lsst.afw.table as afwTable
 
 from .source import LsstSource, LsstHistory
 from .blend import LsstBlend
-from .observation import LsstScene, LsstObservation
+from .observation import LsstFrame, LsstObservation
 
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
@@ -77,20 +77,20 @@ def deblend(mExposure, footprint, log, config):
     target_psf = _getTargetPsf(psfs.shape)
 
     observation = LsstObservation(images, psfs, weights)
-    scene = LsstScene(images.shape, psfs=target_psf)
+    frame = LsstFrame(images.shape, psfs=target_psf[None])
     bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
         Source = LsstHistory
     else:
         Source = LsstSource
     sources = [
-        Source(peak=center, scene=scene, observations=observation, bg_rms=bg_rms,
+        Source(frame=frame, peak=center, observations=observation, bg_rms=bg_rms,
                bbox=bbox, symmetric=config.symmetric, monotonic=config.monotonic,
                center_step=config.recenterPeriod)
         for center in footprint.peaks
     ]
 
-    blend = LsstBlend(scene, sources, observation)
+    blend = LsstBlend(sources, observation)
     blend.fit(config.maxIter, config.relativeError, False)
 
     return blend

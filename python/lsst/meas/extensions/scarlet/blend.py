@@ -1,5 +1,3 @@
-
-
 from scarlet.blend import Blend
 
 
@@ -11,8 +9,8 @@ class LsstBlend(Blend):
     for multiresolution blends. So this class exists for any
     LSST specific changes.
     """
-    def get_model(self, *parameters, observation=None):
-        model = super().get_model(*parameters)
+    def get_model(self, seds=None, morphs=None, observation=None):
+        model = super().get_model(seds, morphs)
         if observation is not None:
             model = observation.get_model(model)
         return model

@@ -15,24 +15,24 @@ class LsstSource(ExtendedSource):
     default initialization and update constraints for general sources in
     LSST images.
     """
-    def __init__(self, peak, scene, observations, bg_rms, bbox, obs_idx=0,
+    def __init__(self, frame, peak, observation, bg_rms, bbox, obs_idx=0,
                  thresh=1, symmetric=False, monotonic=True, center_step=5,
                  **component_kwargs):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         sky_coord = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
         try:
-            super().__init__(sky_coord, scene, observations, bg_rms, obs_idx, thresh,
+            super().__init__(frame, sky_coord, observation, bg_rms, thresh,
                              symmetric, monotonic, center_step, **component_kwargs)
         except SourceInitError:
             # If the source is too faint for background detection, initialize
             # it as a PointSource
-            PointSource.__init__(self, sky_coord, scene, observations, symmetric, monotonic,
+            PointSource.__init__(self, frame, sky_coord, observation, symmetric, monotonic,
                                  center_step, **component_kwargs)
         self.detectedPeak = peak
 
-    def get_model(self, *parameters, observation=None):
-        model = super().get_model(*parameters)
+    def get_model(self, sed=None, morph=None, observation=None):
+        model = super().get_model(sed, morph)
         if observation is not None:
             model = observation.get_model(model)
         return model
