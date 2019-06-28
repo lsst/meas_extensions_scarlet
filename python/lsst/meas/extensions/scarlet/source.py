@@ -17,16 +17,21 @@ class LsstSource(ExtendedSource):
     """
     def __init__(self, frame, peak, observation, bg_rms, bbox, obs_idx=0,
                  thresh=1, symmetric=False, monotonic=True, center_step=5,
-                 **component_kwargs):
+                 point_source=False, **component_kwargs):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         sky_coord = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        try:
-            super().__init__(frame, sky_coord, observation, bg_rms, thresh,
-                             symmetric, monotonic, center_step, **component_kwargs)
-        except SourceInitError:
-            # If the source is too faint for background detection, initialize
-            # it as a PointSource
+        initialized = False
+        if not point_source:
+            try:
+                super().__init__(frame, sky_coord, observation, bg_rms, thresh,
+                                 symmetric, monotonic, center_step, **component_kwargs)
+                initialized = True
+            except SourceInitError:
+                # If the source is too faint for background detection,
+                # initialize it as a PointSource
+                pass
+        if not initialized:
             PointSource.__init__(self, frame, sky_coord, observation, symmetric, monotonic,
                                  center_step, **component_kwargs)
         self.detectedPeak = peak

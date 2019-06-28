@@ -209,6 +209,60 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         self.assertFloatsAlmostEqual(hModel, src.get_model(observation=observation), rtol=1e-7, atol=1e-7)
 
 
+class TestLsstBlend(lsst.utils.tests.TestCase):
+    def test_fit_point_source(self):
+        # This is a test from scarlet,
+        # but we implement it here to test the `point_source`
+        # method of `LsstSource` along with fitting the blend.
+        shape = (6, 31, 55)
+        coords = [(20, 10), (10, 30), (17, 42)]
+        amplitudes = [3, 2, 1]
+        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, amplitudes)
+        B, Ny, Nx = shape
+
+        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
+        bg_rms = np.ones((B, )) * 1e-3
+        sources = []
+        for coord in coords:
+            foot, peak, bbox = numpy_to_stack(images, coord, (15, 3))
+            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox, point_source=True))
+        blend = lmeScarlet.Blend(sources, observation)
+        # Try to run for 10 iterations
+        # Since the model is already near exact, it should converge
+        # on the 2nd iteration (since it doesn't calculate the initial loss)
+        blend.fit(10)
+
+        self.assertEqual(blend.it, 2)
+        self.assertFloatsAlmostEqual(blend.L_sed, 2.5481250470053265, rtol=1e-10, atol=1e-10)
+        self.assertFloatsAlmostEqual(blend.L_morph, 9024.538938935855)
+        self.assertFloatsAlmostEqual(np.array(blend.mse),
+                                     np.array([3.875628098330452e-15, 3.875598349723412e-15]))
+        self.assertTrue(blend.mse[0] > blend.mse[1])
+
+    def test_get_model(self):
+        shape = (6, 31, 55)
+        coords = [(20, 10), (10, 30), (17, 42)]
+        amplitudes = [3, 2, 1]
+        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, amplitudes)
+        B, Ny, Nx = shape
+
+        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
+        bg_rms = np.ones((B, )) * 1e-3
+        sources = []
+        for coord in coords:
+            foot, peak, bbox = numpy_to_stack(images, coord, (15, 3))
+            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox, point_source=True))
+        blend = lmeScarlet.LsstBlend(sources, observation)
+
+        self.assertEqual(len(blend.observations), 1)
+        self.assertEqual(blend.observations[0], observation)
+        self.assertEqual(blend.mse, [])
+        model = blend.get_model(observation=observation)
+        self.assertFloatsAlmostEqual(model, images, rtol=1e-7, atol=1e-7)
+
+
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
     pass
 
