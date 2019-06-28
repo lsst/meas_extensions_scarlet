@@ -22,79 +22,13 @@
 import unittest
 
 import numpy as np
-import scipy.signal
 import scarlet
 
 import lsst.meas.extensions.scarlet as lmeScarlet
 import lsst.utils.tests
-from lsst.geom import Box2I, Point2I, Extent2I
-from lsst.afw.geom import Span, SpanSet
-from lsst.afw.detection import Footprint, PeakTable, multiband
+from lsst.afw.detection import PeakTable, multiband
 
-
-def numpy_to_stack(images, center, offset):
-    """Convert numpy and python objects to stack objects
-    """
-    cy, cx = center
-    bands, height, width = images.shape
-    x0, y0 = offset
-    full_image = np.ones((bands, height+10, width+20))
-    bbox = Box2I(Point2I(x0, y0), Extent2I(width, height))
-    full_image[:, y0:y0+height, x0:x0+width] = images
-    spans = [Span(y, x0, x0+width-1) for y in range(y0, y0+height)]
-    spanset = SpanSet(spans)
-    foot = Footprint(spanset)
-    foot.addPeak(cx+x0, cy+y0, images[:, cy, cx].max())
-    peak = foot.getPeaks()[0]
-    return foot, peak, bbox
-
-
-def init_data(shape, coords, amplitudes=None, convolve=True):
-    """Initialize data for the tests
-    """
-
-    B, Ny, Nx = shape
-    K = len(coords)
-
-    if amplitudes is None:
-        amplitudes = np.ones((K,))
-    assert K == len(amplitudes)
-
-    _seds = [
-        np.arange(B, dtype=float),
-        np.arange(B, dtype=float)[::-1],
-        np.ones((B,), dtype=float)
-    ]
-    seds = np.array([_seds[n % 3]*amplitudes[n] for n in range(K)])
-
-    morphs = np.zeros((K, Ny, Nx))
-    for k, coord in enumerate(coords):
-        morphs[k, coord[0], coord[1]] = 1
-    images = seds.T.dot(morphs.reshape(K, -1)).reshape(shape)
-
-    if convolve:
-        psf_radius = 20
-        psf_shape = (2*psf_radius+1, 2*psf_radius+1)
-        psf_center = (psf_radius, psf_radius)
-        target_psf = scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psf_shape, psf_center,
-                                                    amplitude=1, sigma=.9)
-        target_psf /= target_psf.sum()
-
-        psfs = np.array([scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psf_shape, psf_center,
-                                                        amplitude=1, sigma=1+.2*b) for b in range(B)])
-        # Convolve the image with the psf in each channel
-        # Use scipy.signal.convolve without using FFTs as a sanity check
-        images = np.array([scipy.signal.convolve(img, psf, method="direct", mode="same")
-                           for img, psf in zip(images, psfs)])
-        # Convolve the true morphology with the target PSF,
-        # also using scipy.signal.convolve as a sanity check
-        morphs = np.array([scipy.signal.convolve(m, target_psf, method="direct", mode="same")
-                           for m in morphs])
-        morphs /= morphs.max()
-        psfs /= psfs.sum(axis=(1, 2))[:, None, None]
-
-    channels = range(len(images))
-    return target_psf, psfs, images, channels, seds, morphs
+from utils import numpyToStack, initData
 
 
 class TestLsstSource(lsst.utils.tests.TestCase):
@@ -108,28 +42,28 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         x, y = np.meshgrid(x, y)
         r = np.sqrt(x**2 + y**2)
 
-        true_sed = np.arange(B)
-        true_morph = np.zeros(shape[1:])
+        trueSed = np.arange(B)
+        trueMorph = np.zeros(shape[1:])
 
-        center = (np.array(true_morph.shape) - 1) // 2
+        center = (np.array(trueMorph.shape) - 1) // 2
         cy, cx = center
-        true_morph[cy-2:cy+3, cx-2:cx+3] = 3-r
+        trueMorph[cy-2:cy+3, cx-2:cx+3] = 3-r
 
-        morph = true_morph.copy()
+        morph = trueMorph.copy()
         # Make a point that is not monotonic or symmetric to ensure
         # that it is supressed.
         morph[5, 3] = 10
 
         # Create the scarlet objects
-        images = true_sed[:, None, None] * morph[None, :, :]
+        images = trueSed[:, None, None] * morph[None, :, :]
         frame = lmeScarlet.LsstFrame(shape)
         observation = lmeScarlet.LsstObservation(images)
-        bg_rms = np.ones_like(true_sed) * 1e-3
+        bgRms = np.ones_like(trueSed) * 1e-3
 
         # init stack objects
-        foot, peak, bbox = numpy_to_stack(images, center, (15, 3))
+        foot, peak, bbox = numpyToStack(images, center, (15, 3))
         # init source
-        src = lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox)
+        src = lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox)
 
         self.assertFloatsAlmostEqual(src.pixel_center, center)
         self.assertEqual(src.symmetric, False)
@@ -137,8 +71,8 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         self.assertEqual(src.center_step, 5)
         self.assertEqual(src.delay_thresh, 10)
 
-        self.assertFloatsAlmostEqual(src.sed/3, true_sed)
-        self.assertFloatsAlmostEqual(src.morph*3, true_morph)
+        self.assertFloatsAlmostEqual(src.sed/3, trueSed)
+        self.assertFloatsAlmostEqual(src.morph*3, trueMorph)
         self.assertEqual(src.detectedPeak, peak)
         self.assertEqual(foot.getBBox(), bbox)
 
@@ -146,39 +80,39 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         shape = (6, 31, 55)
         B, Ny, Nx = shape
         coords = [(20, 10), (10, 30), (17, 42)]
-        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, [3, 2, 1])
+        targetPsf, psfs, images, channels, seds, morphs = initData(shape, coords, [3, 2, 1])
 
-        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsf[None])
         observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
-        bg_rms = np.ones((B, )) * 1e-3
-        foot, peak, bbox = numpy_to_stack(images, coords[0], (15, 3))
-        src = lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox)
-        sed_scale = target_psf.max() / observation.frame.psfs.max(axis=(1, 2))
+        bgRms = np.ones((B, )) * 1e-3
+        foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
+        src = lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox)
+        sedScale = targetPsf.max() / observation.frame.psfs.max(axis=(1, 2))
         # Use the correct SED and morphology. This will be different than
         # the ones ExtenedSource initializes to, since the morphology cannot
         # be initialized with the correct PSF (yet)
-        src._sed = seds[0] * sed_scale
+        src._sed = seds[0] * sedScale
         src._morph = morphs[0]
         model = src.get_model(observation=observation)
-        truth = observation.render((seds[0]*sed_scale)[:, None, None] * morphs[0][None, :, :])
+        truth = observation.render((seds[0]*sedScale)[:, None, None] * morphs[0][None, :, :])
         self.assertFloatsAlmostEqual(model, truth)
 
         # Test without passing an observation to get_model
         model = src.get_model()
-        truth = (seds[0]*sed_scale)[:, None, None] * morphs[0][None, :, :]
+        truth = (seds[0]*sedScale)[:, None, None] * morphs[0][None, :, :]
         self.assertFloatsAlmostEqual(model, truth)
 
     def test_to_heavy(self):
         shape = (5, 31, 55)
         B, Ny, Nx = shape
         coords = [(20, 10), (10, 30), (17, 42)]
-        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, [3, 2, 1])
+        targetPsf, psfs, images, channels, seds, morphs = initData(shape, coords, [3, 2, 1])
 
-        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsf[None])
         observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
-        bg_rms = np.ones((B, )) * 1e-3
-        foot, peak, bbox = numpy_to_stack(images, coords[0], (15, 3))
-        src = lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox)
+        bgRms = np.ones((B, )) * 1e-3
+        foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
+        src = lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox)
         # Get the HeavyFootprint
         peakSchema = PeakTable.makeMinimalSchema()
         src._sed = src._sed.astype(np.float32)
@@ -217,16 +151,16 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         shape = (6, 31, 55)
         coords = [(20, 10), (10, 30), (17, 42)]
         amplitudes = [3, 2, 1]
-        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, amplitudes)
+        targetPsf, psfs, images, channels, seds, morphs = initData(shape, coords, amplitudes)
         B, Ny, Nx = shape
 
-        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsf[None])
         observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
-        bg_rms = np.ones((B, )) * 1e-3
+        bgRms = np.ones((B, )) * 1e-3
         sources = []
         for coord in coords:
-            foot, peak, bbox = numpy_to_stack(images, coord, (15, 3))
-            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox, point_source=True))
+            foot, peak, bbox = numpyToStack(images, coord, (15, 3))
+            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox, point_source=True))
         blend = lmeScarlet.Blend(sources, observation)
         # Try to run for 10 iterations
         # Since the model is already near exact, it should converge
@@ -244,16 +178,16 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         shape = (6, 31, 55)
         coords = [(20, 10), (10, 30), (17, 42)]
         amplitudes = [3, 2, 1]
-        target_psf, psfs, images, channels, seds, morphs = init_data(shape, coords, amplitudes)
+        targetPsf, psfs, images, channels, seds, morphs = initData(shape, coords, amplitudes)
         B, Ny, Nx = shape
 
-        frame = lmeScarlet.LsstFrame(shape, psfs=target_psf[None])
+        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsf[None])
         observation = lmeScarlet.LsstObservation(images, psfs=psfs).match(frame)
-        bg_rms = np.ones((B, )) * 1e-3
+        bgRms = np.ones((B, )) * 1e-3
         sources = []
         for coord in coords:
-            foot, peak, bbox = numpy_to_stack(images, coord, (15, 3))
-            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bg_rms, bbox, point_source=True))
+            foot, peak, bbox = numpyToStack(images, coord, (15, 3))
+            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox, pointSource=True))
         blend = lmeScarlet.LsstBlend(sources, observation)
 
         self.assertEqual(len(blend.observations), 1)

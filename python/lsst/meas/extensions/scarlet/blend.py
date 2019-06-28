@@ -25,10 +25,10 @@ class LsstBlend(Blend):
             ax = fig.add_subplot(1, 1, 1)
         if filters is None:
             filters = [2, 1, 0]
-        img_rgb = make_lupton_rgb(image_r=model[filters[0]],  # numpy array for the r channel
-                                  image_g=model[filters[1]],  # numpy array for the g channel
-                                  image_b=model[filters[2]],  # numpy array for the b channel
-                                  stretch=stretch, Q=Q)  # parameters used to stretch and scale the values
-        ax.imshow(img_rgb, interpolation='nearest')
+        imgRgb = make_lupton_rgb(image_r=model[filters[0]],  # numpy array for the r channel
+                                 image_g=model[filters[1]],  # numpy array for the g channel
+                                 image_b=model[filters[2]],  # numpy array for the b channel
+                                 stretch=stretch, Q=Q)  # parameters used to stretch and scale the values
+        ax.imshow(imgRgb, interpolation='nearest')
         if show:
             plt.show()

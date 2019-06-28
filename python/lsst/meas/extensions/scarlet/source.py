@@ -15,25 +15,25 @@ class LsstSource(ExtendedSource):
     default initialization and update constraints for general sources in
     LSST images.
     """
-    def __init__(self, frame, peak, observation, bg_rms, bbox, obs_idx=0,
-                 thresh=1, symmetric=False, monotonic=True, center_step=5,
-                 point_source=False, **component_kwargs):
+    def __init__(self, frame, peak, observation, bgRms, bbox,
+                 thresh=1, symmetric=False, monotonic=True, centerStep=5,
+                 pointSource=False, **componentKwargs):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
-        sky_coord = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
+        center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
         initialized = False
-        if not point_source:
+        if not pointSource:
             try:
-                super().__init__(frame, sky_coord, observation, bg_rms, thresh,
-                                 symmetric, monotonic, center_step, **component_kwargs)
+                super().__init__(frame, center, observation, bgRms, thresh,
+                                 symmetric, monotonic, centerStep, **componentKwargs)
                 initialized = True
             except SourceInitError:
                 # If the source is too faint for background detection,
                 # initialize it as a PointSource
                 pass
         if not initialized:
-            PointSource.__init__(self, frame, sky_coord, observation, symmetric, monotonic,
-                                 center_step, **component_kwargs)
+            PointSource.__init__(self, frame, center, observation, symmetric, monotonic,
+                                 centerStep, **componentKwargs)
         self.detectedPeak = peak
 
     def get_model(self, sed=None, morph=None, observation=None):
@@ -52,11 +52,11 @@ class LsstSource(ExtendedSource):
             ax = fig.add_subplot(1, 1, 1)
         if filters is None:
             filters = [2, 1, 0]
-        img_rgb = make_lupton_rgb(image_r=model[filters[0]],  # numpy array for the r channel
-                                  image_g=model[filters[1]],  # numpy array for the g channel
-                                  image_b=model[filters[2]],  # numpy array for the b channel
-                                  stretch=stretch, Q=Q)  # parameters used to stretch and scale the values
-        ax.imshow(img_rgb, interpolation='nearest')
+        imgRgb = make_lupton_rgb(image_r=model[filters[0]],  # numpy array for the r channel
+                                 image_g=model[filters[1]],  # numpy array for the g channel
+                                 image_b=model[filters[2]],  # numpy array for the b channel
+                                 stretch=stretch, Q=Q)  # parameters used to stretch and scale the values
+        ax.imshow(imgRgb, interpolation='nearest')
         if show:
             plt.show()
 

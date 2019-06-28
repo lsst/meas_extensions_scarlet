@@ -78,15 +78,15 @@ def deblend(mExposure, footprint, log, config):
 
     observation = LsstObservation(images, psfs, weights)
     frame = LsstFrame(images.shape, psfs=target_psf[None])
-    bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
+    bgRms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
         Source = LsstHistory
     else:
         Source = LsstSource
     sources = [
-        Source(frame=frame, peak=center, observations=observation, bg_rms=bg_rms,
+        Source(frame=frame, peak=center, observations=observation, bgRms=bgRms,
                bbox=bbox, symmetric=config.symmetric, monotonic=config.monotonic,
-               center_step=config.recenterPeriod)
+               centerStep=config.recenterPeriod)
         for center in footprint.peaks
     ]
 
