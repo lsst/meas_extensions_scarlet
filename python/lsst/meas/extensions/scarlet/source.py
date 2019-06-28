@@ -34,7 +34,7 @@ class LsstSource(ExtendedSource):
     def get_model(self, sed=None, morph=None, observation=None):
         model = super().get_model(sed, morph)
         if observation is not None:
-            model = observation.get_model(model)
+            model = observation.render(model)
         return model
 
     def display_model(self, observation=None, ax=None, filters=None, Q=10, stretch=1, show=True):
