@@ -67,14 +67,14 @@ def initData(shape, coords, amplitudes=None, convolve=True):
     images = seds.T.dot(morphs.reshape(K, -1)).reshape(shape)
 
     if convolve:
-        psf_radius = 20
-        psf_shape = (2*psf_radius+1, 2*psf_radius+1)
-        psf_center = (psf_radius, psf_radius)
-        target_psf = scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psf_shape, psf_center,
-                                                    amplitude=1, sigma=.9)
-        target_psf /= target_psf.sum()
+        psfRadius = 20
+        psfShape = (2*psfRadius+1, 2*psfRadius+1)
+        psfCenter = (psfRadius, psfRadius)
+        targetPsf = scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psfShape, psfCenter,
+                                                   amplitude=1, sigma=.9)
+        targetPsf /= targetPsf.sum()
 
-        psfs = np.array([scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psf_shape, psf_center,
+        psfs = np.array([scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psfShape, psfCenter,
                                                         amplitude=1, sigma=1+.2*b) for b in range(B)])
         # Convolve the image with the psf in each channel
         # Use scipy.signal.convolve without using FFTs as a sanity check
@@ -82,10 +82,10 @@ def initData(shape, coords, amplitudes=None, convolve=True):
                            for img, psf in zip(images, psfs)])
         # Convolve the true morphology with the target PSF,
         # also using scipy.signal.convolve as a sanity check
-        morphs = np.array([scipy.signal.convolve(m, target_psf, method="direct", mode="same")
+        morphs = np.array([scipy.signal.convolve(m, targetPsf, method="direct", mode="same")
                            for m in morphs])
         morphs /= morphs.max()
         psfs /= psfs.sum(axis=(1, 2))[:, None, None]
 
     channels = range(len(images))
-    return target_psf, psfs, images, channels, seds, morphs
+    return targetPsf, psfs, images, channels, seds, morphs

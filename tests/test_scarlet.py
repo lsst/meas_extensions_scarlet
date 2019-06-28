@@ -144,9 +144,9 @@ class TestLsstSource(lsst.utils.tests.TestCase):
 
 
 class TestLsstBlend(lsst.utils.tests.TestCase):
-    def test_fit_point_source(self):
+    def test_fit_pointSource(self):
         # This is a test from scarlet,
-        # but we implement it here to test the `point_source`
+        # but we implement it here to test the `pointSource`
         # method of `LsstSource` along with fitting the blend.
         shape = (6, 31, 55)
         coords = [(20, 10), (10, 30), (17, 42)]
@@ -160,7 +160,7 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         sources = []
         for coord in coords:
             foot, peak, bbox = numpyToStack(images, coord, (15, 3))
-            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox, point_source=True))
+            sources.append(lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox, pointSource=True))
         blend = lmeScarlet.Blend(sources, observation)
         # Try to run for 10 iterations
         # Since the model is already near exact, it should converge
