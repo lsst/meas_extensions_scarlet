@@ -21,11 +21,10 @@
 
 import numpy as np
 import scipy.signal
-import scarlet
 
 from lsst.geom import Box2I, Point2I, Extent2I
 from lsst.afw.geom import Span, SpanSet
-from lsst.afw.detection import Footprint
+from lsst.afw.detection import Footprint, GaussianPsf
 
 
 def numpyToStack(images, center, offset):
@@ -69,23 +68,24 @@ def initData(shape, coords, amplitudes=None, convolve=True):
     if convolve:
         psfRadius = 20
         psfShape = (2*psfRadius+1, 2*psfRadius+1)
-        psfCenter = (psfRadius, psfRadius)
-        targetPsf = scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psfShape, psfCenter,
-                                                   amplitude=1, sigma=.9)
-        targetPsf /= targetPsf.sum()
 
-        psfs = np.array([scarlet.psf.generate_psf_image(scarlet.psf.gaussian, psfShape, psfCenter,
-                                                        amplitude=1, sigma=1+.2*b) for b in range(B)])
+        targetPsf = GaussianPsf(psfShape[1], psfShape[0], .9)
+        targetPsfImage = targetPsf.computeImage().array
+
+        psfs = [GaussianPsf(psfShape[1], psfShape[0], 1+.2*b) for b in range(B)]
+        psfImages = np.array([psf.computeImage().array for psf in psfs])
+        psfImages /= psfImages.max(axis=(1, 2))[:, None, None]
+
         # Convolve the image with the psf in each channel
         # Use scipy.signal.convolve without using FFTs as a sanity check
         images = np.array([scipy.signal.convolve(img, psf, method="direct", mode="same")
-                           for img, psf in zip(images, psfs)])
+                           for img, psf in zip(images, psfImages)])
         # Convolve the true morphology with the target PSF,
         # also using scipy.signal.convolve as a sanity check
-        morphs = np.array([scipy.signal.convolve(m, targetPsf, method="direct", mode="same")
+        morphs = np.array([scipy.signal.convolve(m, targetPsfImage, method="direct", mode="same")
                            for m in morphs])
         morphs /= morphs.max()
-        psfs /= psfs.sum(axis=(1, 2))[:, None, None]
+        psfImages /= psfImages.sum(axis=(1, 2))[:, None, None]
 
     channels = range(len(images))
-    return targetPsf, psfs, images, channels, seds, morphs
+    return targetPsfImage, psfImages, images, channels, seds, morphs, targetPsf, psfs

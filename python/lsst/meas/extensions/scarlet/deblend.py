@@ -27,17 +27,17 @@ def _getPsfFwhm(psf):
     return psf.computeShape().getDeterminantRadius() * 2.35
 
 
-def _estimateStdDev(exposure, statsMask):
+def _estimateRMS(exposure, statsMask):
     """Estimate the standard dev. of an image
 
-    Take the median standard deviation of the `exposure`.
+    Calculate the RMS of the `exposure`.
     """
     mi = exposure.getMaskedImage()
     statsCtrl = afwMath.StatisticsControl()
     statsCtrl.setAndMask(mi.getMask().getPlaneBitMask(statsMask))
-    stats = afwMath.makeStatistics(mi.variance, mi.mask, afwMath.MEDIAN, statsCtrl)
-    sigma = np.sqrt(stats.getValue(afwMath.MEDIAN))
-    return sigma
+    stats = afwMath.makeStatistics(mi.variance, mi.mask, afwMath.STDEV | afwMath.MEAN, statsCtrl)
+    rms = np.sqrt(stats.getValue(afwMath.MEAN)**2 + stats.getValue(afwMath.STDEV)**2)
+    return rms
 
 
 def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
@@ -76,15 +76,15 @@ def deblend(mExposure, footprint, log, config):
     psfs = mExposure.computePsfImage(footprint.getCentroid()).array
     target_psf = _getTargetPsf(psfs.shape)
 
-    observation = LsstObservation(images, psfs, weights)
     frame = LsstFrame(images.shape, psfs=target_psf[None])
-    bgRms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
+    observation = LsstObservation(images, psfs, weights).match(frame)
+    bgRms = np.array([_estimateRMS(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
         Source = LsstHistory
     else:
         Source = LsstSource
     sources = [
-        Source(frame=frame, peak=center, observations=observation, bgRms=bgRms,
+        Source(frame=frame, peak=center, observation=observation, bgRms=bgRms,
                bbox=bbox, symmetric=config.symmetric, monotonic=config.monotonic,
                centerStep=config.recenterPeriod)
         for center in footprint.peaks
