@@ -1,3 +1,4 @@
+
 # This file is part of meas_extensions_scarlet.
 #
 # Developed for the LSST Data Management System.
@@ -77,7 +78,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Changes to the internal workings of scarlet will change these results
         # however we include these tests just to track changes
         parent = result["r"][0]
-        self.assertEqual(parent["iterations"], 16)
+        self.assertEqual(parent["iterations"], 11)
         self.assertEqual(parent["deblend_nChild"], 3)
 
         heavies = []
@@ -87,9 +88,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         seds = np.array([heavy.getImage(fill=0).image.array.sum(axis=(1, 2)) for heavy in heavies])
         true_seds = np.array([
-            [1671.324951171875, 1743.279541015625, 1511.7056884765625, 980.2699584960938, 0.0],
-            [766.0296630859375, 1053.3558349609375, 1311.0240478515625, 1689.2467041015625, 2057.97265625],
-            [12.001407623291016, 882.0177001953125, 2253.0751953125, 4218.5419921875, 6980.978515625]
+            [[1665.726318359375, 1745.5401611328125, 1525.91796875, 997.3868408203125, 0.0],
+             [767.100341796875, 1057.0374755859375, 1312.89111328125, 1694.7535400390625, 2069.294921875],
+             [8.08012580871582, 879.344970703125, 2246.90087890625, 4212.82470703125, 6987.0849609375]]
         ])
 
         self.assertFloatsAlmostEqual(true_seds, seds, rtol=1e-8, atol=1e-8)
@@ -104,8 +105,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
             model[:, heavy.getBBox()].array += heavy.getImage(fill=0).image.array
 
         residual = data.image.array - model.array
-        self.assertFloatsAlmostEqual(np.abs(residual).sum(), 9850.859375)
-        self.assertFloatsAlmostEqual(np.max(np.abs(residual)), 38.38974, rtol=1e-8, atol=1e-8)
+        self.assertFloatsAlmostEqual(np.abs(residual).sum(), 11601.3867187500)
+        self.assertFloatsAlmostEqual(np.max(np.abs(residual)), 56.1048278809, rtol=1e-8, atol=1e-8)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
