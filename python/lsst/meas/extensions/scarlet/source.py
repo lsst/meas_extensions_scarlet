@@ -16,7 +16,7 @@ class LsstSource(ExtendedSource):
     LSST images.
     """
     def __init__(self, frame, peak, observation, bgRms, bbox,
-                 thresh=1, symmetric=False, monotonic=True, centerStep=5,
+                 thresh=1, symmetric=True, monotonic=True, centerStep=5,
                  pointSource=False, **componentKwargs):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()

@@ -124,7 +124,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     # Constraints
     sparse = pexConfig.Field(dtype=bool, default=True, doc="Make models compact and sparse")
     monotonic = pexConfig.Field(dtype=bool, default=True, doc="Make models monotonic")
-    symmetric = pexConfig.Field(dtype=bool, default=False, doc="Make models symmetric")
+    symmetric = pexConfig.Field(dtype=bool, default=True, doc="Make models symmetric")
     symmetryThresh = pexConfig.Field(dtype=float, default=1.0,
                                      doc=("Strictness of symmetry, from"
                                           "0 (no symmetry enforced) to"
