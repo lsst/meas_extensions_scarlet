@@ -142,7 +142,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         hModel = hFoot.getImage(fill=0).image.array
 
         self.assertEqual(bbox, hFoot.getBBox())
-        self.assertFloatsAlmostEqual(hModel, src.get_model(observation=observation), rtol=1e-7, atol=1e-7)
+        self.assertFloatsAlmostEqual(hModel, src.get_model(observation=observation), rtol=1e-6, atol=1e-6)
 
 
 class TestLsstBlend(lsst.utils.tests.TestCase):
@@ -198,7 +198,7 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         self.assertEqual(blend.observations[0], observation)
         self.assertEqual(blend.mse, [])
         model = blend.get_model(observation=observation)
-        self.assertFloatsAlmostEqual(model, images, rtol=1e-7, atol=1e-7)
+        self.assertFloatsAlmostEqual(model, images, rtol=1e-6, atol=1e-6)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
