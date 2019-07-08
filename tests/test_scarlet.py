@@ -66,7 +66,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         src = lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox)
 
         self.assertFloatsAlmostEqual(src.pixel_center, center)
-        self.assertEqual(src.symmetric, False)
+        self.assertEqual(src.symmetric, True)
         self.assertEqual(src.monotonic, True)
         self.assertEqual(src.center_step, 5)
         self.assertEqual(src.delay_thresh, 10)
