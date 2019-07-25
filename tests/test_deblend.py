@@ -1,4 +1,5 @@
 
+
 # This file is part of meas_extensions_scarlet.
 #
 # Developed for the LSST Data Management System.
@@ -36,7 +37,7 @@ from utils import initData
 
 
 class TestDeblend(lsst.utils.tests.TestCase):
-    def test_task(self):
+    def test_deblend_task(self):
         # Set the random seed so that the noise field is unaffected
         np.random.seed(0)
         # Test that executing the deblend task works

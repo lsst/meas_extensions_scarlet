@@ -23,7 +23,7 @@ import numpy as np
 import scipy.signal
 
 from lsst.geom import Box2I, Point2I, Extent2I
-from lsst.afw.geom import Span, SpanSet
+from lsst.afw.geom import SpanSet
 from lsst.afw.detection import Footprint, GaussianPsf
 
 
@@ -34,8 +34,7 @@ def numpyToStack(images, center, offset):
     bands, height, width = images.shape
     x0, y0 = offset
     bbox = Box2I(Point2I(x0, y0), Extent2I(width, height))
-    spans = [Span(y, x0, x0+width-1) for y in range(y0, y0+height)]
-    spanset = SpanSet(spans)
+    spanset = SpanSet(bbox)
     foot = Footprint(spanset)
     foot.addPeak(cx+x0, cy+y0, images[:, cy, cx].max())
     peak = foot.getPeaks()[0]
