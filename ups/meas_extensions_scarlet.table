@@ -10,6 +10,7 @@ setupRequired(scarlet)
 setupRequired(log)
 setupRequired(pex_config)
 setupRequired(pipe_base)
+setupRequired(meas_algorithms)
 
 setupOptional(matplotlib)
 setupOptional(testdata_deblender)

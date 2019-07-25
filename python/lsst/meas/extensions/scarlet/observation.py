@@ -1,7 +1,8 @@
-from scarlet.observation import Scene, Observation
+
+from scarlet.observation import Frame, Observation
 
 
-class LsstScene(Scene):
+class LsstFrame(Frame):
     pass
 
 

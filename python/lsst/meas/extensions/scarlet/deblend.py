@@ -15,7 +15,7 @@ import lsst.afw.table as afwTable
 
 from .source import LsstSource, LsstHistory
 from .blend import LsstBlend
-from .observation import LsstScene, LsstObservation
+from .observation import LsstFrame, LsstObservation
 
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
@@ -27,17 +27,17 @@ def _getPsfFwhm(psf):
     return psf.computeShape().getDeterminantRadius() * 2.35
 
 
-def _estimateStdDev(exposure, statsMask):
+def _estimateRMS(exposure, statsMask):
     """Estimate the standard dev. of an image
 
-    Take the median standard deviation of the `exposure`.
+    Calculate the RMS of the `exposure`.
     """
     mi = exposure.getMaskedImage()
     statsCtrl = afwMath.StatisticsControl()
     statsCtrl.setAndMask(mi.getMask().getPlaneBitMask(statsMask))
-    stats = afwMath.makeStatistics(mi.variance, mi.mask, afwMath.MEDIAN, statsCtrl)
-    sigma = np.sqrt(stats.getValue(afwMath.MEDIAN))
-    return sigma
+    stats = afwMath.makeStatistics(mi.variance, mi.mask, afwMath.STDEV | afwMath.MEAN, statsCtrl)
+    rms = np.sqrt(stats.getValue(afwMath.MEAN)**2 + stats.getValue(afwMath.STDEV)**2)
+    return rms
 
 
 def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
@@ -76,21 +76,21 @@ def deblend(mExposure, footprint, log, config):
     psfs = mExposure.computePsfImage(footprint.getCentroid()).array
     target_psf = _getTargetPsf(psfs.shape)
 
-    observation = LsstObservation(images, psfs, weights)
-    scene = LsstScene(images.shape, psfs=target_psf)
-    bg_rms = np.array([_estimateStdDev(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
+    frame = LsstFrame(images.shape, psfs=target_psf[None])
+    observation = LsstObservation(images, psfs, weights).match(frame)
+    bgRms = np.array([_estimateRMS(exposure, config.statsMask) for exposure in mExposure[:, bbox]])
     if config.storeHistory:
         Source = LsstHistory
     else:
         Source = LsstSource
     sources = [
-        Source(peak=center, scene=scene, observations=observation, bg_rms=bg_rms,
+        Source(frame=frame, peak=center, observation=observation, bgRms=bgRms,
                bbox=bbox, symmetric=config.symmetric, monotonic=config.monotonic,
-               center_step=config.recenterPeriod)
+               centerStep=config.recenterPeriod)
         for center in footprint.peaks
     ]
 
-    blend = LsstBlend(scene, sources, observation)
+    blend = LsstBlend(sources, observation)
     blend.fit(config.maxIter, config.relativeError, False)
 
     return blend
@@ -124,7 +124,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     # Constraints
     sparse = pexConfig.Field(dtype=bool, default=True, doc="Make models compact and sparse")
     monotonic = pexConfig.Field(dtype=bool, default=True, doc="Make models monotonic")
-    symmetric = pexConfig.Field(dtype=bool, default=False, doc="Make models symmetric")
+    symmetric = pexConfig.Field(dtype=bool, default=True, doc="Make models symmetric")
     symmetryThresh = pexConfig.Field(dtype=float, default=1.0,
                                      doc=("Strictness of symmetry, from"
                                           "0 (no symmetry enforced) to"
