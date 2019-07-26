@@ -3,7 +3,8 @@ from scarlet.source import PointSource, ExtendedSource, SourceInitError
 from scarlet.component import BlendFlag
 
 import lsst.afw.image as afwImage
-import lsst.afw.geom as afwGeom
+from lsst.afw.geom import SpanSet
+from lsst.geom import Point2I
 import lsst.afw.detection as afwDet
 
 
@@ -60,11 +61,11 @@ class LsstSource(ExtendedSource):
         if show:
             plt.show()
 
-    def morphToHeavy(self, peakSchema, xy0=afwGeom.Point2I()):
+    def morphToHeavy(self, peakSchema, xy0=Point2I()):
         """Convert the morphology to a `HeavyFootprint`
         """
         mask = afwImage.MaskX(np.array(self.morph > 0, dtype=np.int32), xy0=xy0)
-        ss = afwGeom.SpanSet.fromMask(mask)
+        ss = SpanSet.fromMask(mask)
 
         if len(ss) == 0:
             return None
@@ -79,7 +80,7 @@ class LsstSource(ExtendedSource):
         heavy = afwDet.makeHeavyFootprint(tfoot, afwImage.MaskedImageF(timg))
         return heavy
 
-    def modelToHeavy(self, filters, xy0=afwGeom.Point2I(), observation=None, dtype=np.float32):
+    def modelToHeavy(self, filters, xy0=Point2I(), observation=None, dtype=np.float32):
         """Convert the model to a `MultibandFootprint`
         """
         model = self.get_model(observation=observation).astype(dtype)

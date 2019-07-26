@@ -6,6 +6,7 @@ from scarlet.component import BlendFlag
 import lsst.log
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
+from lsst.geom import Point2D
 import lsst.afw.math as afwMath
 import lsst.afw.geom as afwGeom
 import lsst.afw.geom.ellipses as afwEll
@@ -555,6 +556,6 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.blendConvergenceFailedKey, not blend_converged)
         cy, cx = scarlet_source.pixel_center
         xmin, ymin = xy0
-        src.set(self.modelCenter, afwGeom.Point2D(cx+xmin, cy+ymin))
+        src.set(self.modelCenter, Point2D(cx+xmin, cy+ymin))
         src.set(self.modelCenterFlux, scarlet_source.morph[cy, cx])
         return src
