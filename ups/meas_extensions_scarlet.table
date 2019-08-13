@@ -5,14 +5,12 @@
 setupRequired(base)
 setupRequired(afw)
 setupRequired(log)
-setupRequired(numpy)
 setupRequired(scarlet)
 setupRequired(log)
 setupRequired(pex_config)
 setupRequired(pipe_base)
 setupRequired(meas_algorithms)
 
-setupOptional(matplotlib)
 setupOptional(testdata_deblender)
 
 # The following is boilerplate for all packages.
