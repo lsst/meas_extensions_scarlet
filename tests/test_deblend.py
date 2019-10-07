@@ -52,12 +52,11 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         # Add some noise, otherwise the task will blow up due to
         # zero variance
-        noise = 10*(np.random.rand(*images.shape)-.5)
+        noise = 10*(np.random.rand(*images.shape).astype(np.float32)-.5)
         images += noise
 
         filters = "grizy"
-        _images = afwImage.MultibandMaskedImage.fromArrays(filters, images.astype(np.float32), None,
-                                                           noise.astype(np.float32))
+        _images = afwImage.MultibandMaskedImage.fromArrays(filters, images.astype(np.float32), None, noise)
         coadds = [afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images]
         coadds = afwImage.MultibandExposure.fromExposures(filters, coadds)
         for b, coadd in enumerate(coadds):
@@ -89,12 +88,12 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         seds = np.array([heavy.getImage(fill=0).image.array.sum(axis=(1, 2)) for heavy in heavies])
         true_seds = np.array([
-            [[1665.726318359375, 1745.5401611328125, 1525.91796875, 997.3868408203125, 0.0],
-             [767.100341796875, 1057.0374755859375, 1312.89111328125, 1694.7535400390625, 2069.294921875],
-             [8.08012580871582, 879.344970703125, 2246.90087890625, 4212.82470703125, 6987.0849609375]]
+            [1665.726318359375, 1745.5401611328125, 1525.91796875, 997.3868408203125, 0.0],
+            [767.100341796875, 1057.0374755859375, 1312.89111328125, 1694.7535400390625, 2069.294921875],
+            [8.08012580871582, 879.344970703125, 2246.90087890625, 4212.82470703125, 6987.0849609375]
         ])
 
-        self.assertFloatsAlmostEqual(true_seds, seds, rtol=1e-8, atol=1e-8)
+        self.assertFloatsAlmostEqual(true_seds, seds, rtol=1e-4, atol=1e-4)
 
         bbox = parent.getFootprint().getBBox()
         data = coadds[:, bbox]
@@ -106,7 +105,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
             model[:, heavy.getBBox()].array += heavy.getImage(fill=0).image.array
 
         residual = data.image.array - model.array
-        self.assertFloatsAlmostEqual(np.abs(residual).sum(), 11601.3867187500)
+        self.assertFloatsAlmostEqual(np.abs(residual).sum(), 11601.3867187500, rtol=1e-5, atol=1e-5)
         self.assertFloatsAlmostEqual(np.max(np.abs(residual)), 56.1048278809, rtol=1e-8, atol=1e-8)
 
 

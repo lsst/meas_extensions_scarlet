@@ -72,7 +72,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         self.assertEqual(src.delay_thresh, 10)
 
         self.assertFloatsAlmostEqual(src.sed/3, trueSed)
-        self.assertFloatsAlmostEqual(src.morph*3, trueMorph)
+        self.assertFloatsAlmostEqual(src.morph*3, trueMorph, rtol=1e-7)
         self.assertEqual(src.detectedPeak, peak)
         self.assertEqual(foot.getBBox(), bbox)
 
@@ -157,7 +157,7 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         targetPsfImage, psfImages, images, channels, seds, morphs, targetPsf, psfs = result
         B, Ny, Nx = shape
 
-        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsfImage[None])
+        frame = lmeScarlet.LsstFrame(shape, psfs=targetPsfImage[None], dtype=np.float)
         observation = lmeScarlet.LsstObservation(images, psfs=psfImages).match(frame)
         bgRms = np.ones((B, )) * 1e-3
         sources = []
@@ -171,10 +171,8 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         blend.fit(10)
 
         self.assertEqual(blend.it, 2)
-        self.assertFloatsAlmostEqual(blend.L_sed, 2.5481250470053265, rtol=1e-10, atol=1e-10)
-        self.assertFloatsAlmostEqual(blend.L_morph, 9024.538938935855, rtol=1e-10, atol=1e-10)
-        self.assertFloatsAlmostEqual(np.array(blend.mse),
-                                     np.array([3.875628098330452e-15, 3.875598349723412e-15]))
+        self.assertFloatsAlmostEqual(blend.L_sed, 2.5481250470053265, rtol=1e-5, atol=1e-5)
+        self.assertFloatsAlmostEqual(blend.L_morph, 9024.538938935855, rtol=1e-5, atol=1e-5)
         self.assertTrue(blend.mse[0] > blend.mse[1])
 
     def test_get_model(self):
@@ -198,7 +196,7 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         self.assertEqual(blend.observations[0], observation)
         self.assertEqual(blend.mse, [])
         model = blend.get_model(observation=observation)
-        self.assertFloatsAlmostEqual(model, images, rtol=1e-6, atol=1e-6)
+        self.assertFloatsAlmostEqual(model, images, rtol=1e-5, atol=1e-5)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
