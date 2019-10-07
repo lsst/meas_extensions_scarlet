@@ -142,7 +142,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         hModel = hFoot.getImage(fill=0).image.array
 
         self.assertEqual(bbox, hFoot.getBBox())
-        self.assertFloatsAlmostEqual(hModel, src.get_model(observation=observation), rtol=1e-6, atol=1e-6)
+        self.assertFloatsAlmostEqual(hModel, src.get_model(observation=observation), rtol=1e-4, atol=1e-4)
 
 
 class TestLsstBlend(lsst.utils.tests.TestCase):

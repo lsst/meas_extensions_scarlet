@@ -1,5 +1,6 @@
 
 
+
 # This file is part of meas_extensions_scarlet.
 #
 # Developed for the LSST Data Management System.
@@ -106,7 +107,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         residual = data.image.array - model.array
         self.assertFloatsAlmostEqual(np.abs(residual).sum(), 11601.3867187500, rtol=1e-5, atol=1e-5)
-        self.assertFloatsAlmostEqual(np.max(np.abs(residual)), 56.1048278809, rtol=1e-8, atol=1e-8)
+        self.assertFloatsAlmostEqual(np.max(np.abs(residual)), 56.1048278809, rtol=1e-5, atol=1e-5)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
