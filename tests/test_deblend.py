@@ -1,6 +1,3 @@
-
-
-
 # This file is part of meas_extensions_scarlet.
 #
 # Developed for the LSST Data Management System.
