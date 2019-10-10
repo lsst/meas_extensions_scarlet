@@ -57,9 +57,9 @@ def initData(shape, coords, amplitudes=None, convolve=True):
         np.arange(B, dtype=float)[::-1],
         np.ones((B,), dtype=float)
     ]
-    seds = np.array([_seds[n % 3]*amplitudes[n] for n in range(K)])
+    seds = np.array([_seds[n % 3]*amplitudes[n] for n in range(K)], dtype=np.float32)
 
-    morphs = np.zeros((K, Ny, Nx))
+    morphs = np.zeros((K, Ny, Nx), dtype=np.float32)
     for k, coord in enumerate(coords):
         morphs[k, coord[0], coord[1]] = 1
     images = seds.T.dot(morphs.reshape(K, -1)).reshape(shape)

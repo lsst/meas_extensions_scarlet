@@ -42,12 +42,10 @@ def _estimateRMS(exposure, statsMask):
 
 
 def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
-    X = np.arange(shape[2])
-    Y = np.arange(shape[1])
-    X, Y = np.meshgrid(X, Y)
-    coords = np.stack([Y, X])
+    x = np.arange(shape[2])
+    y = np.arange(shape[1])
     y0, x0 = (shape[1]-1) // 2, (shape[2]-1) // 2
-    target_psf = gaussian(coords, y0, x0, 1, sigma)
+    target_psf = gaussian(y, x, y0, x0, 1, sigma).astype(np.float32)
     target_psf /= target_psf.sum()
     return target_psf
 
@@ -74,7 +72,7 @@ def deblend(mExposure, footprint, log, config):
     mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
     weights[mask > 0] = 0
 
-    psfs = mExposure.computePsfImage(footprint.getCentroid()).array
+    psfs = mExposure.computePsfImage(footprint.getCentroid()).array.astype(np.float32)
     target_psf = _getTargetPsf(psfs.shape)
 
     frame = LsstFrame(images.shape, psfs=target_psf[None])
@@ -279,7 +277,7 @@ class ScarletDeblendTask(pipeBase.Task):
                                                  doc="Deblender skipped this source")
         self.modelCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
                                                          doc="Center used to apply constraints in scarlet",
-                                                         unit="Pixel")
+                                                         unit="pixel")
         self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
