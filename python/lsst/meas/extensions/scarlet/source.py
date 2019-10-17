@@ -81,6 +81,7 @@ class LsstSource(ExtendedSource):
                 # TODO: In the future we should probably just strip blank
                 # sources from the blend to save processing time, but that
                 # will require keeping track of source indices.
+                # DM-19790
                 BlankSource.__init__(self, frame, center)
                 self.skipped = True
 
