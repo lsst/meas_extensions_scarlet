@@ -48,6 +48,7 @@ class LsstSource(ExtendedSource):
                 # If the source is too faint for background detection,
                 # initialize it as a PointSource
                 pass
+        self.skipped = False
         if not initialized:
             try:
                 PointSource.__init__(self, frame, center, observation, symmetric, monotonic,
