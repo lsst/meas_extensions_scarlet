@@ -30,6 +30,7 @@ from lsst.geom import Point2I, Box2I, Point2D
 import lsst.afw.math as afwMath
 import lsst.afw.geom as afwGeom
 import lsst.afw.geom.ellipses as afwEll
+import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
