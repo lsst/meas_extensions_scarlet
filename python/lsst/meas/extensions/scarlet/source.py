@@ -21,7 +21,7 @@
 
 import numpy as np
 from scarlet.source import PointSource, ExtendedSource, SourceInitError
-from scarlet.component import BlendFlag
+from scarlet.component import BlendFlag, Component
 
 import lsst.afw.image as afwImage
 from lsst.afw.geom import SpanSet
@@ -29,6 +29,22 @@ from lsst.geom import Point2I
 import lsst.afw.detection as afwDet
 
 __all__ = ["LsstSource", "LsstHistory"]
+
+
+class BlankSource(Component):
+    """Placeholder for a source that cannot be initialized
+
+    In DM-19790 this class will be removed when skipped sources are
+    not deblended at all.
+    """
+    def __init__(self, frame, center):
+        self.pixel_center = center
+        sed = np.zeros((frame.C,))
+        morph = np.zeros((frame.Ny, frame.Nx))
+        super().__init__(frame, sed=sed, morph=morph, fix_sed=True, fix_morph=True)
+
+    def update(self):
+        return self
 
 
 class LsstSource(ExtendedSource):
@@ -56,8 +72,18 @@ class LsstSource(ExtendedSource):
                 # initialize it as a PointSource
                 pass
         if not initialized:
-            PointSource.__init__(self, frame, center, observation, symmetric, monotonic,
-                                 centerStep, **componentKwargs)
+            try:
+                PointSource.__init__(self, frame, center, observation, symmetric, monotonic,
+                                     centerStep, **componentKwargs)
+            except SourceInitError:
+                # There is really no flux to use for initializing this source,
+                # so just use an empty placeholder.
+                # TODO: In the future we should probably just strip blank
+                # sources from the blend to save processing time, but that
+                # will require keeping track of source indices.
+                BlankSource.__init__(self, frame, center)
+                self.skipped = True
+
         self.detectedPeak = peak
 
     def get_model(self, sed=None, morph=None, observation=None):
