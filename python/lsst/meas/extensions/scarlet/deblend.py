@@ -134,7 +134,7 @@ def deblend(mExposure, footprint, log, config):
     mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
     weights[mask > 0] = 0
 
-    psfs = _computePsfImage(mExposure, footprint.getCentroid()).array
+    psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
     target_psf = _getTargetPsf(psfs.shape)
 
     frame = LsstFrame(images.shape, psfs=target_psf[None])
