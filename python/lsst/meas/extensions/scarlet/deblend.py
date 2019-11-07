@@ -20,7 +20,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
-from scarlet.psf import gaussian
+from scarlet.psf import gaussian, generate_psf_image
 from scarlet.component import BlendFlag
 
 import lsst.log
@@ -64,12 +64,9 @@ def _estimateRMS(exposure, statsMask):
 
 
 def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
-    x = np.arange(shape[2])
-    y = np.arange(shape[1])
-    y0, x0 = (shape[1]-1) // 2, (shape[2]-1) // 2
-    target_psf = gaussian(y, x, y0, x0, 1, sigma).astype(np.float32)
+    target_psf = generate_psf_image(gaussian, shape=shape[1:], amplitude=1, sigma=sigma).image
     target_psf /= target_psf.sum()
-    return target_psf
+    return target_psf.astype(np.float32)
 
 
 def _computePsfImage(self, position=None):
