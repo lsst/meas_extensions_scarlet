@@ -7,6 +7,8 @@ from lsst.afw.geom import SpanSet
 from lsst.geom import Point2I
 import lsst.afw.detection as afwDet
 
+__all__ = ["LsstSource", "LsstHistory"]
+
 
 class LsstSource(ExtendedSource):
     """LSST Base Source

@@ -1,5 +1,7 @@
 from scarlet.blend import Blend
 
+__all__ = ["LsstBlend"]
+
 
 class LsstBlend(Blend):
     """LSST Blend of sources

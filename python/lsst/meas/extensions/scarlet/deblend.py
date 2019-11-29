@@ -18,6 +18,7 @@ from .source import LsstSource, LsstHistory
 from .blend import LsstBlend
 from .observation import LsstFrame, LsstObservation
 
+__all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 
