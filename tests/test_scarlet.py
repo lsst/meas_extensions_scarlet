@@ -164,7 +164,7 @@ class TestLsstBlend(lsst.utils.tests.TestCase):
         for coord in coords:
             foot, peak, bbox = numpyToStack(images, coord, (15, 3))
             sources.append(lmeScarlet.LsstSource(frame, peak, observation, bgRms, bbox, pointSource=True))
-        blend = lmeScarlet.Blend(sources, observation)
+        blend = scarlet.Blend(sources, observation)
         # Try to run for 10 iterations
         # Since the model is already near exact, it should converge
         # on the 2nd iteration (since it doesn't calculate the initial loss)
