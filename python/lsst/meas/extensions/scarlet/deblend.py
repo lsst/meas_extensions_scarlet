@@ -20,16 +20,17 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
-from scarlet.psf import gaussian
+from scarlet.psf import gaussian, generate_psf_image
 from scarlet.component import BlendFlag
 
 import lsst.log
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
-from lsst.geom import Point2D
+from lsst.geom import Point2I, Box2I, Point2D
 import lsst.afw.math as afwMath
 import lsst.afw.geom as afwGeom
 import lsst.afw.geom.ellipses as afwEll
+import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
@@ -63,12 +64,52 @@ def _estimateRMS(exposure, statsMask):
 
 
 def _getTargetPsf(shape, sigma=1/np.sqrt(2)):
-    x = np.arange(shape[2])
-    y = np.arange(shape[1])
-    y0, x0 = (shape[1]-1) // 2, (shape[2]-1) // 2
-    target_psf = gaussian(y, x, y0, x0, 1, sigma).astype(np.float32)
+    target_psf = generate_psf_image(gaussian, shape=shape[1:], amplitude=1, sigma=sigma).image
     target_psf /= target_psf.sum()
-    return target_psf
+    return target_psf.astype(np.float32)
+
+
+def _computePsfImage(self, position=None):
+    """Get a multiband PSF image
+    The PSF Kernel Image is computed for each band
+    and combined into a (filter, y, x) array and stored
+    as `self._psfImage`.
+    The result is not cached, so if the same PSF is expected
+    to be used multiple times it is a good idea to store the
+    result in another variable.
+    Note: this is a temporary fix during the deblender sprint.
+    In the future this function will replace the current method
+    in `afw.MultibandExposure.computePsfImage` (DM-19789).
+    Parameters
+    ----------
+    position: `Point2D` or `tuple`
+        Coordinates to evaluate the PSF. If `position` is `None`
+        then `Psf.getAveragePosition()` is used.
+    Returns
+    -------
+    self._psfImage: array
+        The multiband PSF image.
+    """
+    psfs = []
+    # Make the coordinates into a Point2D (if necessary)
+    if not isinstance(position, Point2D) and position is not None:
+        position = Point2D(position[0], position[1])
+
+    for single in self.singles:
+        if position is None:
+            psf = single.getPsf().computeImage()
+            psfs.append(psf)
+        else:
+            psf = single.getPsf().computeImage(position)
+            psfs.append(psf)
+    left = np.min([psf.getBBox().getMinX() for psf in psfs])
+    bottom = np.min([psf.getBBox().getMinY() for psf in psfs])
+    right = np.max([psf.getBBox().getMaxX() for psf in psfs])
+    top = np.max([psf.getBBox().getMaxY() for psf in psfs])
+    bbox = Box2I(Point2I(left, bottom), Point2I(right, top))
+    psfs = [afwImage.utils.projectImage(psf, bbox) for psf in psfs]
+    psfImage = afwImage.MultibandImage.fromImages(self.filters, psfs)
+    return psfImage
 
 
 def deblend(mExposure, footprint, log, config):
@@ -93,7 +134,7 @@ def deblend(mExposure, footprint, log, config):
     mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
     weights[mask > 0] = 0
 
-    psfs = mExposure.computePsfImage(footprint.getCentroid()).array.astype(np.float32)
+    psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
     target_psf = _getTargetPsf(psfs.shape)
 
     frame = LsstFrame(images.shape, psfs=target_psf[None])
@@ -452,7 +493,9 @@ class ScarletDeblendTask(pipeBase.Task):
             nchild = 0
             for k, source in enumerate(blend.sources):
                 py, px = source.pixel_center
-                if source.morph.sum() == 0 or source.sed.sum() == 0:
+                # Skip any sources with no flux or that scarlet skipped because
+                # it could not initialize
+                if source.skipped or source.morph.sum() == 0 or source.sed.sum() == 0:
                     src.set(self.deblendSkippedKey, True)
                     if not self.config.propagateAllPeaks:
                         # We don't care
