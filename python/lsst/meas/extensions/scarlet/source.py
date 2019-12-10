@@ -66,13 +66,13 @@ class LsstSource(ExtendedSource):
             try:
                 super().__init__(frame, center, observation, bgRms, thresh,
                                  symmetric, monotonic, centerStep, **componentKwargs)
-                initialized = np.any(self.sed>0)
+                initialized = np.any(self.sed > 0)
                 if not initialized:
                     print("Could not initialize")
             # For now scarlet does not throw an error when it cannot initialize
             # So we catch all initialization errors here, even if scarlet
             # doesn't recognize it as a SourceInitError
-            except Exception as e:
+            except Exception:
                 # If the source is too faint for background detection,
                 # initialize it as a PointSource
                 pass
