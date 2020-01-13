@@ -136,9 +136,11 @@ def morphToHeavy(source, peakSchema, xy0=Point2I()):
     tfoot = afwDet.Footprint(ss, peakSchema=peakSchema)
     cy, cx = source.pixel_center
     xmin, ymin = xy0
-    peakFlux = source.morph[cy, cx]
+    # HeavyFootprints are not defined for 64 bit floats
+    morph = source.morph.astype(np.float32)
+    peakFlux = morph[cy, cx]
     tfoot.addPeak(cx+xmin, cy+ymin, peakFlux)
-    timg = afwImage.ImageF(source.morph, xy0=xy0)
+    timg = afwImage.ImageF(morph, xy0=xy0)
     timg = timg[tfoot.getBBox()]
     heavy = afwDet.makeHeavyFootprint(tfoot, afwImage.MaskedImageF(timg))
     return heavy
