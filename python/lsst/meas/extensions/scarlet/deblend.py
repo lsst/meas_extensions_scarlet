@@ -154,7 +154,7 @@ def deblend(mExposure, footprint, config):
     for k, center in enumerate(footprint.peaks):
         source = init_source(frame=frame, peak=center, observation=observation, bbox=bbox,
                              symmetric=config.symmetric, monotonic=config.monotonic,
-                             thresh=config.morphThresh, components=1)
+                             thresh=config.morphThresh, components=1, normalization=config.normalization)
         if source is not None:
             sources.append(source)
         else:
@@ -177,7 +177,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     - Other: Parameters that don't fit into the above categories
     """
     # Stopping Criteria
-    maxIter = pexConfig.Field(dtype=int, default=100,
+    maxIter = pexConfig.Field(dtype=int, default=300,
                               doc=("Maximum number of iterations to deblend a single parent"))
     relativeError = pexConfig.Field(dtype=float, default=1e-3,
                                     doc=("Change in the norm of each parameter between"
@@ -197,6 +197,11 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Constraints
     sparse = pexConfig.Field(dtype=bool, default=True, doc="Make models compact and sparse")
+    normalization = pexConfig.Field(dtype=str, default="max",
+                                    doc="Normalization to use:\n"
+                                        " - 'none': no normalization\n"
+                                        " - 'max': normalize morphology so that the maximum value is 1\n"
+                                        " - 'sum': normalize morphology so that it sums to one")
     morphThresh = pexConfig.Field(dtype=float, default=5,
                                   doc="Fraction of background RMS a pixel must have"
                                       "to be included in the initial morphology")

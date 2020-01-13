@@ -19,8 +19,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from functools import partial
+
 import numpy as np
-from scarlet.source import PointSource, ExtendedSource, MultiComponentSource
+from scarlet.source import PointSource, MultiComponentSource, init_extended_source
+from scarlet.component import FactorizedComponent
+from scarlet.parameter import Parameter, relative_step
+from scarlet.constraint import (PositivityConstraint, MonotonicityConstraint,
+                                SymmetryConstraint, ConstraintChain)
 
 import lsst.afw.image as afwImage
 from lsst.afw.geom import SpanSet
@@ -33,9 +39,103 @@ __all__ = ["init_source", "morphToHeavy", "modelToHeavy"]
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 
 
+class ExtendedSource(FactorizedComponent):
+    def __init__(
+        self,
+        frame,
+        sky_coord,
+        observations,
+        obs_idx=0,
+        thresh=1.0,
+        symmetric=False,
+        monotonic=True,
+        shifting=False,
+        normalization="max"
+    ):
+        """Extended source initialized to match a set of observations
+        Parameters
+        ----------
+        frame: `~scarlet.Frame`
+            The frame of the model
+        sky_coord: tuple
+            Center of the source
+        observations: instance or list of `~scarlet.observation.Observation`
+            Observation(s) to initialize this source.
+        obs_idx: int
+            Index of the observation in `observations` to
+            initialize the morphology.
+        thresh: `float`
+            Multiple of the background RMS used as a
+            flux cutoff for morphology initialization.
+        symmetric: `bool`
+            Whether or not to enforce symmetry.
+        monotonic: `bool`
+            Whether or not to make the object monotonically decrease
+            in flux from the center.
+        shifting: `bool`
+            Whether or not a subpixel shift is added as optimization parameter
+        """
+        assert normalization.lower() in ["none", "max", "sum"]
+        self.symmetric = symmetric
+        self.monotonic = monotonic
+        center = np.array(frame.get_pixel(sky_coord), dtype="float")
+        self.pixel_center = tuple(np.round(center).astype("int"))
+
+        if shifting:
+            shift = Parameter(center - self.pixel_center, name="shift", step=1e-1)
+        else:
+            shift = None
+
+        # initialize from observation
+        sed, morph, bbox = init_extended_source(
+            sky_coord,
+            frame,
+            observations,
+            obs_idx=obs_idx,
+            thresh=thresh,
+            symmetric=True,
+            monotonic=True,
+        )
+
+        sed = Parameter(
+            sed,
+            name="sed",
+            step=partial(relative_step, factor=1e-2),
+            constraint=PositivityConstraint(),
+        )
+
+        constraints = []
+        if monotonic:
+            # most astronomical sources are monotonically decreasing
+            # from their center
+            constraints.append(MonotonicityConstraint())
+        if symmetric:
+            # have 2-fold rotation symmetry around their center ...
+            constraints.append(SymmetryConstraint())
+
+        # ... and are positive emitters
+        constraints.append(PositivityConstraint())
+
+        # break degeneracies between sed and morphology
+        if normalization.lower() != "none":
+            constraints.append(NormalizationConstraint(normalization))
+        morph_constraint = ConstraintChain(*constraints)
+
+        morph = Parameter(morph, name="morph", step=1e-2, constraint=morph_constraint)
+
+        super().__init__(frame, sed, morph, bbox=bbox, shift=shift)
+
+    @property
+    def center(self):
+        if len(self.parameters) == 3:
+            return self.pixel_center + self.shift
+        else:
+            return self.pixel_center
+
+
 def init_source(frame, peak, observation, bbox,
                 symmetric=False, monotonic=True,
-                thresh=5, components=1):
+                thresh=5, components=1, normalization='max'):
     """Initialize a Source
 
     The user can specify the number of desired components
@@ -89,7 +189,7 @@ def init_source(frame, peak, observation, bbox,
     if components == 1:
         try:
             source = ExtendedSource(frame, center, observation, thresh=thresh,
-                                    symmetric=symmetric, monotonic=monotonic)
+                                    symmetric=symmetric, monotonic=monotonic, normalization=normalization)
             if np.any(np.isnan(source.sed)) or np.all(source.sed <= 0):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
