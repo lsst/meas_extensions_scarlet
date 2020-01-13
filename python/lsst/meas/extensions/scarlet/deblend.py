@@ -177,7 +177,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     - Other: Parameters that don't fit into the above categories
     """
     # Stopping Criteria
-    maxIter = pexConfig.Field(dtype=int, default=100,
+    maxIter = pexConfig.Field(dtype=int, default=300,
                               doc=("Maximum number of iterations to deblend a single parent"))
     relativeError = pexConfig.Field(dtype=float, default=1e-3,
                                     doc=("Change in the norm of each parameter between"
