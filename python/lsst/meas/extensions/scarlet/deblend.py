@@ -355,16 +355,17 @@ class ScarletDeblendTask(pipeBase.Task):
         self.morphNotConvergedKey = schema.addField('deblend_morphConvergenceFailed', type='Flag',
                                                     doc='scarlet morph optimization did not converge before'
                                                         'config.maxIter')
-        self.blendConvergenceFailedFlagKey = schema.addField('deblend_blendConvergenceFailedFlag', type='Flag',
-                                                         doc='at least one source in the blend'
-                                                             'failed to converge')
+        self.blendConvergenceFailedFlagKey = schema.addField('deblend_blendConvergenceFailedFlag',
+                                                             type='Flag',
+                                                             doc='at least one source in the blend'
+                                                                 'failed to converge')
         self.sourceConvergenceBitFlagKey = schema.addField('deblend_sourceConvergenceBitFlag', type=np.int32,
-                                                        doc="Flag for parameters that did not converge"
-                                                            "If this is zero, then all of the parameters"
-                                                            "of the source converged, otherwise it"
-                                                            "contains the bit flag for parameters that"
-                                                            "failed, which might differ depending on the"
-                                                            "source type")
+                                                           doc="Flag for parameters that did not converge"
+                                                               "If this is zero, then all of the parameters"
+                                                               "of the source converged, otherwise it"
+                                                               "contains the bit flag for parameters that"
+                                                               "failed, which might differ depending on the"
+                                                               "source type")
         self.edgePixelsKey = schema.addField('deblend_edgePixels', type='Flag',
                                              doc='Source had flux on the edge of the parent footprint')
         self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',

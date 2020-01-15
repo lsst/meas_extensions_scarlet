@@ -42,7 +42,7 @@ def init_source(frame, peak, observation, bbox,
     for the modeled source. If scarlet cannot initialize a
     model with the desired number of components it continues
     to attempt initialization of one fewer component until
-    it finds a model that can be initialized. 
+    it finds a model that can be initialized.
 
     It is possible that scarlet will be unable to initialize a
     source with the desired number of components, for example
@@ -121,7 +121,7 @@ def init_source(frame, peak, observation, bbox,
 
 def checkConvergence(source):
     """Check that a source converged
-    
+
     Parameters
     ----------
     source : `scarlet.Component`
