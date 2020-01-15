@@ -113,12 +113,12 @@ def deblend(mExposure, footprint, config):
 
     Parameters
     ----------
-    mExposure: `MultibandExposure`
+    mExposure : `lsst.image.MultibandExposure`
         - The multiband exposure containing the image,
           mask, and variance data
-    footprint: `Footprint`
+    footprint : `lsst.detection.Footprint`
         - The footprint of the parent to deblend
-    config: `ScarletDeblendConfig`
+    config : `ScarletDeblendConfig`
         - Configuration of the deblending task
     """
     # Extract coordinates from each MultiColorPeak
@@ -128,7 +128,10 @@ def deblend(mExposure, footprint, config):
     images = mExposure.image[:, bbox].array
 
     # Use the inverse variance as the weights
-    weights = 1/mExposure.variance[:, bbox].array
+    if config.useWeights:
+        weights = 1/mExposure.variance[:, bbox].array
+    else:
+        weights = np.ones_like(images)
 
     # Use the mask plane to mask bad pixels and
     # the footprint to mask out pixels outside the footprint
@@ -142,7 +145,7 @@ def deblend(mExposure, footprint, config):
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
     psfShape = (config.modelPsfSize, config.modelPsfSize)
-    model_psf = PSF(partial(gaussian, sigma=.8), shape=(None,)+psfShape)
+    model_psf = PSF(partial(gaussian, sigma=config.modelPsfSigma), shape=(None,)+psfShape)
 
     frame = LsstFrame(images.shape, psfs=model_psf, channels=mExposure.filters)
     observation = LsstObservation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
@@ -209,13 +212,20 @@ class ScarletDeblendConfig(pexConfig.Config):
                                           "If 'S' is not in `constraints`, this argument is ignored"))
 
     # Other scarlet paremeters
+    useWeights = pexConfig.Field(
+        dtype=bool, default=True,
+        doc=("Whether or not use use inverse variance weighting."
+             "If `useWeights` is `False` then flat weights are used"))
     usePsfConvolution = pexConfig.Field(
         dtype=bool, default=True,
         doc=("Whether or not to convolve the morphology with the"
              "PSF in each band or use the same morphology in all bands"))
     modelPsfSize = pexConfig.Field(
         dtype=int, default=11,
-        doc="The model PSF will be (modelPsfSize, modelPsfSize)")
+        doc="Model PSF side length in pixels")
+    modelPsfSigma = pexConfig.Field(
+        dtype=float, default=0.8,
+        doc="Define sigma for the model frame PSF")
     saveTemplates = pexConfig.Field(
         dtype=bool, default=True,
         doc="Whether or not to save the SEDs and templates")
@@ -345,10 +355,10 @@ class ScarletDeblendTask(pipeBase.Task):
         self.morphNotConvergedKey = schema.addField('deblend_morphConvergenceFailed', type='Flag',
                                                     doc='scarlet morph optimization did not converge before'
                                                         'config.maxIter')
-        self.blendConvergenceFailedKey = schema.addField('deblend_blendConvergenceFailed', type='Flag',
+        self.blendConvergenceFailedFlagKey = schema.addField('deblend_blendConvergenceFailedFlag', type='Flag',
                                                          doc='at least one source in the blend'
                                                              'failed to converge')
-        self.sourceConvergenceFlagKey = schema.addField('deblend_sourceConvergenceFlag', type=np.int32,
+        self.sourceConvergenceBitFlagKey = schema.addField('deblend_sourceConvergenceBitFlag', type=np.int32,
                                                         doc="Flag for parameters that did not converge"
                                                             "If this is zero, then all of the parameters"
                                                             "of the source converged, otherwise it"
@@ -494,7 +504,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
                 converged = checkBlendConvergence(blend, self.config.relativeLoss)
-                src.set(self.blendConvergenceFailedKey, converged)
+                src.set(self.blendConvergenceFailedFlagKey, converged)
                 sources = [src for src in blend.sources]
                 # Re-insert place holders for skipped sources
                 # to propagate them in the catalog so
@@ -651,8 +661,8 @@ class ScarletDeblendTask(pipeBase.Task):
         src.setFootprint(heavy)
         src.set(self.psfKey, False)
         src.set(self.runtimeKey, 0)
-        src.set(self.blendConvergenceFailedKey, not blend_converged)
-        src.set(self.sourceConvergenceFlagKey, checkConvergence(scarlet_source))
+        src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
+        src.set(self.sourceConvergenceBitFlagKey, checkConvergence(scarlet_source))
         if isinstance(scarlet_source, ExtendedSource) or isinstance(scarlet_source, MultiComponentSource):
             cy, cx = scarlet_source.pixel_center
         elif isinstance(scarlet_source, PointSource):

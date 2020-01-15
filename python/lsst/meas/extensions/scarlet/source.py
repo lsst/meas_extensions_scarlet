@@ -42,9 +42,18 @@ def init_source(frame, peak, observation, bbox,
     for the modeled source. If scarlet cannot initialize a
     model with the desired number of components it continues
     to attempt initialization of one fewer component until
-    it finds a model that can be initialized. If all of the
-    models fail, including a `PointSource` model, then skip
-    the source.
+    it finds a model that can be initialized. 
+
+    It is possible that scarlet will be unable to initialize a
+    source with the desired number of components, for example
+    a two component source might have degenerate components,
+    a single component source might not have enough signal in
+    the joint coadd (all bands combined together into
+    single signal-to-noise weighted image for initialization)
+    to initialize, and a true spurious detection will not have
+    enough signal to initialize as a point source.
+    If all of the models fail, including a `PointSource` model,
+    then this source is skipped.
 
     Parameters
     ----------
@@ -112,6 +121,16 @@ def init_source(frame, peak, observation, bbox,
 
 def checkConvergence(source):
     """Check that a source converged
+    
+    Parameters
+    ----------
+    source : `scarlet.Component`
+        The scarlet source to check for convergence.
+
+    Returns
+    -------
+    converged : `bool`
+        Whether or not the `source` has converged
     """
     converged = 0
     if hasattr(source, "components"):
@@ -126,6 +145,21 @@ def checkConvergence(source):
 
 def morphToHeavy(source, peakSchema, xy0=Point2I()):
     """Convert the morphology to a `HeavyFootprint`
+
+    Parameters
+    ----------
+    source: `scarlet.Component`
+        The scarlet source with a morphology to convert to
+        a `HeavyFootprint`.
+    peakSchema: `lsst.daf.butler.Schema`
+        The schema for the `PeakCatalog` of the `HeavyFootprint`.
+    xy0: `tuple`
+        `(x,y)` coordinates of the bounding box containing the
+        `HeavyFootprint`.
+
+    Returns
+    -------
+    heavy : `lsst.afw.detection.HeavyFootprint`
     """
     mask = afwImage.MaskX(np.array(source.morph > 0, dtype=np.int32), xy0=xy0)
     ss = SpanSet.fromMask(mask)
@@ -148,6 +182,27 @@ def morphToHeavy(source, peakSchema, xy0=Point2I()):
 
 def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.float32):
     """Convert the model to a `MultibandFootprint`
+
+    Parameters
+    ----------
+    source : `scarlet.Component`
+        The source to convert to a `HeavyFootprint`.
+    filters : `iterable`
+        A "list" of names for each filter.
+    xy0: `lsst.geom.Point2I`
+        `(x,y)` coordinates of the bounding box containing the
+        `HeavyFootprint`.
+    observation: `scarlet.Observation`
+        The scarlet observation, used to convolve the image with
+        the origin PSF. If `observation`` is `None` then the
+        `HeavyFootprint` will exist in the model frame.
+    dtype: `numpy.dtype`
+        The data type for the returned `HeavyFootprint`.
+
+    Returns
+    -------
+    mHeavy: `lsst.detection.MultibandFootprint`
+        The multi-band footprint containing the model for the source.
     """
     if observation is not None:
         model = observation.render(source.get_model()).astype(dtype)
