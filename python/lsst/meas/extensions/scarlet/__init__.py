@@ -25,3 +25,4 @@ from .observation import *
 from .source import *
 from .blend import *
 from . import deblend
+from .version import *

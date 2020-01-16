@@ -78,7 +78,7 @@ def _computePsfImage(self, position=None):
     in `afw.MultibandExposure.computePsfImage` (DM-19789).
     Parameters
     ----------
-    position: `Point2D` or `tuple`
+    position : `Point2D` or `tuple`
         Coordinates to evaluate the PSF. If `position` is `None`
         then `Psf.getAveragePosition()` is used.
     Returns
@@ -294,14 +294,14 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        schema: `lsst.afw.table.schema.schema.Schema`
+        schema : `lsst.afw.table.schema.schema.Schema`
             Schema object for measurement fields; will be modified in-place.
-        peakSchema: `lsst.afw.table.schema.schema.Schema`
+        peakSchema : `lsst.afw.table.schema.schema.Schema`
             Schema of Footprint Peaks that will be passed to the deblender.
             Any fields beyond the PeakTable minimal schema will be transferred
             to the main source Schema.  If None, no fields will be transferred
             from the Peaks.
-        filters: list of str
+        filters : list of str
             Names of the filters used for the eposures. This is needed to store
             the SED as a field
         **kwargs
@@ -388,10 +388,10 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        mExposure: `MultibandExposure`
+        mExposure : `MultibandExposure`
             The exposures should be co-added images of the same
             shape and region of the sky.
-        mergedSources: `SourceCatalog`
+        mergedSources : `SourceCatalog`
             The merged `SourceCatalog` that contains parent footprints
             to (potentially) deblend.
 
@@ -420,23 +420,23 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        mExposure: `MultibandExposure`
+        mExposure : `MultibandExposure`
             The exposures should be co-added images of the same
             shape and region of the sky.
-        sources: `SourceCatalog`
+        sources : `SourceCatalog`
             The merged `SourceCatalog` that contains parent footprints
             to (potentially) deblend.
 
         Returns
         -------
-        fluxCatalogs: dict or None
+        fluxCatalogs : dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are the flux-conserved catalogs with heavy footprints with
             the image data weighted by the multiband templates.
             If `self.config.conserveFlux` is `False`, then this item will be
             None
-        templateCatalogs: dict or None
+        templateCatalogs : dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
@@ -634,9 +634,9 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        source: `lsst.afw.table.source.source.SourceRecord`
+        source : `lsst.afw.table.source.source.SourceRecord`
             The source to flag as skipped
-        masks: list of `lsst.afw.image.MaskX`
+        masks : list of `lsst.afw.image.MaskX`
             The mask in each band to update with the non-detection
         """
         fp = source.getFootprint()

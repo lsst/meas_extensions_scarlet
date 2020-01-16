@@ -57,23 +57,23 @@ def init_source(frame, peak, observation, bbox,
 
     Parameters
     ----------
-    frame: `LsstFrame`
+    frame : `LsstFrame`
         The model frame for the scene
-    peak: `PeakRecord`
+    peak : `PeakRecord`
         Record for a peak in the parent `PeakCatalog`
-    observation: `LsstObservation`
+    observation : `LsstObservation`
         The images, psfs, etc, of the observed data.
-    bbox: `Rect`
+    bbox : `lsst.geom.Box2I`
         The bounding box of the parent footprint.
-    symmetric: `bool`
+    symmetric : `bool`
         Whether or not the object is symmetric
-    monotonic: `bool`
+    monotonic : `bool`
         Whether or not the object has flux monotonically
         decreasing from its center
-    thresh: `float`
+    thresh : `float`
         Fraction of the background to use as a threshold for
         each pixel in the initialization
-    components: int
+    components : int
         The number of components for the source.
         If `components=0` then a `PointSource` model is used.
     """
@@ -148,12 +148,12 @@ def morphToHeavy(source, peakSchema, xy0=Point2I()):
 
     Parameters
     ----------
-    source: `scarlet.Component`
+    source : `scarlet.Component`
         The scarlet source with a morphology to convert to
         a `HeavyFootprint`.
-    peakSchema: `lsst.daf.butler.Schema`
+    peakSchema : `lsst.daf.butler.Schema`
         The schema for the `PeakCatalog` of the `HeavyFootprint`.
-    xy0: `tuple`
+    xy0 : `tuple`
         `(x,y)` coordinates of the bounding box containing the
         `HeavyFootprint`.
 
@@ -189,19 +189,19 @@ def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.floa
         The source to convert to a `HeavyFootprint`.
     filters : `iterable`
         A "list" of names for each filter.
-    xy0: `lsst.geom.Point2I`
+    xy0 : `lsst.geom.Point2I`
         `(x,y)` coordinates of the bounding box containing the
         `HeavyFootprint`.
-    observation: `scarlet.Observation`
+    observation : `scarlet.Observation`
         The scarlet observation, used to convolve the image with
         the origin PSF. If `observation`` is `None` then the
         `HeavyFootprint` will exist in the model frame.
-    dtype: `numpy.dtype`
+    dtype : `numpy.dtype`
         The data type for the returned `HeavyFootprint`.
 
     Returns
     -------
-    mHeavy: `lsst.detection.MultibandFootprint`
+    mHeavy : `lsst.detection.MultibandFootprint`
         The multi-band footprint containing the model for the source.
     """
     if observation is not None:
