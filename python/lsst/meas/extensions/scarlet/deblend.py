@@ -200,7 +200,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Constraints
     sparse = pexConfig.Field(dtype=bool, default=True, doc="Make models compact and sparse")
-    morphThresh = pexConfig.Field(dtype=float, default=5,
+    morphThresh = pexConfig.Field(dtype=float, default=1,
                                   doc="Fraction of background RMS a pixel must have"
                                       "to be included in the initial morphology")
     monotonic = pexConfig.Field(dtype=bool, default=True, doc="Make models monotonic")
