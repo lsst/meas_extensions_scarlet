@@ -26,7 +26,7 @@ import numpy as np
 import lsst.utils.tests
 import lsst.afw.image as afwImage
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet import ScarletDeblendTask
+from lsst.meas.extensions.scarlet.deblend import ScarletDeblendTask
 from lsst.afw.table import SourceCatalog
 
 
@@ -63,7 +63,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         detectionTask = SourceDetectionTask(schema=schema)
         config = ScarletDeblendTask.ConfigClass()
-        config.maxIter = 200
+        config.maxIter = 300
         deblendTask = ScarletDeblendTask(schema=schema, config=config)
 
         table = SourceCatalog.Table.make(schema)
@@ -71,12 +71,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         catalog = detectionResult.sources
         self.assertEqual(len(catalog), 1)
         _, result = deblendTask.run(coadds, catalog)
-
-        # Changes to the internal workings of scarlet will change these results
-        # however we include these tests just to track changes
-        parent = result["r"][0]
-        self.assertEqual(parent["iterations"], 13)
-        self.assertEqual(parent["deblend_nChild"], 3)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
