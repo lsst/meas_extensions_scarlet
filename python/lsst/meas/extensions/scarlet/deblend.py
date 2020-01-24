@@ -108,6 +108,31 @@ def _computePsfImage(self, position=None):
     return psfImage
 
 
+def getFootprintMask(footprint, mExposure, config):
+    """Mask pixels outside the footprint
+
+    Parameters
+    ----------
+    mExposure : `lsst.image.MultibandExposure`
+        - The multiband exposure containing the image,
+          mask, and variance data
+    footprint : `lsst.detection.Footprint`
+        - The footprint of the parent to deblend
+    config : `ScarletDeblendConfig`
+        - Configuration of the deblending task
+
+    Returns
+    -------
+    footprintMask : array
+        Boolean array with pixels not in the footprint set to one.
+    """
+    bbox = fp.getBBox()
+    fpMask = afwImage.Mask(bbox)
+    footprint.spans.setMask(fpMask, 1)
+    fpMask = ~fpMask.getArray().astype(bool)
+    return fpMask
+
+
 def deblend(mExposure, footprint, config):
     """Deblend a parent footprint
 
@@ -133,15 +158,9 @@ def deblend(mExposure, footprint, config):
     else:
         weights = np.ones_like(images)
 
-    # Use the mask plane to mask bad pixels and
-    # the footprint to mask out pixels outside the footprint
-    # TODO: check to see if this is necessary now that weights are being used
-    fpMask = afwImage.Mask(bbox)
-    footprint.spans.setMask(fpMask, 1)
-    fpMask = ~fpMask.getArray().astype(bool)
-    badPixels = mExposure.mask.getPlaneBitMask(config.badMask)
-    mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
-    weights[mask > 0] = 0
+    # Mask out the pixels outside the footprint
+    mask = getFootprintMask(footprint, mExposure, config)
+    weights *= ~mask
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
     psfShape = (config.modelPsfSize, config.modelPsfSize)
