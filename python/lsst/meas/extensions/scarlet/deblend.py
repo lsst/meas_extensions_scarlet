@@ -151,13 +151,29 @@ def deblend(mExposure, footprint, config):
     observation = LsstObservation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
     observation.match(frame)
 
+    assert(config.sourceModel in ["single", "double", "point", "fit"])
+
     # Only deblend sources that can be initialized
     sources = []
     skipped = []
     for k, center in enumerate(footprint.peaks):
+        if config.sourceModel == "single":
+            components = 1
+        elif config.sourceModel == "double":
+            components = 2
+        elif config.sourceModel == "point":
+            components = 0
+        elif config.sourceModel == "fit":
+            # It is likely in the future that there will be some heuristic
+            # used to determine what type of model to use for each source,
+            # but that has not yet been implemented (see DM-22551)
+            raise NotImplementedError("sourceModel 'fit' has not been implemented yet")
+        else:
+            raise ValueError("Unrecognized sourceModel")
+
         source = init_source(frame=frame, peak=center, observation=observation, bbox=bbox,
                              symmetric=config.symmetric, monotonic=config.monotonic,
-                             thresh=config.morphThresh, components=1)
+                             thresh=config.morphThresh, components=components)
         if source is not None:
             sources.append(source)
         else:
@@ -234,6 +250,14 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Whether or not to process isolated sources in the deblender")
     storeHistory = pexConfig.Field(dtype=bool, default=False,
                                    doc="Whether or not to store the history for each source")
+    sourceModel = pexConfig.Field(
+        dtype=str, default="single",
+        doc=("How to determine which model to use for sources, from\n"
+             "- 'single': use a single component for all sources\n"
+             "- 'double': use a bulge disk model for all sources\n"
+             "- 'point: use a point-source model for all sources\n"
+             "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
+    )
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
@@ -378,6 +402,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                                          unit="pixel")
         self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
+        self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
+                                            doc="The type of model used, for example "
+                                                "MultiComponentSource, ExtendedSource, PointSource")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -664,10 +691,15 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
         src.set(self.sourceConvergenceBitFlagKey, checkConvergence(scarlet_source))
-        if isinstance(scarlet_source, ExtendedSource) or isinstance(scarlet_source, MultiComponentSource):
+        if isinstance(scarlet_source, ExtendedSource):
             cy, cx = scarlet_source.pixel_center
+            morph = scarlet_source.morph
+        elif isinstance(scarlet_source, MultiComponentSource):
+            cy, cx = scarlet_source.components[0].pixel_center
+            morph = scarlet_source.components[0].morph
         elif isinstance(scarlet_source, PointSource):
             cy, cx = scarlet_source.parameters[1]
+            morph = scarlet_source.morph
         else:
             msg = "Did not recognize source type of `{0}`, could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
@@ -675,8 +707,8 @@ class ScarletDeblendTask(pipeBase.Task):
             return src
         xmin, ymin = xy0
         src.set(self.modelCenter, Point2D(cx+xmin, cy+ymin))
-        morph = scarlet_source.morph
         cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
         cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
         src.set(self.modelCenterFlux, morph[cy, cx])
+        src.set(self.modelTypeKey, scarlet_source.__class__.__name__)
         return src

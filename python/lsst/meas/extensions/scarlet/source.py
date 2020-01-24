@@ -86,10 +86,11 @@ def init_source(frame, peak, observation, bbox,
         try:
             source = MultiComponentSource(frame, center, observation, symmetric=symmetric,
                                           monotonic=monotonic, thresh=thresh)
-            if (np.any([np.isnan(c.sed) for c in components]) or
-                    np.all([c.sed <= 0 for c in source.components])):
+            if (np.any([np.any(np.isnan(c.sed)) for c in source.components]) or
+                    np.any([np.all(c.sed) <= 0 for c in source.components])):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
+            break
         except Exception:
             # If the MultiComponentSource failed to initialize
             # try an ExtendedSource
@@ -99,7 +100,7 @@ def init_source(frame, peak, observation, bbox,
         try:
             source = ExtendedSource(frame, center, observation, thresh=thresh,
                                     symmetric=symmetric, monotonic=monotonic)
-            if np.any(np.isnan(source.sed)) or np.all(source.sed <= 0):
+            if np.any(np.isnan(source.sed)) or np.all(source.sed <= 0) or np.sum(source.morph) == 0:
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
         except Exception:
