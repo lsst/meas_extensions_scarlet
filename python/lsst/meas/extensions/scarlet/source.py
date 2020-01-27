@@ -120,30 +120,6 @@ def init_source(frame, peak, observation, bbox,
     return source
 
 
-def checkConvergence(source):
-    """Check that a source converged
-
-    Parameters
-    ----------
-    source : `scarlet.Component`
-        The scarlet source to check for convergence.
-
-    Returns
-    -------
-    converged : `bool`
-        Whether or not the `source` has converged
-    """
-    converged = 0
-    if hasattr(source, "components"):
-        for component in source.components:
-            converged = converged & checkConvergence(component)
-    else:
-        for p, parameter in enumerate(source.parameters):
-            if not parameter.converged:
-                converged += 2 << p
-    return converged
-
-
 def morphToHeavy(source, peakSchema, xy0=Point2I()):
     """Convert the morphology to a `HeavyFootprint`
 

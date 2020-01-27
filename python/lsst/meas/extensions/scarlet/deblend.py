@@ -37,7 +37,7 @@ import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
-from .source import init_source, checkConvergence, modelToHeavy
+from .source import init_source, modelToHeavy
 from .blend import LsstBlend, checkBlendConvergence
 from .observation import LsstFrame, LsstObservation
 
@@ -126,7 +126,7 @@ def getFootprintMask(footprint, mExposure, config):
     footprintMask : array
         Boolean array with pixels not in the footprint set to one.
     """
-    bbox = fp.getBBox()
+    bbox = footprint.getBBox()
     fpMask = afwImage.Mask(bbox)
     footprint.spans.setMask(fpMask, 1)
     fpMask = ~fpMask.getArray().astype(bool)
@@ -199,7 +199,7 @@ def deblend(mExposure, footprint, config):
             skipped.append(k)
 
     blend = LsstBlend(sources, observation)
-    blend.fit(max_iter=config.maxIter, e_rel=config.relativeError, f_rel=config.relativeLoss)
+    blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
 
     return blend, skipped
 
@@ -217,12 +217,9 @@ class ScarletDeblendConfig(pexConfig.Config):
     # Stopping Criteria
     maxIter = pexConfig.Field(dtype=int, default=300,
                               doc=("Maximum number of iterations to deblend a single parent"))
-    relativeError = pexConfig.Field(dtype=float, default=1e-3,
-                                    doc=("Change in the norm of each parameter between"
+    relativeError = pexConfig.Field(dtype=float, default=1e-4,
+                                    doc=("Change in the loss function between"
                                          "iterations to exit fitter"))
-    relativeLoss = pexConfig.Field(dtype=float, default=1e-4,
-                                   doc=("Change in the loss function between"
-                                        "iterations to exit fitter"))
 
     # Blend Configuration options
     recenterPeriod = pexConfig.Field(dtype=int, default=5,
@@ -402,13 +399,6 @@ class ScarletDeblendTask(pipeBase.Task):
                                                              type='Flag',
                                                              doc='at least one source in the blend'
                                                                  'failed to converge')
-        self.sourceConvergenceBitFlagKey = schema.addField('deblend_sourceConvergenceBitFlag', type=np.int32,
-                                                           doc="Flag for parameters that did not converge"
-                                                               "If this is zero, then all of the parameters"
-                                                               "of the source converged, otherwise it"
-                                                               "contains the bit flag for parameters that"
-                                                               "failed, which might differ depending on the"
-                                                               "source type")
         self.edgePixelsKey = schema.addField('deblend_edgePixels', type='Flag',
                                              doc='Source had flux on the edge of the parent footprint')
         self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',
@@ -550,7 +540,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 runtime = (tf-t0)*1000
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
-                converged = checkBlendConvergence(blend, self.config.relativeLoss)
+                converged = checkBlendConvergence(blend, self.config.relativeError)
                 src.set(self.blendConvergenceFailedFlagKey, converged)
                 sources = [src for src in blend.sources]
                 # Re-insert place holders for skipped sources
@@ -709,7 +699,6 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.psfKey, False)
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
-        src.set(self.sourceConvergenceBitFlagKey, checkConvergence(scarlet_source))
         if isinstance(scarlet_source, ExtendedSource):
             cy, cx = scarlet_source.pixel_center
             morph = scarlet_source.morph
