@@ -37,7 +37,7 @@ import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
-from .source import init_source, checkConvergence, modelToHeavy
+from .source import init_source, modelToHeavy
 from .blend import LsstBlend, checkBlendConvergence
 from .observation import LsstFrame, LsstObservation
 
@@ -108,6 +108,31 @@ def _computePsfImage(self, position=None):
     return psfImage
 
 
+def getFootprintMask(footprint, mExposure, config):
+    """Mask pixels outside the footprint
+
+    Parameters
+    ----------
+    mExposure : `lsst.image.MultibandExposure`
+        - The multiband exposure containing the image,
+          mask, and variance data
+    footprint : `lsst.detection.Footprint`
+        - The footprint of the parent to deblend
+    config : `ScarletDeblendConfig`
+        - Configuration of the deblending task
+
+    Returns
+    -------
+    footprintMask : array
+        Boolean array with pixels not in the footprint set to one.
+    """
+    bbox = footprint.getBBox()
+    fpMask = afwImage.Mask(bbox)
+    footprint.spans.setMask(fpMask, 1)
+    fpMask = ~fpMask.getArray().astype(bool)
+    return fpMask
+
+
 def deblend(mExposure, footprint, config):
     """Deblend a parent footprint
 
@@ -133,15 +158,9 @@ def deblend(mExposure, footprint, config):
     else:
         weights = np.ones_like(images)
 
-    # Use the mask plane to mask bad pixels and
-    # the footprint to mask out pixels outside the footprint
-    # TODO: check to see if this is necessary now that weights are being used
-    fpMask = afwImage.Mask(bbox)
-    footprint.spans.setMask(fpMask, 1)
-    fpMask = ~fpMask.getArray().astype(bool)
-    badPixels = mExposure.mask.getPlaneBitMask(config.badMask)
-    mask = (mExposure.mask[:, bbox].array & badPixels) | fpMask[None, :]
-    weights[mask > 0] = 0
+    # Mask out the pixels outside the footprint
+    mask = getFootprintMask(footprint, mExposure, config)
+    weights *= ~mask
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
     psfShape = (config.modelPsfSize, config.modelPsfSize)
@@ -151,20 +170,36 @@ def deblend(mExposure, footprint, config):
     observation = LsstObservation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
     observation.match(frame)
 
+    assert(config.sourceModel in ["single", "double", "point", "fit"])
+
     # Only deblend sources that can be initialized
     sources = []
     skipped = []
     for k, center in enumerate(footprint.peaks):
+        if config.sourceModel == "single":
+            components = 1
+        elif config.sourceModel == "double":
+            components = 2
+        elif config.sourceModel == "point":
+            components = 0
+        elif config.sourceModel == "fit":
+            # It is likely in the future that there will be some heuristic
+            # used to determine what type of model to use for each source,
+            # but that has not yet been implemented (see DM-22551)
+            raise NotImplementedError("sourceModel 'fit' has not been implemented yet")
+        else:
+            raise ValueError("Unrecognized sourceModel")
+
         source = init_source(frame=frame, peak=center, observation=observation, bbox=bbox,
                              symmetric=config.symmetric, monotonic=config.monotonic,
-                             thresh=config.morphThresh, components=1)
+                             thresh=config.morphThresh, components=components)
         if source is not None:
             sources.append(source)
         else:
             skipped.append(k)
 
     blend = LsstBlend(sources, observation)
-    blend.fit(max_iter=config.maxIter, e_rel=config.relativeError, f_rel=config.relativeLoss)
+    blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
 
     return blend, skipped
 
@@ -182,12 +217,9 @@ class ScarletDeblendConfig(pexConfig.Config):
     # Stopping Criteria
     maxIter = pexConfig.Field(dtype=int, default=300,
                               doc=("Maximum number of iterations to deblend a single parent"))
-    relativeError = pexConfig.Field(dtype=float, default=1e-3,
-                                    doc=("Change in the norm of each parameter between"
+    relativeError = pexConfig.Field(dtype=float, default=1e-4,
+                                    doc=("Change in the loss function between"
                                          "iterations to exit fitter"))
-    relativeLoss = pexConfig.Field(dtype=float, default=1e-4,
-                                   doc=("Change in the loss function between"
-                                        "iterations to exit fitter"))
 
     # Blend Configuration options
     recenterPeriod = pexConfig.Field(dtype=int, default=5,
@@ -234,6 +266,14 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Whether or not to process isolated sources in the deblender")
     storeHistory = pexConfig.Field(dtype=bool, default=False,
                                    doc="Whether or not to store the history for each source")
+    sourceModel = pexConfig.Field(
+        dtype=str, default="single",
+        doc=("How to determine which model to use for sources, from\n"
+             "- 'single': use a single component for all sources\n"
+             "- 'double': use a bulge disk model for all sources\n"
+             "- 'point: use a point-source model for all sources\n"
+             "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
+    )
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
@@ -359,13 +399,6 @@ class ScarletDeblendTask(pipeBase.Task):
                                                              type='Flag',
                                                              doc='at least one source in the blend'
                                                                  'failed to converge')
-        self.sourceConvergenceBitFlagKey = schema.addField('deblend_sourceConvergenceBitFlag', type=np.int32,
-                                                           doc="Flag for parameters that did not converge"
-                                                               "If this is zero, then all of the parameters"
-                                                               "of the source converged, otherwise it"
-                                                               "contains the bit flag for parameters that"
-                                                               "failed, which might differ depending on the"
-                                                               "source type")
         self.edgePixelsKey = schema.addField('deblend_edgePixels', type='Flag',
                                              doc='Source had flux on the edge of the parent footprint')
         self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',
@@ -378,6 +411,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                                          unit="pixel")
         self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
+        self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
+                                            doc="The type of model used, for example "
+                                                "MultiComponentSource, ExtendedSource, PointSource")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -504,7 +540,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 runtime = (tf-t0)*1000
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
-                converged = checkBlendConvergence(blend, self.config.relativeLoss)
+                converged = checkBlendConvergence(blend, self.config.relativeError)
                 src.set(self.blendConvergenceFailedFlagKey, converged)
                 sources = [src for src in blend.sources]
                 # Re-insert place holders for skipped sources
@@ -663,11 +699,15 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.psfKey, False)
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
-        src.set(self.sourceConvergenceBitFlagKey, checkConvergence(scarlet_source))
-        if isinstance(scarlet_source, ExtendedSource) or isinstance(scarlet_source, MultiComponentSource):
+        if isinstance(scarlet_source, ExtendedSource):
             cy, cx = scarlet_source.pixel_center
+            morph = scarlet_source.morph
+        elif isinstance(scarlet_source, MultiComponentSource):
+            cy, cx = scarlet_source.components[0].pixel_center
+            morph = scarlet_source.components[0].morph
         elif isinstance(scarlet_source, PointSource):
             cy, cx = scarlet_source.parameters[1]
+            morph = scarlet_source.morph
         else:
             msg = "Did not recognize source type of `{0}`, could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
@@ -675,8 +715,8 @@ class ScarletDeblendTask(pipeBase.Task):
             return src
         xmin, ymin = xy0
         src.set(self.modelCenter, Point2D(cx+xmin, cy+ymin))
-        morph = scarlet_source.morph
         cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
         cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
         src.set(self.modelCenterFlux, morph[cy, cx])
+        src.set(self.modelTypeKey, scarlet_source.__class__.__name__)
         return src
