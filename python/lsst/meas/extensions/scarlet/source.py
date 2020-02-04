@@ -87,7 +87,7 @@ def init_source(frame, peak, observation, bbox,
             source = MultiComponentSource(frame, center, observation, symmetric=symmetric,
                                           monotonic=monotonic, thresh=thresh)
             if (np.any([np.any(np.isnan(c.sed)) for c in source.components]) or
-                    np.any([np.all(c.sed) <= 0 for c in source.components])):
+                    np.any([np.all(c.sed <= 0) for c in source.components])):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
             break
