@@ -28,12 +28,12 @@ from lsst.geom import Point2I
 import lsst.log
 import lsst.afw.detection as afwDet
 
-__all__ = ["init_source", "morphToHeavy", "modelToHeavy"]
+__all__ = ["initSource", "morphToHeavy", "modelToHeavy"]
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 
 
-def init_source(frame, peak, observation, bbox,
+def initSource(frame, peak, observation, bbox,
                 symmetric=False, monotonic=True,
                 thresh=5, components=1):
     """Initialize a Source

@@ -62,7 +62,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         # init stack objects
         foot, peak, bbox = numpyToStack(images, center, (15, 3))
         # init source
-        src = mes.source.init_source(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
+        src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
 
         self.assertFloatsAlmostEqual(src.sed/3, trueSed)
         self.assertFloatsAlmostEqual(src.morph*3, trueMorph, rtol=1e-7)
@@ -81,7 +81,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         frame = mes.LsstFrame(shape, psfs=targetPsfImage[None])
         observation = mes.LsstObservation(images, psfs=psfImages).match(frame)
         foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
-        src = mes.source.init_source(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
+        src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
         # Get the HeavyFootprint
         peakSchema = PeakTable.makeMinimalSchema()
         hFoot = mes.morphToHeavy(src, peakSchema=peakSchema)

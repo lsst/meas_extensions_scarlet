@@ -37,7 +37,7 @@ import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
-from .source import init_source, modelToHeavy
+from .source import initSource, modelToHeavy
 from .blend import LsstBlend, checkBlendConvergence
 from .observation import LsstFrame, LsstObservation
 
@@ -190,7 +190,7 @@ def deblend(mExposure, footprint, config):
         else:
             raise ValueError("Unrecognized sourceModel")
 
-        source = init_source(frame=frame, peak=center, observation=observation, bbox=bbox,
+        source = initSource(frame=frame, peak=center, observation=observation, bbox=bbox,
                              symmetric=config.symmetric, monotonic=config.monotonic,
                              thresh=config.morphThresh, components=components)
         if source is not None:
