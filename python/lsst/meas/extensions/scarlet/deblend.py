@@ -22,6 +22,7 @@
 from functools import partial
 
 import numpy as np
+import scarlet
 from scarlet.psf import PSF, gaussian
 from scarlet import PointSource, ExtendedSource, MultiComponentSource
 
@@ -108,7 +109,7 @@ def _computePsfImage(self, position=None):
     return psfImage
 
 
-def getFootprintMask(footprint, mExposure, config):
+def getFootprintMask(footprint, mExposure):
     """Mask pixels outside the footprint
 
     Parameters
@@ -118,8 +119,6 @@ def getFootprintMask(footprint, mExposure, config):
           mask, and variance data
     footprint : `lsst.detection.Footprint`
         - The footprint of the parent to deblend
-    config : `ScarletDeblendConfig`
-        - Configuration of the deblending task
 
     Returns
     -------
@@ -159,7 +158,7 @@ def deblend(mExposure, footprint, config):
         weights = np.ones_like(images)
 
     # Mask out the pixels outside the footprint
-    mask = getFootprintMask(footprint, mExposure, config)
+    mask = getFootprintMask(footprint, mExposure)
     weights *= ~mask
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
@@ -191,8 +190,9 @@ def deblend(mExposure, footprint, config):
             raise ValueError("Unrecognized sourceModel")
 
         source = initSource(frame=frame, peak=center, observation=observation, bbox=bbox,
-                             symmetric=config.symmetric, monotonic=config.monotonic,
-                             thresh=config.morphThresh, components=components)
+                            symmetric=config.symmetric, monotonic=config.monotonic,
+                            thresh=config.morphThresh, components=components,
+                            edgeDistance=config.edgeDistance, shifting=False)
         if source is not None:
             sources.append(source)
         else:
@@ -222,36 +222,22 @@ class ScarletDeblendConfig(pexConfig.Config):
                                          "iterations to exit fitter"))
 
     # Blend Configuration options
-    recenterPeriod = pexConfig.Field(dtype=int, default=5,
-                                     doc=("Number of iterations between recentering"))
-    exactLipschitz = pexConfig.Field(dtype=bool, default=True,
-                                     doc=("Calculate exact Lipschitz constant in every step"
-                                          "(True) or only calculate the approximate"
-                                          "Lipschitz constant with significant changes in A,S"
-                                          "(False)"))
+    edgeDistance = pexConfig.Field(dtype=int, default=1,
+                                   doc="All sources with flux within `edgeDistance` from the edge "
+                                       "will be considered edge sources.")
 
     # Constraints
-    sparse = pexConfig.Field(dtype=bool, default=True, doc="Make models compact and sparse")
     morphThresh = pexConfig.Field(dtype=float, default=1,
                                   doc="Fraction of background RMS a pixel must have"
                                       "to be included in the initial morphology")
     monotonic = pexConfig.Field(dtype=bool, default=True, doc="Make models monotonic")
     symmetric = pexConfig.Field(dtype=bool, default=False, doc="Make models symmetric")
-    symmetryThresh = pexConfig.Field(dtype=float, default=1.0,
-                                     doc=("Strictness of symmetry, from"
-                                          "0 (no symmetry enforced) to"
-                                          "1 (perfect symmetry required)."
-                                          "If 'S' is not in `constraints`, this argument is ignored"))
 
     # Other scarlet paremeters
     useWeights = pexConfig.Field(
         dtype=bool, default=True,
         doc=("Whether or not use use inverse variance weighting."
              "If `useWeights` is `False` then flat weights are used"))
-    usePsfConvolution = pexConfig.Field(
-        dtype=bool, default=True,
-        doc=("Whether or not to convolve the morphology with the"
-             "PSF in each band or use the same morphology in all bands"))
     modelPsfSize = pexConfig.Field(
         dtype=int, default=11,
         doc="Model PSF side length in pixels")
@@ -264,8 +250,6 @@ class ScarletDeblendConfig(pexConfig.Config):
     processSingles = pexConfig.Field(
         dtype=bool, default=False,
         doc="Whether or not to process isolated sources in the deblender")
-    storeHistory = pexConfig.Field(dtype=bool, default=False,
-                                   doc="Whether or not to store the history for each source")
     sourceModel = pexConfig.Field(
         dtype=str, default="single",
         doc=("How to determine which model to use for sources, from\n"
@@ -414,6 +398,10 @@ class ScarletDeblendTask(pipeBase.Task):
         self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
                                             doc="The type of model used, for example "
                                                 "MultiComponentSource, ExtendedSource, PointSource")
+        self.edgeFluxFlagKey = schema.addField("deblend_edgeFluxFlag", type="Flag",
+                                               doc="Source has flux on the edge of the image")
+        self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
+                                              doc="Flux measurement from scarlet")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -598,13 +586,14 @@ class ScarletDeblendTask(pipeBase.Task):
                 # morph = source.morphToHeavy(xy0=bbox.getMin())
                 # sed = source.sed / source.sed.sum()
 
-                for f in filters:
+                flux = scarlet.measure.flux(source)
+                for fidx, f in enumerate(filters):
                     if len(models[f].getPeaks()) != 1:
                         err = "Heavy footprint should have a single peak, got {0}"
                         raise ValueError(err.format(len(models[f].peaks)))
                     cat = templateCatalogs[f]
                     child = self._addChild(parentId, cat, models[f], source, converged,
-                                           xy0=bbox.getMin())
+                                           xy0=bbox.getMin(), flux=flux[fidx])
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
@@ -683,7 +672,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 mask.addMaskPlane(self.config.notDeblendedMask)
                 fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
 
-    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged, xy0):
+    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged, xy0, flux):
         """Add a child to a catalog
 
         This creates a new child in the source catalog,
@@ -719,4 +708,10 @@ class ScarletDeblendTask(pipeBase.Task):
         cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
         src.set(self.modelCenterFlux, morph[cy, cx])
         src.set(self.modelTypeKey, scarlet_source.__class__.__name__)
+        src.set(self.edgeFluxFlagKey, scarlet_source.isEdge)
+        # Include the source flux in the model space in the catalog.
+        # This uses the narrower model PSF, which ensures that all sources
+        # not located on an edge have all of their flux included in the
+        # measurement.
+        src.set(self.scarletFluxKey, flux)
         return src

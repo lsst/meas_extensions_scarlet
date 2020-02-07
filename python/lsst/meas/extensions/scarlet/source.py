@@ -33,9 +33,46 @@ __all__ = ["initSource", "morphToHeavy", "modelToHeavy"]
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 
 
+def hasEdgeFlux(source, edgeDistance=1):
+    """hasEdgeFlux
+
+    Determine whether or not a source has flux within `edgeDistance`
+    of the edge.
+
+    Parameters
+    ----------
+    source : `scarlet.Component`
+        The source to check for edge flux
+    edgeDistance : int
+        The distance from the edge of the image to consider
+        a source an edge source. For example if `edgeDistance=3`
+        then any source within 3 pixels of the edge will be
+        considered to have edge flux
+
+    Returns
+    -------
+    isEdge: `bool`
+        Whether or not the source has flux on the edge.
+    """
+    assert edgeDistance > 0
+
+    # Use the first band that has a non-zero SED
+    band = np.min(np.where(source.sed > 0)[0])
+    model = source.get_model()[band]
+    for edge in range(edgeDistance):
+        if (
+            np.any(model[edge-1] > 0) or
+            np.any(model[-edge] > 0) or
+            np.any(model[:, edge-1] > 0) or
+            np.any(model[:, -edge] > 0)
+        ):
+            return True
+    return False
+
+
 def initSource(frame, peak, observation, bbox,
-                symmetric=False, monotonic=True,
-                thresh=5, components=1):
+               symmetric=False, monotonic=True,
+               thresh=5, components=1, edgeDistance=1, shifting=False):
     """Initialize a Source
 
     The user can specify the number of desired components
@@ -85,11 +122,13 @@ def initSource(frame, peak, observation, bbox,
     while components > 1:
         try:
             source = MultiComponentSource(frame, center, observation, symmetric=symmetric,
-                                          monotonic=monotonic, thresh=thresh)
+                                          monotonic=monotonic, thresh=thresh, shifting=shifting)
             if (np.any([np.any(np.isnan(c.sed)) for c in source.components]) or
                     np.any([np.all(c.sed <= 0) for c in source.components])):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
+            if hasEdgeFlux(source, edgeDistance):
+                source.shifting = True
             break
         except Exception:
             # If the MultiComponentSource failed to initialize
@@ -99,7 +138,7 @@ def initSource(frame, peak, observation, bbox,
     if components == 1:
         try:
             source = ExtendedSource(frame, center, observation, thresh=thresh,
-                                    symmetric=symmetric, monotonic=monotonic)
+                                    symmetric=symmetric, monotonic=monotonic, shifting=shifting)
             if np.any(np.isnan(source.sed)) or np.all(source.sed <= 0) or np.sum(source.morph) == 0:
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
@@ -115,6 +154,21 @@ def initSource(frame, peak, observation, bbox,
             # None of the models worked to initialize the source,
             # so skip this source
             return None
+
+    if hasEdgeFlux(source, edgeDistance):
+        # The detection algorithm implemented in meas_algorithms
+        # does not place sources within the edge mask
+        # (roughly 5 pixels from the edge). This results in poor
+        # deblending of the edge source, which for bright sources
+        # may ruin an entire blend. So we reinitialize edge sources
+        # to allow for shifting and return the result.
+        if not isinstance(source, PointSource) and not shifting:
+            return initSource(frame, peak, observation, bbox,
+                              symmetric, monotonic, thresh, components,
+                              edgeDistance, shifting=True)
+        source.isEdge = True
+    else:
+        source.isEdge = False
 
     source.detectedPeak = peak
     return source
