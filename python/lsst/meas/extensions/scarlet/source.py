@@ -47,7 +47,9 @@ def hasEdgeFlux(source, edgeDistance=1):
         The distance from the edge of the image to consider
         a source an edge source. For example if `edgeDistance=3`
         then any source within 3 pixels of the edge will be
-        considered to have edge flux
+        considered to have edge flux. The minimum value of
+        `edgeDistance` is one, meaning the rows and columns
+        of pixels on the edge.
 
     Returns
     -------
@@ -160,8 +162,13 @@ def initSource(frame, peak, observation, bbox,
         # does not place sources within the edge mask
         # (roughly 5 pixels from the edge). This results in poor
         # deblending of the edge source, which for bright sources
-        # may ruin an entire blend. So we reinitialize edge sources
-        # to allow for shifting and return the result.
+        # may ruin an entire blend. 
+        # By turning on shifting we allow exxtended sources to be shifted
+        # by a fraction of a pixel, which is computationally expensive and
+        # not necessary for non-edge sources.
+        # Due to the complexities of scarlet initialization it is easier
+        # to reinitialize edge sources to allow for shifting than it is
+        # to update this parameter on the fly.
         if not isinstance(source, PointSource) and not shifting:
             return initSource(frame, peak, observation, bbox,
                               symmetric, monotonic, thresh, components,
