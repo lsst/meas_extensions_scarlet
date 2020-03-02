@@ -126,7 +126,8 @@ def initSource(frame, peak, observation, bbox,
             source = MultiComponentSource(frame, center, observation, symmetric=symmetric,
                                           monotonic=monotonic, thresh=thresh, shifting=shifting)
             if (np.any([np.any(np.isnan(c.sed)) for c in source.components]) or
-                    np.any([np.all(c.sed <= 0) for c in source.components])):
+                    np.any([np.all(c.sed <= 0) for c in source.components]) or
+                    np.any([np.any(~np.isfinite(c.morph)) for c in source.components])):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
             if hasEdgeFlux(source, edgeDistance):
