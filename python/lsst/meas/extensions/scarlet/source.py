@@ -59,7 +59,10 @@ def hasEdgeFlux(source, edgeDistance=1):
     assert edgeDistance > 0
 
     # Use the first band that has a non-zero SED
-    band = np.min(np.where(source.sed > 0)[0])
+    if hasattr(source, "sed"):
+        band = np.min(np.where(source.sed > 0)[0])
+    else:
+        band = np.min(np.where(source.components[0].sed > 0)[0])
     model = source.get_model()[band]
     for edge in range(edgeDistance):
         if (
