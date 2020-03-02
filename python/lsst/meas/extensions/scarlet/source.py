@@ -162,7 +162,7 @@ def initSource(frame, peak, observation, bbox,
         # does not place sources within the edge mask
         # (roughly 5 pixels from the edge). This results in poor
         # deblending of the edge source, which for bright sources
-        # may ruin an entire blend. 
+        # may ruin an entire blend.
         # By turning on shifting we allow exxtended sources to be shifted
         # by a fraction of a pixel, which is computationally expensive and
         # not necessary for non-edge sources.
