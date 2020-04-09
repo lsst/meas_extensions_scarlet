@@ -8,6 +8,7 @@ config.log
 *.pyc
 *_wrap.cc
 *Lib.py
+*_build.*
 
 # Built by sconsUtils
 version.py

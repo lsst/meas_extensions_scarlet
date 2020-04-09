@@ -66,10 +66,10 @@ def hasEdgeFlux(source, edgeDistance=1):
     model = source.get_model()[band]
     for edge in range(edgeDistance):
         if (
-            np.any(model[edge-1] > 0) or
-            np.any(model[-edge] > 0) or
-            np.any(model[:, edge-1] > 0) or
-            np.any(model[:, -edge] > 0)
+            np.any(model[edge-1] > 0)
+            or np.any(model[-edge] > 0)
+            or np.any(model[:, edge-1] > 0)
+            or np.any(model[:, -edge] > 0)
         ):
             return True
     return False
@@ -128,9 +128,9 @@ def initSource(frame, peak, observation, bbox,
         try:
             source = MultiComponentSource(frame, center, observation, symmetric=symmetric,
                                           monotonic=monotonic, thresh=thresh, shifting=shifting)
-            if (np.any([np.any(np.isnan(c.sed)) for c in source.components]) or
-                    np.any([np.all(c.sed <= 0) for c in source.components]) or
-                    np.any([np.any(~np.isfinite(c.morph)) for c in source.components])):
+            if (np.any([np.any(np.isnan(c.sed)) for c in source.components])
+                    or np.any([np.all(c.sed <= 0) for c in source.components])
+                    or np.any([np.any(~np.isfinite(c.morph)) for c in source.components])):
                 logger.warning("Could not initialize")
                 raise ValueError("Could not initialize source")
             if hasEdgeFlux(source, edgeDistance):
