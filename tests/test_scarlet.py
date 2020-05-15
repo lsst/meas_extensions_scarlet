@@ -56,8 +56,8 @@ class TestLsstSource(lsst.utils.tests.TestCase):
 
         # Create the scarlet objects
         images = trueSed[:, None, None] * morph[None, :, :]
-        frame = mes.LsstFrame(shape)
-        observation = mes.LsstObservation(images)
+        frame = mes.LsstFrame(shape, channels=np.arange(B))
+        observation = mes.LsstObservation(images, channels=np.arange(B))
 
         # init stack objects
         foot, peak, bbox = numpyToStack(images, center, (15, 3))
@@ -65,7 +65,9 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
 
         self.assertFloatsAlmostEqual(src.sed/3, trueSed)
-        self.assertFloatsAlmostEqual(src.morph*3, trueMorph, rtol=1e-7)
+        src_morph = np.zeros(frame.shape[1:], dtype=src.morph.dtype)
+        src_morph[src.model_frame_slices[1:]] = (src.morph*3)[src.model_slices[1:]]
+        self.assertFloatsAlmostEqual(src_morph, trueMorph, rtol=1e-7)
         self.assertEqual(src.detectedPeak, peak)
         self.assertEqual(foot.getBBox(), bbox)
 
@@ -78,8 +80,8 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         images = images.astype(np.float32)
         seds = seds.astype(np.float32)
 
-        frame = mes.LsstFrame(shape, psfs=targetPsfImage[None])
-        observation = mes.LsstObservation(images, psfs=psfImages).match(frame)
+        frame = mes.LsstFrame(shape, psfs=targetPsfImage[None], channels=np.arange(B))
+        observation = mes.LsstObservation(images, psfs=psfImages, channels=np.arange(B)).match(frame)
         foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
         src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
         # Get the HeavyFootprint
