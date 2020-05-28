@@ -24,7 +24,7 @@ from functools import partial
 import numpy as np
 import scarlet
 from scarlet.psf import PSF, gaussian
-from scarlet import PointSource, ExtendedSource, MultiComponentSource
+from scarlet import PointSource, ExtendedSource, MultiComponentSource, Blend, Frame, Observation
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -39,12 +39,18 @@ import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
 from .source import initSource, modelToHeavy
-from .blend import LsstBlend, checkBlendConvergence
-from .observation import LsstFrame, LsstObservation
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
+
+
+def _checkBlendConvergence(blend, f_rel):
+    """Check whether or not a blend has converged
+    """
+    deltaLoss = np.abs(blend.loss[-2] - blend.loss[-1])
+    convergence = f_rel * np.abs(blend.loss[-1])
+    return deltaLoss < convergence
 
 
 def _getPsfFwhm(psf):
@@ -165,40 +171,54 @@ def deblend(mExposure, footprint, config):
     psfShape = (config.modelPsfSize, config.modelPsfSize)
     model_psf = PSF(partial(gaussian, sigma=config.modelPsfSigma), shape=(None,)+psfShape)
 
-    frame = LsstFrame(images.shape, psfs=model_psf, channels=mExposure.filters)
-    observation = LsstObservation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
+    frame = Frame(images.shape, psfs=model_psf, channels=mExposure.filters)
+    observation = Observation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
     observation.match(frame)
 
     assert(config.sourceModel in ["single", "double", "point", "fit"])
 
+    # Set the appropriate number of components
+    if config.sourceModel == "single":
+        maxComponents = 1
+    elif config.sourceModel == "double":
+        maxComponents = 2
+    elif config.sourceModel == "point":
+        maxComponents = 0
+    elif config.sourceModel == "fit":
+        # It is likely in the future that there will be some heuristic
+        # used to determine what type of model to use for each source,
+        # but that has not yet been implemented (see DM-22551)
+        raise NotImplementedError("sourceModel 'fit' has not been implemented yet")
+
+    # Convert the centers to pixel coordinates
+    xmin = bbox.getMinX()
+    ymin = bbox.getMinY()
+    centers = [np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int) for peak in footprint.peaks]
+
     # Only deblend sources that can be initialized
     sources = []
     skipped = []
-    for k, center in enumerate(footprint.peaks):
-        if config.sourceModel == "single":
-            components = 1
-        elif config.sourceModel == "double":
-            components = 2
-        elif config.sourceModel == "point":
-            components = 0
-        elif config.sourceModel == "fit":
-            # It is likely in the future that there will be some heuristic
-            # used to determine what type of model to use for each source,
-            # but that has not yet been implemented (see DM-22551)
-            raise NotImplementedError("sourceModel 'fit' has not been implemented yet")
-        else:
-            raise ValueError("Unrecognized sourceModel")
-
-        source = initSource(frame=frame, peak=center, observation=observation, bbox=bbox,
-                            symmetric=config.symmetric, monotonic=config.monotonic,
-                            thresh=config.morphThresh, components=components,
-                            edgeDistance=config.edgeDistance, shifting=False)
+    for k, center in enumerate(centers):
+        source = initSource(
+            frame=frame,
+            center=center,
+            observation=observation,
+            symmetric=config.symmetric,
+            monotonic=config.monotonic,
+            thresh=config.morphThresh,
+            maxComponents=maxComponents,
+            edgeDistance=config.edgeDistance,
+            shifting=False,
+            downgrade=config.downgrade,
+            fallback=config.fallback,
+        )
         if source is not None:
+            source.detectedPeak = footprint.peaks[k]
             sources.append(source)
         else:
             skipped.append(k)
 
-    blend = LsstBlend(sources, observation)
+    blend = Blend(sources, observation)
     blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
 
     return blend, skipped
@@ -258,6 +278,10 @@ class ScarletDeblendConfig(pexConfig.Config):
              "- 'point: use a point-source model for all sources\n"
              "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
     )
+    downgrade = pexConfig.Field(
+        dtype=bool, default=False,
+        doc="Whether or not to downgrade the number of components for sources in small bounding boxes"
+    )
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
@@ -292,6 +316,10 @@ class ScarletDeblendConfig(pexConfig.Config):
              "as large; non-positive means no threshold applied"))
 
     # Failure modes
+    fallback = pexConfig.Field(
+        dtype=bool, default=True,
+        doc="Whether or not to fallback to a smaller number of components if a source does not initialize"
+    )
     notDeblendedMask = pexConfig.Field(
         dtype=str, default="NOT_DEBLENDED", optional=True,
         doc="Mask name for footprints not deblended, or None")
@@ -528,7 +556,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 runtime = (tf-t0)*1000
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
-                converged = checkBlendConvergence(blend, self.config.relativeError)
+                converged = _checkBlendConvergence(blend, self.config.relativeError)
                 src.set(self.blendConvergenceFailedFlagKey, converged)
                 sources = [src for src in blend.sources]
                 # Re-insert place holders for skipped sources

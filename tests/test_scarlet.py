@@ -56,17 +56,22 @@ class TestLsstSource(lsst.utils.tests.TestCase):
 
         # Create the scarlet objects
         images = trueSed[:, None, None] * morph[None, :, :]
-        frame = mes.LsstFrame(shape)
-        observation = mes.LsstObservation(images)
+        frame = scarlet.Frame(shape, channels=np.arange(B))
+        observation = scarlet.Observation(images, channels=np.arange(B))
 
         # init stack objects
         foot, peak, bbox = numpyToStack(images, center, (15, 3))
         # init source
-        src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
+        xmin = bbox.getMinX()
+        ymin = bbox.getMinY()
+        center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
+        src = mes.source.initSource(frame=frame, center=center, observation=observation, thresh=0)
 
         self.assertFloatsAlmostEqual(src.sed/3, trueSed)
-        self.assertFloatsAlmostEqual(src.morph*3, trueMorph, rtol=1e-7)
-        self.assertEqual(src.detectedPeak, peak)
+        src_morph = np.zeros(frame.shape[1:], dtype=src.morph.dtype)
+        src_morph[src.model_frame_slices[1:]] = (src.morph*3)[src.model_slices[1:]]
+        self.assertFloatsAlmostEqual(src_morph, trueMorph, rtol=1e-7)
+        self.assertFloatsEqual(src.center, center)
         self.assertEqual(foot.getBBox(), bbox)
 
     def test_to_heavy(self):
@@ -78,13 +83,16 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         images = images.astype(np.float32)
         seds = seds.astype(np.float32)
 
-        frame = mes.LsstFrame(shape, psfs=targetPsfImage[None])
-        observation = mes.LsstObservation(images, psfs=psfImages).match(frame)
+        frame = scarlet.Frame(shape, psfs=targetPsfImage[None], channels=np.arange(B))
+        observation = scarlet.Observation(images, psfs=psfImages, channels=np.arange(B)).match(frame)
         foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
-        src = mes.source.initSource(frame=frame, peak=peak, observation=observation, bbox=bbox, thresh=0)
+        xmin = bbox.getMinX()
+        ymin = bbox.getMinY()
+        center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
+        src = mes.source.initSource(frame=frame, center=center, observation=observation, thresh=0)
         # Get the HeavyFootprint
         peakSchema = PeakTable.makeMinimalSchema()
-        hFoot = mes.morphToHeavy(src, peakSchema=peakSchema)
+        hFoot = mes.source.morphToHeavy(src, peakSchema=peakSchema)
         hBBox = hFoot.getBBox()
 
         hMorph = multiband.heavyFootprintToImage(hFoot, fill=0).image.array
@@ -101,13 +109,18 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         self.assertEqual(hPeak.getIx(), coords[0][1])
         self.assertEqual(hPeak.getIy(), coords[0][0])
 
+        # Convolve the model with the observed PSF
+        model = src.get_model(frame=src.model_frame)
+        model = observation.render(model)
+
         # Test Model to Heavy
         filters = [f for f in "grizy"]
-        hFoot = mes.modelToHeavy(src, filters, bbox.getMin(), observation)
+        src.detectedPeak = peak
+        hFoot = mes.source.modelToHeavy(src, filters, bbox.getMin(), observation)
         hModel = hFoot.getImage(fill=0).image.array
 
         self.assertEqual(bbox, hFoot.getBBox())
-        self.assertFloatsAlmostEqual(hModel, observation.render(src.get_model()), rtol=1e-4, atol=1e-4)
+        self.assertFloatsAlmostEqual(hModel, model, rtol=1e-4, atol=1e-4)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
