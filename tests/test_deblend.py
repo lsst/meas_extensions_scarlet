@@ -26,7 +26,7 @@ import numpy as np
 import lsst.utils.tests
 import lsst.afw.image as afwImage
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet.deblend import ScarletDeblendTask
+from lsst.meas.extensions.scarlet import ScarletDeblendTask
 from lsst.afw.table import SourceCatalog
 
 
