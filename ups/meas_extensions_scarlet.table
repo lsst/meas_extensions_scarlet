@@ -8,6 +8,7 @@ setupRequired(log)
 setupRequired(scarlet)
 setupRequired(log)
 setupRequired(pex_config)
+setupRequired(pex_exceptions)
 setupRequired(pipe_base)
 setupRequired(meas_algorithms)
 
