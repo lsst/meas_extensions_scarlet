@@ -629,7 +629,8 @@ class ScarletDeblendTask(pipeBase.Task):
             # but store the result
             except Exception as e:
                 if self.config.catchFailures:
-                    blendError = "UnknownError: " + str(e)
+                    blendError = "UnknownError"
+                    print(e)
                     import traceback
                     traceback.print_exc()
                 else:
