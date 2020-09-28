@@ -122,7 +122,7 @@ def _computePsfImage(self, position=None):
     if not isinstance(position, Point2D) and position is not None:
         position = Point2D(position[0], position[1])
 
-    for band, single in enumerate(self.singles):
+    for bidx, single in enumerate(self.singles):
         try:
             if position is None:
                 psf = single.getPsf().computeImage()
@@ -137,7 +137,7 @@ def _computePsfImage(self, position=None):
             # data in some bands, so we track this error to distinguish it
             # from unknown errors.
             msg = "Failed to compute PSF at {} in band {}"
-            raise IncompleteDataError(msg.format(position, self.filters[band]))
+            raise IncompleteDataError(msg.format(position, self.filters[bidx]))
 
     left = np.min([psf.getBBox().getMinX() for psf in psfs])
     bottom = np.min([psf.getBBox().getMinY() for psf in psfs])
@@ -619,24 +619,22 @@ class ScarletDeblendTask(pipeBase.Task):
                 # that the peaks stay consistent
                 for k in skipped:
                     sources.insert(k, None)
-            # Catch the errors that we know about
-            except IncompleteDataError:
-                blendError = "IncompleteDataError"
-            except ScarletGradientError as e:
-                blendError = "ScarletGradientError"
-                src.set(self.iterKey, e.iterations)
-            # Catch all unknown errors to prevent the taks from crashing,
-            # but store the result
+            # Catch all errors and filter out the ones that we know about
             except Exception as e:
-                if self.config.catchFailures:
+                blendError = type(e).__name__
+                if isinstance(e, ScarletGradientError):
+                    src.set(self.iterKey, e.iterations)
+                elif not isinstance(e, IncompleteDataError):
                     blendError = "UnknownError"
-                    print(e)
-                    import traceback
-                    traceback.print_exc()
-                else:
-                    raise
-            # Common actions for all failed blends
-            if blendError is not None:
+
+                    if self.config.catchFailures:
+                        # Make it easy to find UnknownErrors in the log file
+                        self.log.warn("UnknownError")
+                        import traceback
+                        traceback.print_exc()
+                    else:
+                        raise
+
                 self.log.warn("Unable to deblend source %d: %s" % (src.getId(), blendError))
                 src.set(self.deblendFailedKey, True)
                 src.set(self.runtimeKey, 0)
