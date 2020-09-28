@@ -31,7 +31,7 @@ import lsst.afw.detection as afwDet
 
 __all__ = ["morphToHeavy", "modelToHeavy"]
 
-logger = lsst.log.Log.getLogger("meas.deblender.deblend")
+logger = lsst.log.Log.getLogger("meas.extensions.scarlet.source")
 
 
 def morphToHeavy(source, peakSchema, xy0=Point2I()):
