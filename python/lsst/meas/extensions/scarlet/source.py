@@ -20,7 +20,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import numpy as np
-from scarlet.source import PointSource, ExtendedSource, MultiComponentSource
 from scarlet.bbox import Box
 
 import lsst.afw.image as afwImage

@@ -24,7 +24,8 @@ from functools import partial
 import numpy as np
 import scarlet
 from scarlet.psf import PSF, gaussian
-from scarlet import PointSource, ExtendedSource, MultiComponentSource, Blend, Frame, Observation
+from scarlet import PointSource, ExtendedSource, MultiExtendedSource, Blend, Frame, Observation
+from scarlet_extensions.initialization.source import initAllSources
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -39,7 +40,7 @@ import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
-from .source import initSource, modelToHeavy
+from .source import modelToHeavy
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
@@ -231,28 +232,25 @@ def deblend(mExposure, footprint, config):
     centers = [np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int) for peak in footprint.peaks]
 
     # Only deblend sources that can be initialized
-    sources = []
-    skipped = []
-    for k, center in enumerate(centers):
-        source = initSource(
-            frame=frame,
-            center=center,
-            observation=observation,
-            symmetric=config.symmetric,
-            monotonic=config.monotonic,
-            thresh=config.morphThresh,
-            maxComponents=maxComponents,
-            edgeDistance=config.edgeDistance,
-            shifting=False,
-            downgrade=config.downgrade,
-            fallback=config.fallback,
-        )
-        if source is not None:
-            source.detectedPeak = footprint.peaks[k]
-            sources.append(source)
-        else:
-            skipped.append(k)
+    sources, skipped = initAllSources(
+        frame=frame,
+        centers=centers,
+        observation=observation,
+        symmetric=config.symmetric,
+        monotonic=config.monotonic,
+        thresh=config.morphThresh,
+        maxComponents=maxComponents,
+        edgeDistance=config.edgeDistance,
+        shifting=False,
+        downgrade=config.downgrade,
+        fallback=config.fallback,
+    )
 
+    # Attach the peak to all of the initialized sources
+    for k, src in enumerate(sources):
+        src.detectedPeak = footprint.peaks[k]
+
+    # Create the blend and attempt to optimize it
     blend = Blend(sources, observation)
     try:
         blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
@@ -473,7 +471,7 @@ class ScarletDeblendTask(pipeBase.Task):
                                                doc="The instFlux at the peak position of deblended mode")
         self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
                                             doc="The type of model used, for example "
-                                                "MultiComponentSource, ExtendedSource, PointSource")
+                                                "MultiExtendedSource, ExtendedSource, PointSource")
         self.edgeFluxFlagKey = schema.addField("deblend_edgeFluxFlag", type="Flag",
                                                doc="Source has flux on the edge of the image")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
@@ -804,7 +802,7 @@ class ScarletDeblendTask(pipeBase.Task):
         if isinstance(scarlet_source, ExtendedSource):
             cy, cx = scarlet_source.pixel_center
             morph = scarlet_source.morph
-        elif isinstance(scarlet_source, MultiComponentSource):
+        elif isinstance(scarlet_source, MultiExtendedSource):
             cy, cx = scarlet_source.components[0].pixel_center
             morph = scarlet_source.components[0].morph
         elif isinstance(scarlet_source, PointSource):
