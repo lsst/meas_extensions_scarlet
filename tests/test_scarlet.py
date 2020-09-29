@@ -65,7 +65,6 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        src = initSource(frame=frame, center=center, observation=observation, thresh=0)
         src = initSource(frame=frame, center=center, observation=observation, thresh=0, downgrade=False)
 
         # scarlet has more flexible models now,
