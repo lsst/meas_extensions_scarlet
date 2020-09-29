@@ -28,6 +28,7 @@ from scarlet import PointSource, ExtendedSource, MultiComponentSource, Blend, Fr
 
 import lsst.log
 import lsst.pex.config as pexConfig
+from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
 from lsst.geom import Point2I, Box2I, Point2D
 import lsst.afw.math as afwMath
@@ -43,6 +44,29 @@ from .source import initSource, modelToHeavy
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
+
+
+class IncompleteDataError(Exception):
+    """The PSF could not be computed due to incomplete data
+    """
+    pass
+
+
+class ScarletGradientError(Exception):
+    """An error occurred during optimization
+
+    This error occurs when the optimizer encounters
+    a NaN value while calculating the gradient.
+    """
+    def __init__(self, iterations, sources):
+        self.iterations = iterations
+        self.sources = sources
+        msg = ("ScalarGradientError in iteration {0}. "
+               "NaN values introduced in sources {1}")
+        self.message = msg.format(iterations, sources)
+
+    def __str__(self):
+        return self.message
 
 
 def _checkBlendConvergence(blend, f_rel):
@@ -98,13 +122,23 @@ def _computePsfImage(self, position=None):
     if not isinstance(position, Point2D) and position is not None:
         position = Point2D(position[0], position[1])
 
-    for single in self.singles:
-        if position is None:
-            psf = single.getPsf().computeImage()
-            psfs.append(psf)
-        else:
-            psf = single.getPsf().computeImage(position)
-            psfs.append(psf)
+    for bidx, single in enumerate(self.singles):
+        try:
+            if position is None:
+                psf = single.getPsf().computeImage()
+                psfs.append(psf)
+            else:
+                psf = single.getPsf().computeImage(position)
+                psfs.append(psf)
+        except InvalidParameterError:
+            # This band failed to compute the PSF due to incomplete data
+            # at that location. This is unlikely to be a problem for Rubin,
+            # however the edges of some HSC COSMOS fields contain incomplete
+            # data in some bands, so we track this error to distinguish it
+            # from unknown errors.
+            msg = "Failed to compute PSF at {} in band {}"
+            raise IncompleteDataError(msg.format(position, self.filters[bidx]))
+
     left = np.min([psf.getBBox().getMinX() for psf in psfs])
     bottom = np.min([psf.getBBox().getMinY() for psf in psfs])
     right = np.max([psf.getBBox().getMaxX() for psf in psfs])
@@ -168,6 +202,7 @@ def deblend(mExposure, footprint, config):
     weights *= ~mask
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
+
     psfShape = (config.modelPsfSize, config.modelPsfSize)
     model_psf = PSF(partial(gaussian, sigma=config.modelPsfSigma), shape=(None,)+psfShape)
 
@@ -219,7 +254,19 @@ def deblend(mExposure, footprint, config):
             skipped.append(k)
 
     blend = Blend(sources, observation)
-    blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
+    try:
+        blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
+    except ArithmeticError:
+        # This occurs when a gradient update produces a NaN value
+        # This is usually due to a source initialized with a
+        # negative SED or no flux, often because the peak
+        # is a noise fluctuation in one band and not a real source.
+        iterations = len(blend.loss)
+        failedSources = []
+        for k, src in enumerate(sources):
+            if np.any(~np.isfinite(src.get_model())):
+                failedSources.append(k)
+        raise ScarletGradientError(iterations, failedSources)
 
     return blend, skipped
 
@@ -386,9 +433,9 @@ class ScarletDeblendTask(pipeBase.Task):
     def _addSchemaKeys(self, schema):
         """Add deblender specific keys to the schema
         """
-        self.runtimeKey = schema.addField('runtime', type=np.float32, doc='runtime in ms')
+        self.runtimeKey = schema.addField('deblend_runtime', type=np.float32, doc='runtime in ms')
 
-        self.iterKey = schema.addField('iterations', type=np.int32, doc='iterations to converge')
+        self.iterKey = schema.addField('deblend_iterations', type=np.int32, doc='iterations to converge')
 
         self.nChildKey = schema.addField('deblend_nChild', type=np.int32,
                                          doc='Number of children this object has (defaults to 0)')
@@ -415,7 +462,8 @@ class ScarletDeblendTask(pipeBase.Task):
                                              doc='Source had flux on the edge of the parent footprint')
         self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',
                                                 doc="Deblending failed on source")
-
+        self.deblendErrorKey = schema.addField('deblend_error', type="String", size=25,
+                                               doc='Name of error if the blend failed')
         self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
                                                  doc="Deblender skipped this source")
         self.modelCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
@@ -430,6 +478,12 @@ class ScarletDeblendTask(pipeBase.Task):
                                                doc="Source has flux on the edge of the image")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
                                               doc="Flux measurement from scarlet")
+        self.nPeaksKey = schema.addField("deblend_nPeaks", type=np.int32,
+                                         doc="Number of initial peaks in the blend. "
+                                             "This includes peaks that may have been culled "
+                                             "during deblending or failed to deblend")
+        self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
+                                              doc="Final logL, used to identify regressions in scarlet.")
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -548,6 +602,7 @@ class ScarletDeblendTask(pipeBase.Task):
             nparents += 1
             self.log.trace('Parent %i: deblending %i peaks', int(src.getId()), len(peaks))
             # Run the deblender
+            blendError = None
             try:
                 t0 = time.time()
                 # Build the parameter lists with the same ordering
@@ -564,24 +619,54 @@ class ScarletDeblendTask(pipeBase.Task):
                 # that the peaks stay consistent
                 for k in skipped:
                     sources.insert(k, None)
+            # Catch all errors and filter out the ones that we know about
             except Exception as e:
-                if self.config.catchFailures:
-                    self.log.warn("Unable to deblend source %d: %s" % (src.getId(), e))
-                    src.set(self.deblendFailedKey, True)
-                    src.set(self.runtimeKey, 0)
-                    import traceback
-                    traceback.print_exc()
-                    continue
-                else:
-                    raise
+                blendError = type(e).__name__
+                if isinstance(e, ScarletGradientError):
+                    src.set(self.iterKey, e.iterations)
+                elif not isinstance(e, IncompleteDataError):
+                    blendError = "UnknownError"
+
+                    if self.config.catchFailures:
+                        # Make it easy to find UnknownErrors in the log file
+                        self.log.warn("UnknownError")
+                        import traceback
+                        traceback.print_exc()
+                    else:
+                        raise
+
+                self.log.warn("Unable to deblend source %d: %s" % (src.getId(), blendError))
+                src.set(self.deblendFailedKey, True)
+                src.set(self.runtimeKey, 0)
+                src.set(self.deblendErrorKey, blendError)
+                bbox = foot.getBBox()
+                src.set(self.modelCenter, Point2D(bbox.getMinX(), bbox.getMinY()))
+                # We want to store the total number of initial peaks,
+                # even if some of them fail
+                src.set(self.nPeaksKey, len(foot.peaks))
+                continue
 
             # Add the merged source as a parent in the catalog for each band
             templateParents = {}
             parentId = src.getId()
             for f in filters:
                 templateParents[f] = templateCatalogs[f][pk]
+                templateParents[f].set(self.nPeaksKey, len(foot.peaks))
                 templateParents[f].set(self.runtimeKey, runtime)
                 templateParents[f].set(self.iterKey, len(blend.loss))
+                # TODO: When DM-26603 is merged observation has a "log_norm"
+                # property that performs the following calculation,
+                # so this code block can be removed
+                observation = blend.observations[0]
+                _weights = observation.weights
+                _images = observation.images
+                log_sigma = np.zeros(_weights.shape, dtype=_weights.dtype)
+                cuts = _weights > 0
+                log_sigma[cuts] = np.log(1/_weights[cuts])
+                log_norm = np.prod(_images.shape)/2 * np.log(2*np.pi)+np.sum(log_sigma)/2
+                # end temporary code block
+                logL = blend.loss[-1]-log_norm
+                templateParents[f].set(self.scarletLogLKey, logL)
 
             # Add each source to the catalogs in each band
             templateSpans = {f: afwGeom.SpanSet() for f in filters}
