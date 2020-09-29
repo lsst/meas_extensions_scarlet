@@ -22,52 +22,13 @@
 import numpy as np
 from scarlet.bbox import Box
 
-import lsst.afw.image as afwImage
-from lsst.afw.geom import SpanSet
 from lsst.geom import Point2I
 import lsst.log
 import lsst.afw.detection as afwDet
 
-__all__ = ["morphToHeavy", "modelToHeavy"]
+__all__ = ["modelToHeavy"]
 
 logger = lsst.log.Log.getLogger("meas.extensions.scarlet.source")
-
-
-def morphToHeavy(source, peakSchema, xy0=Point2I()):
-    """Convert the morphology to a `HeavyFootprint`
-
-    Parameters
-    ----------
-    source : `scarlet.Component`
-        The scarlet source with a morphology to convert to
-        a `HeavyFootprint`.
-    peakSchema : `lsst.daf.butler.Schema`
-        The schema for the `PeakCatalog` of the `HeavyFootprint`.
-    xy0 : `tuple`
-        `(x,y)` coordinates of the bounding box containing the
-        `HeavyFootprint`.
-
-    Returns
-    -------
-    heavy : `lsst.afw.detection.HeavyFootprint`
-    """
-    mask = afwImage.MaskX(np.array(source.morph > 0, dtype=np.int32), xy0=xy0)
-    ss = SpanSet.fromMask(mask)
-
-    if len(ss) == 0:
-        return None
-
-    tfoot = afwDet.Footprint(ss, peakSchema=peakSchema)
-    cy, cx = source.pixel_center
-    xmin, ymin = xy0
-    # HeavyFootprints are not defined for 64 bit floats
-    morph = source.morph.astype(np.float32)
-    peakFlux = morph[cy, cx]
-    tfoot.addPeak(cx+xmin, cy+ymin, peakFlux)
-    timg = afwImage.ImageF(morph, xy0=xy0)
-    timg = timg[tfoot.getBBox()]
-    heavy = afwDet.makeHeavyFootprint(tfoot, afwImage.MaskedImageF(timg))
-    return heavy
 
 
 def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.float32):
@@ -111,7 +72,7 @@ def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.floa
         # Create the larger box to fit the model + PSf
         bbox = Box(shape, origin=origin)
         # Only use the portion of the convolved model that fits in the image
-        overlap = bbox & source.model_frame
+        overlap = bbox & source.frame.bbox
         # Load the full multiband model in the larger box
         model = source.model_to_frame(overlap)
         # Convolve the model with the PSF in each band

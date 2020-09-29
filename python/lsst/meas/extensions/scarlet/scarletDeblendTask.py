@@ -24,7 +24,7 @@ from functools import partial
 import numpy as np
 import scarlet
 from scarlet.psf import PSF, gaussian
-from scarlet import PointSource, ExtendedSource, MultiExtendedSource, Blend, Frame, Observation
+from scarlet import Blend, Frame, Observation
 from scarlet_extensions.initialization.source import initAllSources
 
 import lsst.log
@@ -471,7 +471,7 @@ class ScarletDeblendTask(pipeBase.Task):
                                                doc="The instFlux at the peak position of deblended mode")
         self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
                                             doc="The type of model used, for example "
-                                                "MultiExtendedSource, ExtendedSource, PointSource")
+                                                "MultiExtendedSource, SingleExtendedSource, PointSource")
         self.edgeFluxFlagKey = schema.addField("deblend_edgeFluxFlag", type="Flag",
                                                doc="Source has flux on the edge of the image")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
@@ -692,10 +692,6 @@ class ScarletDeblendTask(pipeBase.Task):
                     src.set(self.deblendSkippedKey, False)
                     models = modelToHeavy(source, filters, xy0=bbox.getMin(),
                                           observation=blend.observations[0])
-                # TODO: We should eventually write the morphology and SED to
-                # the catalog
-                # morph = source.morphToHeavy(xy0=bbox.getMin())
-                # sed = source.sed / source.sed.sum()
 
                 flux = scarlet.measure.flux(source)
                 for fidx, f in enumerate(filters):
@@ -799,22 +795,21 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.psfKey, False)
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
-        if isinstance(scarlet_source, ExtendedSource):
-            cy, cx = scarlet_source.pixel_center
-            morph = scarlet_source.morph
-        elif isinstance(scarlet_source, MultiExtendedSource):
-            cy, cx = scarlet_source.components[0].pixel_center
-            morph = scarlet_source.components[0].morph
-        elif isinstance(scarlet_source, PointSource):
-            cy, cx = scarlet_source.parameters[1]
-            morph = scarlet_source.morph
-        else:
-            msg = "Did not recognize source type of `{0}`, could not write coordinates or center flux. "
+
+        try:
+            cy, cx = scarlet_source.center
+        except AttributeError:
+            msg = "Did not recognize coordinates for source type of `{0}`, "
+            msg += "could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
             logger.warning(msg.format(type(scarlet_source)))
             return src
         xmin, ymin = xy0
         src.set(self.modelCenter, Point2D(cx+xmin, cy+ymin))
+
+        # Store the flux at the center of the model and the total
+        # scarlet flux measurement.
+        morph = afwDet.multiband.heavyFootprintToImage(heavy).image.array
         cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
         cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
         src.set(self.modelCenterFlux, morph[cy, cx])
