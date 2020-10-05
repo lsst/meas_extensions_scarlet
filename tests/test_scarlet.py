@@ -23,10 +23,10 @@ import unittest
 
 import numpy as np
 import scarlet
+from scarlet_extensions.initialization.source import initSource
 
 import lsst.meas.extensions.scarlet as mes
 import lsst.utils.tests
-from lsst.afw.detection import PeakTable, multiband
 
 from utils import numpyToStack, initData
 
@@ -65,11 +65,17 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        src = mes.source.initSource(frame=frame, center=center, observation=observation, thresh=0)
+        src = initSource(frame=frame, center=center, observation=observation, thresh=0, downgrade=False)
 
-        self.assertFloatsAlmostEqual(src.sed/3, trueSed)
-        src_morph = np.zeros(frame.shape[1:], dtype=src.morph.dtype)
-        src_morph[src.model_frame_slices[1:]] = (src.morph*3)[src.model_slices[1:]]
+        # scarlet has more flexible models now,
+        # so `sed` and `morph` are no longer attributes,
+        # meaning we have to extract them ourselves.
+        sed = src.children[0].parameters[0]._data
+        morph = src.children[1].parameters[0]._data
+
+        self.assertFloatsAlmostEqual(sed/3, trueSed)
+        src_morph = np.zeros(frame.shape[1:], dtype=morph.dtype)
+        src_morph[src._model_frame_slices[1:]] = (morph*3)[src._model_slices[1:]]
         self.assertFloatsAlmostEqual(src_morph, trueMorph, rtol=1e-7)
         self.assertFloatsEqual(src.center, center)
         self.assertEqual(foot.getBBox(), bbox)
@@ -89,28 +95,10 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        src = mes.source.initSource(frame=frame, center=center, observation=observation, thresh=0)
-        # Get the HeavyFootprint
-        peakSchema = PeakTable.makeMinimalSchema()
-        hFoot = mes.source.morphToHeavy(src, peakSchema=peakSchema)
-        hBBox = hFoot.getBBox()
-
-        hMorph = multiband.heavyFootprintToImage(hFoot, fill=0).image.array
-        sBbox = scarlet.bbox.Box.from_data(src.morph)
-        self.assertFloatsAlmostEqual(hMorph, sBbox.extract_from(src.morph.astype(np.float32)))
-        self.assertEqual(hBBox.getMinX(), sBbox.start[-1])
-        self.assertEqual(hBBox.getMinY(), sBbox.start[-2])
-        self.assertEqual(hBBox.getMaxX(), sBbox.stop[-1]-1)
-        self.assertEqual(hBBox.getMaxY(), sBbox.stop[-2]-1)
-
-        peaks = hFoot.getPeaks()
-        self.assertEqual(len(peaks), 1)
-        hPeak = peaks[0]
-        self.assertEqual(hPeak.getIx(), coords[0][1])
-        self.assertEqual(hPeak.getIy(), coords[0][0])
+        src = initSource(frame=frame, center=center, observation=observation, thresh=0, downgrade=False)
 
         # Convolve the model with the observed PSF
-        model = src.get_model(frame=src.model_frame)
+        model = src.get_model(frame=src.frame)
         model = observation.render(model)
 
         # Test Model to Heavy
@@ -121,6 +109,14 @@ class TestLsstSource(lsst.utils.tests.TestCase):
 
         self.assertEqual(bbox, hFoot.getBBox())
         self.assertFloatsAlmostEqual(hModel, model, rtol=1e-4, atol=1e-4)
+
+        # Test the peak in each band
+        for single in hFoot:
+            peaks = single.getPeaks()
+            self.assertEqual(len(peaks), 1)
+            hPeak = peaks[0]
+            self.assertEqual(hPeak.getIx()-xmin, coords[0][1])
+            self.assertEqual(hPeak.getIy()-ymin, coords[0][0])
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
