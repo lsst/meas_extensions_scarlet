@@ -183,6 +183,9 @@ def deblend(mExposure, footprint, config):
         weights = 1/mExposure.variance[:, bbox].array
     else:
         weights = np.ones_like(images)
+        badPixels = mExposure.mask.getPlaneBitMask(config.badMask)
+        mask = mExposure.mask[:, bbox].array & badPixels
+        weights[mask > 0] = 0
 
     # Mask out the pixels outside the footprint
     mask = getFootprintMask(footprint, mExposure)
@@ -295,7 +298,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Other scarlet paremeters
     useWeights = pexConfig.Field(
-        dtype=bool, default=True,
+        dtype=bool, default=False,
         doc=("Whether or not use use inverse variance weighting."
              "If `useWeights` is `False` then flat weights are used"))
     modelPsfSize = pexConfig.Field(
