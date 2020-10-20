@@ -32,7 +32,6 @@ import lsst.pex.config as pexConfig
 from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
 from lsst.geom import Point2I, Box2I, Point2D
-import lsst.afw.math as afwMath
 import lsst.afw.geom as afwGeom
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image.utils
@@ -82,19 +81,6 @@ def _getPsfFwhm(psf):
     """Calculate the FWHM of the `psf`
     """
     return psf.computeShape().getDeterminantRadius() * 2.35
-
-
-def _estimateRMS(exposure, statsMask):
-    """Estimate the standard dev. of an image
-
-    Calculate the RMS of the `exposure`.
-    """
-    mi = exposure.getMaskedImage()
-    statsCtrl = afwMath.StatisticsControl()
-    statsCtrl.setAndMask(mi.getMask().getPlaneBitMask(statsMask))
-    stats = afwMath.makeStatistics(mi.variance, mi.mask, afwMath.STDEV | afwMath.MEAN, statsCtrl)
-    rms = np.sqrt(stats.getValue(afwMath.MEAN)**2 + stats.getValue(afwMath.STDEV)**2)
-    return rms
 
 
 def _computePsfImage(self, position=None):
@@ -218,6 +204,9 @@ def deblend(mExposure, footprint, config):
         maxComponents = 1
     elif config.sourceModel == "double":
         maxComponents = 2
+    elif config.sourceModel == "compact":
+        raise NotImplementedError("CompactSource initialization has not yet been ported"
+                                  "to the stack version of scarlet")
     elif config.sourceModel == "point":
         maxComponents = 0
     elif config.sourceModel == "fit":
@@ -313,14 +302,16 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=bool, default=True,
         doc="Whether or not to save the SEDs and templates")
     processSingles = pexConfig.Field(
-        dtype=bool, default=False,
+        dtype=bool, default=True,
         doc="Whether or not to process isolated sources in the deblender")
     sourceModel = pexConfig.Field(
         dtype=str, default="single",
         doc=("How to determine which model to use for sources, from\n"
              "- 'single': use a single component for all sources\n"
              "- 'double': use a bulge disk model for all sources\n"
-             "- 'point: use a point-source model for all sources\n"
+             "- 'compact': use a single component model, initialzed with a point source morphology, "
+             " for all sources\n"
+             "- 'point': use a point-source model for all sources\n"
              "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
     )
     downgrade = pexConfig.Field(
@@ -330,7 +321,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
-        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
+        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "INTRP"],
         doc="Whether or not to process isolated sources in the deblender")
     statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
                                     doc="Mask planes to ignore when performing statistics")
@@ -369,11 +360,9 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=str, default="NOT_DEBLENDED", optional=True,
         doc="Mask name for footprints not deblended, or None")
     catchFailures = pexConfig.Field(
-        dtype=bool, default=False,
+        dtype=bool, default=True,
         doc=("If True, catch exceptions thrown by the deblender, log them, "
              "and set a flag on the parent, instead of letting them propagate up"))
-    propagateAllPeaks = pexConfig.Field(dtype=bool, default=False,
-                                        doc=('Guarantee that all peaks produce a child source.'))
 
 
 class ScarletDeblendTask(pipeBase.Task):
@@ -464,9 +453,14 @@ class ScarletDeblendTask(pipeBase.Task):
                                                doc='Name of error if the blend failed')
         self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
                                                  doc="Deblender skipped this source")
-        self.modelCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
-                                                         doc="Center used to apply constraints in scarlet",
-                                                         unit="pixel")
+        self.peakCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
+                                                        doc="Center used to apply constraints in scarlet",
+                                                        unit="pixel")
+        self.peakIdKey = schema.addField("deblend_peakId", type=np.int32,
+                                         doc="ID of the peak in the parent footprint. "
+                                             "This is not unique, but the combination of 'parent'"
+                                             "and 'peakId' should be for all child sources. "
+                                             "Top level blends with no parents have 'peakId=0'")
         self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
         self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
@@ -474,14 +468,18 @@ class ScarletDeblendTask(pipeBase.Task):
                                                 "MultiExtendedSource, SingleExtendedSource, PointSource")
         self.edgeFluxFlagKey = schema.addField("deblend_edgeFluxFlag", type="Flag",
                                                doc="Source has flux on the edge of the image")
-        self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
-                                              doc="Flux measurement from scarlet")
         self.nPeaksKey = schema.addField("deblend_nPeaks", type=np.int32,
                                          doc="Number of initial peaks in the blend. "
                                              "This includes peaks that may have been culled "
                                              "during deblending or failed to deblend")
+        self.parentNPeaksKey = schema.addField("deblend_parentNPeaks", type=np.int32,
+                                               doc="Same as deblend_n_peaks, but the number of peaks "
+                                                   "in the parent footprint")
+        self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
+                                              doc="Flux measurement from scarlet")
         self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
                                               doc="Final logL, used to identify regressions in scarlet.")
+
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
@@ -592,10 +590,16 @@ class ScarletDeblendTask(pipeBase.Task):
                 self._skipParent(src, mask)
                 self.log.trace('Parent %i: skipping masked footprint', int(src.getId()))
                 continue
-            if len(peaks) > self.config.maxNumberOfPeaks:
+            if self.config.maxNumberOfPeaks > 0 and len(peaks) > self.config.maxNumberOfPeaks:
                 src.set(self.tooManyPeaksKey, True)
-                msg = 'Parent {0}: Too many peaks, using the first {1} peaks'
-                self.log.trace(msg.format(int(src.getId()), self.config.maxNumberOfPeaks))
+                self._skipParent(src, mExposure.mask)
+                msg = 'Parent {0}: Too many peaks, skipping blend'
+                self.log.trace(msg.format(int(src.getId())))
+                # Unlike meas_deblender, in scarlet we skip the entire blend
+                # if the number of peaks exceeds max peaks, since neglecting
+                # to model any peaks often results in catastrophic failure
+                # of scarlet to generate models for the brighter sources.
+                continue
 
             nparents += 1
             self.log.trace('Parent %i: deblending %i peaks', int(src.getId()), len(peaks))
@@ -624,7 +628,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     src.set(self.iterKey, e.iterations)
                 elif not isinstance(e, IncompleteDataError):
                     blendError = "UnknownError"
-
+                    self._skipParent(src, mExposure.mask)
                     if self.config.catchFailures:
                         # Make it easy to find UnknownErrors in the log file
                         self.log.warn("UnknownError")
@@ -635,13 +639,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
                 self.log.warn("Unable to deblend source %d: %s" % (src.getId(), blendError))
                 src.set(self.deblendFailedKey, True)
-                src.set(self.runtimeKey, 0)
                 src.set(self.deblendErrorKey, blendError)
-                bbox = foot.getBBox()
-                src.set(self.modelCenter, Point2D(bbox.getMinX(), bbox.getMinY()))
-                # We want to store the total number of initial peaks,
-                # even if some of them fail
-                src.set(self.nPeaksKey, len(foot.peaks))
+                self._setSkippedParent(src)
                 continue
 
             # Add the merged source as a parent in the catalog for each band
@@ -652,18 +651,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 templateParents[f].set(self.nPeaksKey, len(foot.peaks))
                 templateParents[f].set(self.runtimeKey, runtime)
                 templateParents[f].set(self.iterKey, len(blend.loss))
-                # TODO: When DM-26603 is merged observation has a "log_norm"
-                # property that performs the following calculation,
-                # so this code block can be removed
-                observation = blend.observations[0]
-                _weights = observation.weights
-                _images = observation.images
-                log_sigma = np.zeros(_weights.shape, dtype=_weights.dtype)
-                cuts = _weights > 0
-                log_sigma[cuts] = np.log(1/_weights[cuts])
-                log_norm = np.prod(_images.shape)/2 * np.log(2*np.pi)+np.sum(log_sigma)/2
-                # end temporary code block
-                logL = blend.loss[-1]-log_norm
+                logL = blend.loss[-1]-blend.observations[0].log_norm
                 templateParents[f].set(self.scarletLogLKey, logL)
 
             # Add each source to the catalogs in each band
@@ -673,21 +661,8 @@ class ScarletDeblendTask(pipeBase.Task):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
                 if k in skipped:
-                    if not self.config.propagateAllPeaks:
-                        # We don't care
-                        continue
-                    # We need to preserve the peak: make sure we have enough
-                    # info to create a minimal child src
-                    msg = "Peak at {0} failed deblending.  Using minimal default info for child."
-                    self.log.trace(msg.format(src.getFootprint().peaks[k]))
-                    # copy the full footprint and strip out extra peaks
-                    foot = afwDet.Footprint(src.getFootprint())
-                    peakList = foot.getPeaks()
-                    peakList.clear()
-                    peakList.append(src.peaks[k])
-                    zeroMimg = afwImage.MaskedImageF(foot.getBBox())
-                    heavy = afwDet.makeHeavyFootprint(foot, zeroMimg)
-                    models = afwDet.MultibandFootprint(mExposure.filters, [heavy]*len(mExposure.filters))
+                    # No need to propagate anything
+                    continue
                 else:
                     src.set(self.deblendSkippedKey, False)
                     models = modelToHeavy(source, filters, xy0=bbox.getMin(),
@@ -773,13 +748,26 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         fp = source.getFootprint()
         source.set(self.deblendSkippedKey, True)
-        source.set(self.nChildKey, len(fp.getPeaks()))  # It would have this many if we deblended them all
         if self.config.notDeblendedMask:
             for mask in masks:
                 mask.addMaskPlane(self.config.notDeblendedMask)
                 fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
+        # The deblender didn't run on this source, so it has zero runtime
+        source.set(self.runtimeKey, 0)
+        # Set the center of the parent
+        bbox = fp.getBBox()
+        centerX = bbox.getMinX()+bbox.getWidth()/2
+        centerY = bbox.getMinY()+bbox.getHeight()/2
+        source.set(self.peakCenter, Point2D(centerX, centerY))
+        # There are no deblended children, so nChild = 0
+        source.set(self.nChildKey, 0)
+        # But we also want to know how many peaks that we would have
+        # deblended if the parent wasn't skipped.
+        source.set(self.nPeaksKey, len(fp.peaks))
+        # The blend was skipped, so it didn't take any iterations
+        source.set(self.iterKey, 0)
 
-    def _addChild(self, parentId, sources, heavy, scarlet_source, blend_converged, xy0, flux):
+    def _addChild(self, parentId, sources, heavy, scarletSource, blend_converged, xy0, flux):
         """Add a child to a catalog
 
         This creates a new child in the source catalog,
@@ -792,20 +780,25 @@ class ScarletDeblendTask(pipeBase.Task):
         src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
         src.setParent(parentId)
         src.setFootprint(heavy)
-        src.set(self.psfKey, False)
+        # Set the psf key based on whether or not the source was
+        # deblended using the PointSource model.
+        # This key is not that useful anymore since we now keep track of
+        # `modelType`, but we continue to propagate it in case code downstream
+        # is expecting it.
+        src.set(self.psfKey, scarletSource.__class__.__name__ == "PointSource")
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
 
         try:
-            cy, cx = scarlet_source.center
+            cy, cx = scarletSource.center
         except AttributeError:
             msg = "Did not recognize coordinates for source type of `{0}`, "
             msg += "could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
-            logger.warning(msg.format(type(scarlet_source)))
+            logger.warning(msg.format(type(scarletSource)))
             return src
         xmin, ymin = xy0
-        src.set(self.modelCenter, Point2D(cx+xmin, cy+ymin))
+        src.set(self.peakCenter, Point2D(cx+xmin, cy+ymin))
 
         # Store the flux at the center of the model and the total
         # scarlet flux measurement.
@@ -813,8 +806,9 @@ class ScarletDeblendTask(pipeBase.Task):
         cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
         cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
         src.set(self.modelCenterFlux, morph[cy, cx])
-        src.set(self.modelTypeKey, scarlet_source.__class__.__name__)
-        src.set(self.edgeFluxFlagKey, scarlet_source.isEdge)
+        src.set(self.modelTypeKey, scarletSource.__class__.__name__)
+        src.set(self.edgeFluxFlagKey, scarletSource.isEdge)
+        src.set(self.peakIdKey, scarletSource.detectedPeak["id"])
         # Include the source flux in the model space in the catalog.
         # This uses the narrower model PSF, which ensures that all sources
         # not located on an edge have all of their flux included in the
