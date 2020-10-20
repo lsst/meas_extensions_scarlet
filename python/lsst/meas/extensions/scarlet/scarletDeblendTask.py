@@ -236,8 +236,14 @@ def deblend(mExposure, footprint, config):
     )
 
     # Attach the peak to all of the initialized sources
-    for k, src in enumerate(sources):
-        src.detectedPeak = footprint.peaks[k]
+    srcIndex = 0
+    for k, center in enumerate(centers):
+        if k not in skipped:
+            # This is just to make sure that there isn't a coding bug
+            assert sources[srcIndex].center == center
+            # Store the record for the peak with the appropriate source
+            sources[srcIndex].detectedPeak = footprint.peaks[k]
+            srcIndex += 1
 
     # Create the blend and attempt to optimize it
     blend = Blend(sources, observation)
