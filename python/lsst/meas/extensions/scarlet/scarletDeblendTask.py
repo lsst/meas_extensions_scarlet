@@ -19,13 +19,11 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from functools import partial
-
 import numpy as np
 import scarlet
-from scarlet.psf import PSF, gaussian
+from scarlet.psf import ImagePSF, GaussianPSF
 from scarlet import Blend, Frame, Observation
-from scarlet_extensions.initialization.source import initAllSources
+from scarlet.initialization import initAllSources
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -192,9 +190,8 @@ def deblend(mExposure, footprint, config):
     weights *= ~mask
 
     psfs = _computePsfImage(mExposure, footprint.getCentroid()).array.astype(np.float32)
-
-    psfShape = (config.modelPsfSize, config.modelPsfSize)
-    model_psf = PSF(partial(gaussian, sigma=config.modelPsfSigma), shape=(None,)+psfShape)
+    psfs = ImagePSF(psfs)
+    model_psf = GaussianPSF(sigma=(config.modelPsfSigma,)*len(mExposure.filters))
 
     frame = Frame(images.shape, psfs=model_psf, channels=mExposure.filters)
     observation = Observation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
@@ -243,7 +240,7 @@ def deblend(mExposure, footprint, config):
     for k, center in enumerate(centers):
         if k not in skipped:
             # This is just to make sure that there isn't a coding bug
-            assert sources[srcIndex].center == center
+            assert np.all(sources[srcIndex].center == center)
             # Store the record for the peak with the appropriate source
             sources[srcIndex].detectedPeak = footprint.peaks[k]
             srcIndex += 1
@@ -330,7 +327,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
-        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "INTRP"],
+        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
         doc="Whether or not to process isolated sources in the deblender")
     statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
                                     doc="Mask planes to ignore when performing statistics")
@@ -649,7 +646,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 self.log.warn("Unable to deblend source %d: %s" % (src.getId(), blendError))
                 src.set(self.deblendFailedKey, True)
                 src.set(self.deblendErrorKey, blendError)
-                self._setSkippedParent(src)
+                self._skipParent(src, mExposure.mask)
                 continue
 
             # Add the merged source as a parent in the catalog for each band
