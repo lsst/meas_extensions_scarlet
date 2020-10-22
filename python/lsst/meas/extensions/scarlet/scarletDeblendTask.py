@@ -459,7 +459,7 @@ class ScarletDeblendTask(pipeBase.Task):
                                                doc='Name of error if the blend failed')
         self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
                                                  doc="Deblender skipped this source")
-        self.peakCenter = afwTable.Point2DKey.addFields(schema, name="deblend_peak_center",
+        self.peakCenter = afwTable.Point2IKey.addFields(schema, name="deblend_peak_center",
                                                         doc="Center used to apply constraints in scarlet",
                                                         unit="pixel")
         self.peakIdKey = schema.addField("deblend_peakId", type=np.int32,
@@ -772,6 +772,10 @@ class ScarletDeblendTask(pipeBase.Task):
         source.set(self.nPeaksKey, len(fp.peaks))
         # The blend was skipped, so it didn't take any iterations
         source.set(self.iterKey, 0)
+        # Top level parents are not a detected peak, so they have no peakId
+        source.set(self.peakIdKey, 0)
+        # Top level parents also have no parentNPeaks
+        source.set(self.parentNPeaksKey, 0)
 
     def _addChild(self, parentId, sources, heavy, scarletSource, blend_converged, xy0, flux):
         """Add a child to a catalog
@@ -795,26 +799,36 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.runtimeKey, 0)
         src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
 
+        # Set the position of the peak from the parent footprint
+        # This will make it easier to match the same source across
+        # deblenders and across observations, where the peak
+        # position is unlikely to change unless enough time passes
+        # for a source to move on the sky.
+        peak = scarletSource.detectedPeak
+        src.set(self.peakCenter, Point2I(peak["i_x"], peak["i_y"]))
+        src.set(self.peakIdKey, peak["id"])
+
+        # The children have a single peak
+        src.set(self.nPeaksKey, 1)
+
+        # Store the flux at the center of the model and the total
+        # scarlet flux measurement.
+        morph = afwDet.multiband.heavyFootprintToImage(heavy).image.array
+
+        # Set the flux at the center of the model (for SNR)
         try:
             cy, cx = scarletSource.center
+            cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
+            cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
+            src.set(self.modelCenterFlux, morph[cy, cx])
         except AttributeError:
             msg = "Did not recognize coordinates for source type of `{0}`, "
             msg += "could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
             logger.warning(msg.format(type(scarletSource)))
-            return src
-        xmin, ymin = xy0
-        src.set(self.peakCenter, Point2D(cx+xmin, cy+ymin))
 
-        # Store the flux at the center of the model and the total
-        # scarlet flux measurement.
-        morph = afwDet.multiband.heavyFootprintToImage(heavy).image.array
-        cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
-        cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
-        src.set(self.modelCenterFlux, morph[cy, cx])
         src.set(self.modelTypeKey, scarletSource.__class__.__name__)
         src.set(self.edgeFluxFlagKey, scarletSource.isEdge)
-        src.set(self.peakIdKey, scarletSource.detectedPeak["id"])
         # Include the source flux in the model space in the catalog.
         # This uses the narrower model PSF, which ensures that all sources
         # not located on an edge have all of their flux included in the
