@@ -762,9 +762,9 @@ class ScarletDeblendTask(pipeBase.Task):
         source.set(self.runtimeKey, 0)
         # Set the center of the parent
         bbox = fp.getBBox()
-        centerX = bbox.getMinX()+bbox.getWidth()/2
-        centerY = bbox.getMinY()+bbox.getHeight()/2
-        source.set(self.peakCenter, Point2D(centerX, centerY))
+        centerX = int(bbox.getMinX()+bbox.getWidth()/2)
+        centerY = int(bbox.getMinY()+bbox.getHeight()/2)
+        source.set(self.peakCenter, Point2I(centerX, centerY))
         # There are no deblended children, so nChild = 0
         source.set(self.nChildKey, 0)
         # But we also want to know how many peaks that we would have
