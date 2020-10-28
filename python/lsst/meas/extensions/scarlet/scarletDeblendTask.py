@@ -295,7 +295,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Other scarlet paremeters
     useWeights = pexConfig.Field(
-        dtype=bool, default=False,
+        dtype=bool, default=True,
         doc=("Whether or not use use inverse variance weighting."
              "If `useWeights` is `False` then flat weights are used"))
     modelPsfSize = pexConfig.Field(
