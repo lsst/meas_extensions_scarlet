@@ -25,6 +25,7 @@ import scipy.signal
 from lsst.geom import Box2I, Point2I, Extent2I
 from lsst.afw.geom import SpanSet
 from lsst.afw.detection import Footprint, GaussianPsf
+import scarlet
 
 
 def numpyToStack(images, center, offset):
@@ -68,8 +69,8 @@ def initData(shape, coords, amplitudes=None, convolve=True):
         psfRadius = 20
         psfShape = (2*psfRadius+1, 2*psfRadius+1)
 
-        targetPsf = GaussianPsf(psfShape[1], psfShape[0], .9)
-        targetPsfImage = targetPsf.computeImage().array
+        targetPsf = scarlet.GaussianPSF(sigma=0.9, boxsize=2*psfShape[0])
+        targetPsfImage = targetPsf.get_model()[0]
 
         psfs = [GaussianPsf(psfShape[1], psfShape[0], 1+.2*b) for b in range(B)]
         psfImages = np.array([psf.computeImage().array for psf in psfs])
@@ -85,6 +86,7 @@ def initData(shape, coords, amplitudes=None, convolve=True):
                            for m in morphs])
         morphs /= morphs.max()
         psfImages /= psfImages.sum(axis=(1, 2))[:, None, None]
+        psfImages = scarlet.ImagePSF(psfImages)
 
     channels = range(len(images))
     return targetPsfImage, psfImages, images, channels, seds, morphs, targetPsf, psfs

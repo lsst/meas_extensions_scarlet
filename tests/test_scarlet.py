@@ -23,7 +23,7 @@ import unittest
 
 import numpy as np
 import scarlet
-from scarlet_extensions.initialization.source import initSource
+from scarlet.initialization import initSource
 
 import lsst.meas.extensions.scarlet as mes
 import lsst.utils.tests
@@ -89,7 +89,7 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         images = images.astype(np.float32)
         seds = seds.astype(np.float32)
 
-        frame = scarlet.Frame(shape, psfs=targetPsfImage[None], channels=np.arange(B))
+        frame = scarlet.Frame(shape, psfs=targetPsf, channels=np.arange(B))
         observation = scarlet.Observation(images, psfs=psfImages, channels=np.arange(B)).match(frame)
         foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
         xmin = bbox.getMinX()
