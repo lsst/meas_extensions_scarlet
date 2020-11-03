@@ -30,7 +30,6 @@ import lsst.pex.config as pexConfig
 from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
 from lsst.geom import Point2I, Box2I, Point2D
-import lsst.afw.geom as afwGeom
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image.utils
 import lsst.afw.image as afwImage
@@ -661,7 +660,6 @@ class ScarletDeblendTask(pipeBase.Task):
                 templateParents[f].set(self.scarletLogLKey, logL)
 
             # Add each source to the catalogs in each band
-            templateSpans = {f: afwGeom.SpanSet() for f in filters}
             nchild = 0
             for k, source in enumerate(sources):
                 # Skip any sources with no flux or that scarlet skipped because
@@ -685,19 +683,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
-                    else:
-                        templateSpans[f] = templateSpans[f].union(models[f].getSpans())
                 nchild += 1
-
-            # Child footprints may extend beyond the full extent of their
-            # parent's which results in a failure of the replace-by-noise code
-            # to reinstate these pixels to their original values.  The
-            # following updates the parent footprint in-place to ensure it
-            # contains the full union of itself and all of its
-            # children's footprints.
-            for f in filters:
-                templateParents[f].set(self.nChildKey, nchild)
-                templateParents[f].getFootprint().setSpans(templateSpans[f])
 
         K = len(list(templateCatalogs.values())[0])
         self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
