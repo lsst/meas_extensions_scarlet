@@ -112,7 +112,7 @@ def _computePsfImage(self, position=None):
                 psf = single.getPsf().computeImage()
                 psfs.append(psf)
             else:
-                psf = single.getPsf().computeImage(position)
+                psf = single.getPsf().computeKernelImage(position)
                 psfs.append(psf)
         except InvalidParameterError:
             # This band failed to compute the PSF due to incomplete data
