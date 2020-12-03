@@ -684,7 +684,7 @@ class ScarletDeblendTask(pipeBase.Task):
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
                 nchild += 1
-            
+
             # Set the number of children for each parent
             for f in filters:
                 templateParents[f].set(self.nChildKey, nchild)
