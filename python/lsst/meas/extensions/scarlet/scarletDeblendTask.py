@@ -571,7 +571,6 @@ class ScarletDeblendTask(pipeBase.Task):
         for pk, src in enumerate(sources):
             foot = src.getFootprint()
             bbox = foot.getBBox()
-            logger.info("id: {0}".format(src["id"]))
             peaks = foot.getPeaks()
 
             # Since we use the first peak for the parent object, we should
