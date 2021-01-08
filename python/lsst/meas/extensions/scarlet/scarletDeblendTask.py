@@ -504,20 +504,11 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Returns
         -------
-        fluxCatalogs: dict or None
-            Keys are the names of the filters and the values are
-            `lsst.afw.table.source.source.SourceCatalog`'s.
-            These are the flux-conserved catalogs with heavy footprints with
-            the image data weighted by the multiband templates.
-            If `self.config.conserveFlux` is `False`, then this item will be
-            None
-        templateCatalogs: dict or None
+        templateCatalogs: dict
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
-            If `self.config.saveTemplates` is `False`, then this item will be
-            None
         """
         return self.deblend(mExposure, mergedSources)
 
@@ -536,20 +527,11 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Returns
         -------
-        fluxCatalogs : dict or None
-            Keys are the names of the filters and the values are
-            `lsst.afw.table.source.source.SourceCatalog`'s.
-            These are the flux-conserved catalogs with heavy footprints with
-            the image data weighted by the multiband templates.
-            If `self.config.conserveFlux` is `False`, then this item will be
-            None
         templateCatalogs : dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
-            If `self.config.saveTemplates` is `False`, then this item will be
-            None
         """
         import time
 
@@ -560,7 +542,6 @@ class ScarletDeblendTask(pipeBase.Task):
         templateCatalogs = {}
         # This must be returned but is not calculated right now, setting it to
         # None to be consistent with doc string
-        fluxCatalogs = None
         for f in filters:
             _catalog = afwTable.SourceCatalog(sources.table.clone())
             _catalog.extend(sources)
@@ -691,7 +672,7 @@ class ScarletDeblendTask(pipeBase.Task):
         K = len(list(templateCatalogs.values())[0])
         self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
                       % (n0, nparents, K-n0, K))
-        return fluxCatalogs, templateCatalogs
+        return templateCatalogs
 
     def _isLargeFootprint(self, footprint):
         """Returns whether a Footprint is large
