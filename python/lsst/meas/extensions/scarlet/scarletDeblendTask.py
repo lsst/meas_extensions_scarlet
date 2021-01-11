@@ -421,6 +421,8 @@ class ScarletDeblendTask(pipeBase.Task):
             assert schema == self.peakSchemaMapper.getOutputSchema(), "Logic bug mapping schemas"
         self._addSchemaKeys(schema)
         self.schema = schema
+        self.toCopyFromParent = [item.key for item in self.schema
+                                 if item.field.getName().startswith("merge_footprint")]
 
     def _addSchemaKeys(self, schema):
         """Add deblender specific keys to the schema
@@ -658,7 +660,7 @@ class ScarletDeblendTask(pipeBase.Task):
                         err = "Heavy footprint should have a single peak, got {0}"
                         raise ValueError(err.format(len(models[f].peaks)))
                     cat = templateCatalogs[f]
-                    child = self._addChild(parentId, cat, models[f], source, converged,
+                    child = self._addChild(src, cat, models[f], source, converged,
                                            xy0=bbox.getMin(), flux=flux[fidx])
                     if parentId == 0:
                         child.setId(src.getId())
@@ -747,7 +749,7 @@ class ScarletDeblendTask(pipeBase.Task):
         # Top level parents also have no parentNPeaks
         source.set(self.parentNPeaksKey, 0)
 
-    def _addChild(self, parentId, sources, heavy, scarletSource, blend_converged, xy0, flux):
+    def _addChild(self, parent, sources, heavy, scarletSource, blend_converged, xy0, flux):
         """Add a child to a catalog
 
         This creates a new child in the source catalog,
@@ -757,8 +759,10 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         assert len(heavy.getPeaks()) == 1
         src = sources.addNew()
+        for key in self.toCopyFromParent:
+            src.set(key, parent.get(key))
         src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
-        src.setParent(parentId)
+        src.setParent(parent.getId())
         src.setFootprint(heavy)
         # Set the psf key based on whether or not the source was
         # deblended using the PointSource model.
