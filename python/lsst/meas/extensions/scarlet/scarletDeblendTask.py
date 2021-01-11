@@ -310,7 +310,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=bool, default=True,
         doc="Whether or not to process isolated sources in the deblender")
     sourceModel = pexConfig.Field(
-        dtype=str, default="single",
+        dtype=str, default="double",
         doc=("How to determine which model to use for sources, from\n"
              "- 'single': use a single component for all sources\n"
              "- 'double': use a bulge disk model for all sources\n"
