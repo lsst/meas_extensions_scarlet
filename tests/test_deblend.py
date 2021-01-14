@@ -70,7 +70,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         detectionResult = detectionTask.run(table, coadds["r"])
         catalog = detectionResult.sources
         self.assertEqual(len(catalog), 1)
-        _, result = deblendTask.run(coadds, catalog)
+        result = deblendTask.run(coadds, catalog)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
