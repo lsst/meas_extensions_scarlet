@@ -525,6 +525,9 @@ class ScarletDeblendTask(pipeBase.Task):
         self.parentNPeaksKey = schema.addField("deblend_parentNPeaks", type=np.int32,
                                                doc="Same as deblend_n_peaks, but the number of peaks "
                                                    "in the parent footprint")
+        self.parentNChildKey = schema.addField("deblend_parentNChild", type=np.int32,
+                                               doc="Same as deblend_nChild, but the number of "
+                                                   "deblended children from the parent footprint")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
                                               doc="Flux measurement from scarlet")
         self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
@@ -680,11 +683,15 @@ class ScarletDeblendTask(pipeBase.Task):
                 self._skipParent(src, mExposure.mask)
                 continue
 
+            # Calculate the number of children deblended from the parent
+            nChild = len([k for k in range(len(sources)) if k not in skipped])
+
             # Add the merged source as a parent in the catalog for each band
             templateParents = {}
             parentId = src.getId()
             for f in filters:
                 templateParents[f] = templateCatalogs[f][pk]
+                templateParents[f].set(self.nChildKey, nChild)
                 templateParents[f].set(self.nPeaksKey, len(foot.peaks))
                 templateParents[f].set(self.runtimeKey, runtime)
                 templateParents[f].set(self.iterKey, len(blend.loss))
@@ -692,7 +699,6 @@ class ScarletDeblendTask(pipeBase.Task):
                 templateParents[f].set(self.scarletLogLKey, logL)
 
             # Add each source to the catalogs in each band
-            nchild = 0
             for k, source in enumerate(sources):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
@@ -715,11 +721,6 @@ class ScarletDeblendTask(pipeBase.Task):
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
-                nchild += 1
-
-            # Set the number of children for each parent
-            for f in filters:
-                templateParents[f].set(self.nChildKey, nchild)
 
         K = len(list(templateCatalogs.values())[0])
         self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
@@ -860,4 +861,9 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Set the spectrum init flag from the parent
         src.set(self.scarletSpectrumInitKey, parent.get(self.scarletSpectrumInitKey))
+        # Propagate the number of peaks and deblended children
+        # from the parent to keep track of isolated models
+        # vs blended models.
+        src.set(self.parentNChildKey, parent.get(self.nChildKey))
+        src.set(self.parentNPeaksKey, parent.get(self.nPeaksKey))
         return src
