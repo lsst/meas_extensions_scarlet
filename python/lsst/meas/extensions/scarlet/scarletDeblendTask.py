@@ -23,7 +23,8 @@ import numpy as np
 import scarlet
 from scarlet.psf import ImagePSF, GaussianPSF
 from scarlet import Blend, Frame, Observation
-from scarlet.initialization import initAllSources
+from scarlet.renderer import ConvolutionRenderer
+from scarlet.initialization import init_all_sources
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -192,11 +193,17 @@ def deblend(mExposure, footprint, config):
     psfs = ImagePSF(psfs)
     model_psf = GaussianPSF(sigma=(config.modelPsfSigma,)*len(mExposure.filters))
 
-    frame = Frame(images.shape, psfs=model_psf, channels=mExposure.filters)
-    observation = Observation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
-    observation.match(frame)
+    frame = Frame(images.shape, psf=model_psf, channels=mExposure.filters)
+    observation = Observation(images, psf=psfs, weights=weights, channels=mExposure.filters)
+    if config.convolutionType == "fft":
+        observation.match(frame)
+    elif config.convolutionType == "real":
+        renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
+        observation.match(frame, renderer=renderer)
+    else:
+        raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
 
-    assert(config.sourceModel in ["single", "double", "point", "fit"])
+    assert(config.sourceModel in ["single", "double", "compact", "fit"])
 
     # Set the appropriate number of components
     if config.sourceModel == "single":
@@ -204,10 +211,9 @@ def deblend(mExposure, footprint, config):
     elif config.sourceModel == "double":
         maxComponents = 2
     elif config.sourceModel == "compact":
-        raise NotImplementedError("CompactSource initialization has not yet been ported"
-                                  "to the stack version of scarlet")
-    elif config.sourceModel == "point":
         maxComponents = 0
+    elif config.sourceModel == "point":
+        raise NotImplementedError("Point source photometry is currently not implemented")
     elif config.sourceModel == "fit":
         # It is likely in the future that there will be some heuristic
         # used to determine what type of model to use for each source,
@@ -220,18 +226,17 @@ def deblend(mExposure, footprint, config):
     centers = [np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int) for peak in footprint.peaks]
 
     # Only deblend sources that can be initialized
-    sources, skipped = initAllSources(
+    sources, skipped = init_all_sources(
         frame=frame,
         centers=centers,
-        observation=observation,
-        symmetric=config.symmetric,
-        monotonic=config.monotonic,
+        observations=observation,
         thresh=config.morphThresh,
-        maxComponents=maxComponents,
-        edgeDistance=config.edgeDistance,
+        max_components=maxComponents,
+        min_snr=config.minSNR,
         shifting=False,
-        downgrade=config.downgrade,
         fallback=config.fallback,
+        silent=config.catchFailures,
+        set_spectra=config.setSpectra,
     )
 
     # Attach the peak to all of the initialized sources
@@ -280,18 +285,10 @@ class ScarletDeblendConfig(pexConfig.Config):
                                     doc=("Change in the loss function between"
                                          "iterations to exit fitter"))
 
-    # Blend Configuration options
-    edgeDistance = pexConfig.Field(dtype=int, default=1,
-                                   doc="All sources with flux within `edgeDistance` from the edge "
-                                       "will be considered edge sources.")
-
     # Constraints
     morphThresh = pexConfig.Field(dtype=float, default=1,
                                   doc="Fraction of background RMS a pixel must have"
                                       "to be included in the initial morphology")
-    monotonic = pexConfig.Field(dtype=bool, default=True, doc="Make models monotonic")
-    symmetric = pexConfig.Field(dtype=bool, default=False, doc="Make models symmetric")
-
     # Other scarlet paremeters
     useWeights = pexConfig.Field(
         dtype=bool, default=True,
@@ -303,12 +300,22 @@ class ScarletDeblendConfig(pexConfig.Config):
     modelPsfSigma = pexConfig.Field(
         dtype=float, default=0.8,
         doc="Define sigma for the model frame PSF")
+    minSNR = pexConfig.Field(
+        dtype=float, default=50,
+        doc="Minimum Signal to noise to accept the source."
+            "Sources with lower flux will be initialized with the PSF but updated "
+            "like an ordinary ExtendedSource (known in scarlet as a `CompactSource`).")
     saveTemplates = pexConfig.Field(
         dtype=bool, default=True,
         doc="Whether or not to save the SEDs and templates")
     processSingles = pexConfig.Field(
         dtype=bool, default=True,
         doc="Whether or not to process isolated sources in the deblender")
+    convolutionType = pexConfig.Field(
+        dtype=str, default="fft",
+        doc="Type of convolution to render the model to the observations.\n"
+            "- 'fft': perform convolutions in Fourier space\n"
+            "- 'real': peform convolutions in real space.")
     sourceModel = pexConfig.Field(
         dtype=str, default="double",
         doc=("How to determine which model to use for sources, from\n"
@@ -319,14 +326,16 @@ class ScarletDeblendConfig(pexConfig.Config):
              "- 'point': use a point-source model for all sources\n"
              "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
     )
-    downgrade = pexConfig.Field(
-        dtype=bool, default=False,
-        doc="Whether or not to downgrade the number of components for sources in small bounding boxes"
-    )
+    setSpectra = pexConfig.Field(
+        dtype=bool, default=True,
+        doc="Whether or not to solve for the best-fit spectra during initialization. "
+            "This makes initialization slightly longer, as it requires a convolution "
+            "to set the optimal spectra, but results in a much better initial log-likelihood "
+            "and reduced total runtime, with convergence in fewer iterations.")
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
-        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT"],
+        dtype=str, default=["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "EDGE"],
         doc="Whether or not to process isolated sources in the deblender")
     statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
                                     doc="Mask planes to ignore when performing statistics")
@@ -470,11 +479,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                              "Top level blends with no parents have 'peakId=0'")
         self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
                                                doc="The instFlux at the peak position of deblended mode")
-        self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=20,
+        self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=25,
                                             doc="The type of model used, for example "
                                                 "MultiExtendedSource, SingleExtendedSource, PointSource")
-        self.edgeFluxFlagKey = schema.addField("deblend_edgeFluxFlag", type="Flag",
-                                               doc="Source has flux on the edge of the image")
         self.nPeaksKey = schema.addField("deblend_nPeaks", type=np.int32,
                                          doc="Number of initial peaks in the blend. "
                                              "This includes peaks that may have been culled "
@@ -802,7 +809,6 @@ class ScarletDeblendTask(pipeBase.Task):
             logger.warning(msg.format(type(scarletSource)))
 
         src.set(self.modelTypeKey, scarletSource.__class__.__name__)
-        src.set(self.edgeFluxFlagKey, scarletSource.isEdge)
         # Include the source flux in the model space in the catalog.
         # This uses the narrower model PSF, which ensures that all sources
         # not located on an edge have all of their flux included in the
