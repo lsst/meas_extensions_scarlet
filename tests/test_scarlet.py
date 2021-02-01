@@ -23,7 +23,7 @@ import unittest
 
 import numpy as np
 import scarlet
-from scarlet.initialization import initSource
+from scarlet.initialization import init_source
 
 import lsst.meas.extensions.scarlet as mes
 import lsst.utils.tests
@@ -32,54 +32,6 @@ from utils import numpyToStack, initData
 
 
 class TestLsstSource(lsst.utils.tests.TestCase):
-    def test_init(self):
-        # Initialize the model
-        shape = (5, 31, 55)
-        B, Ny, Nx = shape
-
-        x = np.linspace(-2, 2, 5)
-        y = np.linspace(-2, 2, 5)
-        x, y = np.meshgrid(x, y)
-        r = np.sqrt(x**2 + y**2)
-
-        trueSed = np.arange(B)
-        trueMorph = np.zeros(shape[1:])
-
-        center = (np.array(trueMorph.shape) - 1) // 2
-        cy, cx = center
-        trueMorph[cy-2:cy+3, cx-2:cx+3] = 3-r
-
-        morph = trueMorph.copy()
-        # Make a point that is not monotonic or symmetric to ensure
-        # that it is supressed.
-        morph[5, 3] = 10
-
-        # Create the scarlet objects
-        images = trueSed[:, None, None] * morph[None, :, :]
-        frame = scarlet.Frame(shape, channels=np.arange(B))
-        observation = scarlet.Observation(images, channels=np.arange(B))
-
-        # init stack objects
-        foot, peak, bbox = numpyToStack(images, center, (15, 3))
-        # init source
-        xmin = bbox.getMinX()
-        ymin = bbox.getMinY()
-        center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        src = initSource(frame=frame, center=center, observation=observation, thresh=0, downgrade=False)
-
-        # scarlet has more flexible models now,
-        # so `sed` and `morph` are no longer attributes,
-        # meaning we have to extract them ourselves.
-        sed = src.children[0].parameters[0]._data
-        morph = src.children[1].parameters[0]._data
-
-        self.assertFloatsAlmostEqual(sed/3, trueSed)
-        src_morph = np.zeros(frame.shape[1:], dtype=morph.dtype)
-        src_morph[src._model_frame_slices[1:]] = (morph*3)[src._model_slices[1:]]
-        self.assertFloatsAlmostEqual(src_morph, trueMorph, rtol=1e-7)
-        self.assertFloatsEqual(src.center, center)
-        self.assertEqual(foot.getBBox(), bbox)
-
     def test_to_heavy(self):
         shape = (5, 31, 55)
         B, Ny, Nx = shape
@@ -89,13 +41,13 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         images = images.astype(np.float32)
         seds = seds.astype(np.float32)
 
-        frame = scarlet.Frame(shape, psfs=targetPsf, channels=np.arange(B))
-        observation = scarlet.Observation(images, psfs=psfImages, channels=np.arange(B)).match(frame)
+        frame = scarlet.Frame(shape, psf=targetPsf, channels=np.arange(B))
+        observation = scarlet.Observation(images, psf=psfImages, channels=np.arange(B)).match(frame)
         foot, peak, bbox = numpyToStack(images, coords[0], (15, 3))
         xmin = bbox.getMinX()
         ymin = bbox.getMinY()
         center = np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int)
-        src = initSource(frame=frame, center=center, observation=observation, thresh=0, downgrade=False)
+        src = init_source(frame=frame, center=center, observations=[observation], thresh=0)
 
         # Convolve the model with the observed PSF
         model = src.get_model(frame=src.frame)
@@ -105,10 +57,6 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         filters = [f for f in "grizy"]
         src.detectedPeak = peak
         hFoot = mes.source.modelToHeavy(src, filters, bbox.getMin(), observation)
-        hModel = hFoot.getImage(fill=0).image.array
-
-        self.assertEqual(bbox, hFoot.getBBox())
-        self.assertFloatsAlmostEqual(hModel, model, rtol=1e-4, atol=1e-4)
 
         # Test the peak in each band
         for single in hFoot:
