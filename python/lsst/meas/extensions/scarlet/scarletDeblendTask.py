@@ -19,6 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
 import numpy as np
 import scarlet
 from scarlet.psf import ImagePSF, GaussianPSF
@@ -38,6 +39,20 @@ import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 
 from .source import modelToHeavy
+
+# scarlet initialization allows the user to specify the maximum number
+# of components for a source but will fall back to fewer components or
+# an initial PSF morphology depending on the S/N. If either of those happen
+# then scarlet currently warnings that the type of source created by the
+# user was modified. This is not ideal behavior, as it creates a lot of
+# unnecessary warnings for expected behavior and the information is
+# already persisted due to the change in source type.
+# So we silence all of the initialization warnings here to prevent
+# polluting the log files.
+scarletInitLogger = logging.getLogger("scarlet.initialisation")
+scarletSourceLogger = logging.getLogger("scarlet.source")
+scarletInitLogger.setLevel(logging.ERROR)
+scarletSourceLogger.setLevel(logging.ERROR)
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
