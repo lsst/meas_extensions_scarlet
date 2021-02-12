@@ -264,7 +264,13 @@ def deblend(mExposure, footprint, config):
             sources[srcIndex].detectedPeak = footprint.peaks[k]
             # Turn off box resizing to prevent runaway box sizes
             if not config.resizeBoxes:
-                sources[srcIndex]._resize = False
+                src = sources[srcIndex]
+                if isinstance(src, scarlet.MultiExtendedSource):
+                    src.children[0].children[1]._resize = False
+                elif (isinstance(src, scarlet.SingleExtendedSource)
+                      or isinstance(src, scarlet.CompactExtendedSource)):
+                    src.children[1]._resize = False
+
             srcIndex += 1
 
     # Create the blend and attempt to optimize it
