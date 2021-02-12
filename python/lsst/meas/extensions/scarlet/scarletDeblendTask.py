@@ -262,6 +262,9 @@ def deblend(mExposure, footprint, config):
             assert np.all(sources[srcIndex].center == center)
             # Store the record for the peak with the appropriate source
             sources[srcIndex].detectedPeak = footprint.peaks[k]
+            # Turn off box resizing to prevent runaway box sizes
+            if not config.resizeBoxes:
+                sources[srcIndex]._resize = False
             srcIndex += 1
 
     # Create the blend and attempt to optimize it
@@ -347,6 +350,15 @@ class ScarletDeblendConfig(pexConfig.Config):
             "This makes initialization slightly longer, as it requires a convolution "
             "to set the optimal spectra, but results in a much better initial log-likelihood "
             "and reduced total runtime, with convergence in fewer iterations.")
+    resizeBoxes = pexConfig.Field(
+        dtype=bool, default=False,
+        doc="Whether or not to resize boxes based on the gradient updates for each source. "
+            "This is the preferred behavior, as it will allow bright sources to grow and "
+            "avoid truncating flux in the wings and also (in theory) make the boxes for "
+            "faint sources smaller. "
+            "However, in HSC RC2 reprocessing we found that the boxes are growing too large "
+            "so until we have better control over this algorithm the default is to NOT "
+            "resize the boxes (see DM-28805).")
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
