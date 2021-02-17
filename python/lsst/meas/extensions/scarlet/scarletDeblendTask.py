@@ -342,7 +342,7 @@ class ScarletDeblendConfig(pexConfig.Config):
              "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
     )
     setSpectra = pexConfig.Field(
-        dtype=bool, default=True,
+        dtype=bool, default=False,
         doc="Whether or not to solve for the best-fit spectra during initialization. "
             "This makes initialization slightly longer, as it requires a convolution "
             "to set the optimal spectra, but results in a much better initial log-likelihood "
