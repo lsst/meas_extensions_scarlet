@@ -414,6 +414,18 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc=("If True, catch exceptions thrown by the deblender, log them, "
              "and set a flag on the parent, instead of letting them propagate up"))
 
+    # Other options
+    columnInheritance = pexConfig.DictField(
+        keytype=str, itemtype=str, default={
+            "deblend_nChild": "deblend_parentNChild",
+            "deblend_nPeaks": "deblend_parentNPeaks",
+            "deblend_spectrumInitFlag": "deblend_spectrumInitFlag",
+        },
+        doc="Columns to pass from the parent to the child. "
+            "The key is the name of the column for the parent record, "
+            "the value is the name of the column to use for the child."
+    )
+
 
 class ScarletDeblendTask(pipeBase.Task):
     """ScarletDeblendTask
@@ -859,11 +871,7 @@ class ScarletDeblendTask(pipeBase.Task):
         # measurement.
         src.set(self.scarletFluxKey, flux)
 
-        # Set the spectrum init flag from the parent
-        src.set(self.scarletSpectrumInitKey, parent.get(self.scarletSpectrumInitKey))
-        # Propagate the number of peaks and deblended children
-        # from the parent to keep track of isolated models
-        # vs blended models.
-        src.set(self.parentNChildKey, parent.get(self.nChildKey))
-        src.set(self.parentNPeaksKey, parent.get(self.nPeaksKey))
+        # Propagate columns from the parent to the child
+        for parentColumn, childColumn in self.config.columnInheritance.items():
+            src.set(childColumn, parent.get(parentColumn))
         return src
