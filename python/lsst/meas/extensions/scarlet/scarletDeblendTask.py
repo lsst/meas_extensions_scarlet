@@ -240,6 +240,15 @@ def deblend(mExposure, footprint, config):
     ymin = bbox.getMinY()
     centers = [np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int) for peak in footprint.peaks]
 
+    # Choose whether or not to use the improved spectral initialization
+    if config.setSpectra:
+        if config.maxSpectrumCutoff <= 0:
+            spectrumInit = True
+        else:
+            spectrumInit = len(centers) * bbox.getArea() < config.maxSpectrumCutoff
+    else:
+        spectrumInit = False
+
     # Only deblend sources that can be initialized
     sources, skipped = init_all_sources(
         frame=frame,
@@ -251,7 +260,7 @@ def deblend(mExposure, footprint, config):
         shifting=False,
         fallback=config.fallback,
         silent=config.catchFailures,
-        set_spectra=config.setSpectra,
+        set_spectra=spectrumInit,
     )
 
     # Attach the peak to all of the initialized sources
@@ -280,7 +289,7 @@ def deblend(mExposure, footprint, config):
                 failedSources.append(k)
         raise ScarletGradientError(iterations, failedSources)
 
-    return blend, skipped
+    return blend, skipped, spectrumInit
 
 
 class ScarletDeblendConfig(pexConfig.Config):
@@ -342,11 +351,13 @@ class ScarletDeblendConfig(pexConfig.Config):
              "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)")
     )
     setSpectra = pexConfig.Field(
-        dtype=bool, default=False,
+        dtype=bool, default=True,
         doc="Whether or not to solve for the best-fit spectra during initialization. "
             "This makes initialization slightly longer, as it requires a convolution "
             "to set the optimal spectra, but results in a much better initial log-likelihood "
-            "and reduced total runtime, with convergence in fewer iterations.")
+            "and reduced total runtime, with convergence in fewer iterations."
+            "This option is only used when "
+            "peaks*area < `maxSpectrumCutoff` will use the improved initialization.")
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField(
@@ -379,6 +390,16 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=float, default=0.0,
         doc=("Minimum axis ratio for footprints before they are ignored "
              "as large; non-positive means no threshold applied"))
+    maxSpectrumCutoff = pexConfig.Field(
+        dtype=int, default=1000000,
+        doc=("Maximum number of pixels * number of sources in a blend. "
+             "This is different than `maxFootprintArea` because this isn't "
+             "the footprint area but the area of the bounding box that "
+             "contains the footprint, and is also multiplied by the number of"
+             "sources in the footprint. This prevents large skinny blends with "
+             "a high density of sources from running out of memory. "
+             "If `maxSpectrumCutoff == -1` then there is no cutoff.")
+    )
 
     # Failure modes
     fallback = pexConfig.Field(
@@ -508,6 +529,12 @@ class ScarletDeblendTask(pipeBase.Task):
                                               doc="Flux measurement from scarlet")
         self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
                                               doc="Final logL, used to identify regressions in scarlet.")
+        self.scarletSpectrumInitKey = schema.addField("deblend_spectrumInitFlag", type='Flag',
+                                                      doc="True when scarlet initializes sources "
+                                                          "in the blend with a more accurate spectrum. "
+                                                          "The algorithm uses a lot of memory, "
+                                                          "so large dense blends will use "
+                                                          "a less accurate initialization.")
 
         # self.log.trace('Added keys to schema: %s', ", ".join(str(x) for x in
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
@@ -617,11 +644,12 @@ class ScarletDeblendTask(pipeBase.Task):
             try:
                 t0 = time.time()
                 # Build the parameter lists with the same ordering
-                blend, skipped = deblend(mExposure, foot, self.config)
+                blend, skipped, spectrumInit = deblend(mExposure, foot, self.config)
                 tf = time.time()
                 runtime = (tf-t0)*1000
                 src.set(self.deblendFailedKey, False)
                 src.set(self.runtimeKey, runtime)
+                src.set(self.scarletSpectrumInitKey, spectrumInit)
                 converged = _checkBlendConvergence(blend, self.config.relativeError)
                 src.set(self.blendConvergenceFailedFlagKey, converged)
                 sources = [src for src in blend.sources]
@@ -829,4 +857,7 @@ class ScarletDeblendTask(pipeBase.Task):
         # not located on an edge have all of their flux included in the
         # measurement.
         src.set(self.scarletFluxKey, flux)
+
+        # Set the spectrum init flag from the parent
+        src.set(self.scarletSpectrumInitKey, parent.get(self.scarletSpectrumInitKey))
         return src
