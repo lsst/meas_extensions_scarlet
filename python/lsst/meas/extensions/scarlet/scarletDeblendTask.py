@@ -420,6 +420,7 @@ class ScarletDeblendConfig(pexConfig.Config):
             "deblend_nChild": "deblend_parentNChild",
             "deblend_nPeaks": "deblend_parentNPeaks",
             "deblend_spectrumInitFlag": "deblend_spectrumInitFlag",
+            "deblend_blendConvergenceFailedFlag": "deblend_blendConvergenceFailedFlag",
         },
         doc="Columns to pass from the parent to the child. "
             "The key is the name of the column for the parent record, "
@@ -577,7 +578,7 @@ class ScarletDeblendTask(pipeBase.Task):
         return self.deblend(mExposure, mergedSources)
 
     @pipeBase.timeMethod
-    def deblend(self, mExposure, sources):
+    def deblend(self, mExposure, catalog):
         """Deblend a data cube of multiband images
 
         Parameters
@@ -585,13 +586,14 @@ class ScarletDeblendTask(pipeBase.Task):
         mExposure : `MultibandExposure`
             The exposures should be co-added images of the same
             shape and region of the sky.
-        sources : `SourceCatalog`
+        catalog : `SourceCatalog`
             The merged `SourceCatalog` that contains parent footprints
-            to (potentially) deblend.
+            to (potentially) deblend. The new deblended sources are
+            appended to this catalog in place.
 
         Returns
         -------
-        templateCatalogs : dict or None
+        catalogs : dict or None
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
@@ -600,58 +602,76 @@ class ScarletDeblendTask(pipeBase.Task):
         import time
 
         filters = mExposure.filters
-        self.log.info("Deblending {0} sources in {1} exposure bands".format(len(sources), len(mExposure)))
+        self.log.info(f"Deblending {len(catalog)} sources in {len(mExposure)} exposure bands")
 
-        # Create the output catalogs
-        templateCatalogs = {}
-        # This must be returned but is not calculated right now, setting it to
-        # None to be consistent with doc string
-        for f in filters:
-            _catalog = afwTable.SourceCatalog(sources.table.clone())
-            _catalog.extend(sources)
-            templateCatalogs[f] = _catalog
+        # Add the NOT_DEBLENDED mask to the mask plane in each band
+        if self.config.notDeblendedMask:
+            for mask in mExposure.mask:
+                mask.addMaskPlane(self.config.notDeblendedMask)
 
-        n0 = len(sources)
-        nparents = 0
-        for pk, src in enumerate(sources):
-            foot = src.getFootprint()
+        nParents = len(catalog)
+        nDeblendedParents = 0
+        skippedParents = []
+        multibandColumns = {
+            "heavies": [],
+            "fluxes": [],
+            "centerFluxes": [],
+        }
+        for parentIndex in range(nParents):
+            parent = catalog[parentIndex]
+            foot = parent.getFootprint()
             bbox = foot.getBBox()
             peaks = foot.getPeaks()
 
             # Since we use the first peak for the parent object, we should
             # propagate its flags to the parent source.
-            src.assign(peaks[0], self.peakSchemaMapper)
+            parent.assign(peaks[0], self.peakSchemaMapper)
 
-            # Block of Skipping conditions
+            # Skip isolated sources unless processSingles is turned on.
+            # Note: this does not flag isolated sources as skipped or
+            # set the NOT_DEBLENDED mask in the exposure,
+            # since these aren't really a skipped blends.
             if len(peaks) < 2 and not self.config.processSingles:
-                for f in filters:
-                    templateCatalogs[f][pk].set(self.runtimeKey, 0)
+                self._updateParentRecord(
+                    parent=parent,
+                    nPeaks=len(peaks),
+                    nChild=0,
+                    runtime=np.nan,
+                    iterations=0,
+                    logL=np.nan,
+                )
                 continue
+
+            # Block of conditions for skipping a parent with multiple children
+            skipKey = None
             if self._isLargeFootprint(foot):
-                src.set(self.tooBigKey, True)
-                self._skipParent(src, mExposure.mask)
-                self.log.trace('Parent %i: skipping large footprint', int(src.getId()))
-                continue
-            if self._isMasked(foot, mExposure):
-                src.set(self.maskedKey, True)
-                mask = np.bitwise_or.reduce(mExposure.mask[:, bbox].array, axis=0)
-                mask = afwImage.MaskX(mask, xy0=bbox.getMin())
-                self._skipParent(src, mask)
-                self.log.trace('Parent %i: skipping masked footprint', int(src.getId()))
-                continue
-            if self.config.maxNumberOfPeaks > 0 and len(peaks) > self.config.maxNumberOfPeaks:
-                src.set(self.tooManyPeaksKey, True)
-                self._skipParent(src, mExposure.mask)
-                msg = 'Parent {0}: Too many peaks, skipping blend'
-                self.log.trace(msg.format(int(src.getId())))
+                # The footprint is above the maximum footprint size limit
+                skipKey = self.tooBigKey
+                skipMessage = f"Parent {parent.getId()}: skipping large footprint"
+            elif self._isMasked(foot, mExposure):
+                # The footprint exceeds the maximum number of masked pixels
+                skipKey = self.maskedKey
+                skipMessage = f"Parent {parent.getId()}: skipping masked footprint"
+            elif self.config.maxNumberOfPeaks > 0 and len(peaks) > self.config.maxNumberOfPeaks:
                 # Unlike meas_deblender, in scarlet we skip the entire blend
                 # if the number of peaks exceeds max peaks, since neglecting
                 # to model any peaks often results in catastrophic failure
                 # of scarlet to generate models for the brighter sources.
+                skipKey = self.tooManyPeaksKey
+                skipMessage = f"Parent {parent.getId()}: Too many peaks, skipping blend"
+            if skipKey is not None:
+                self._skipParent(
+                    parent=parent,
+                    skipKey=skipKey,
+                    logMessage=skipMessage,
+                )
+                skippedParents.append(parentIndex)
                 continue
 
-            nparents += 1
-            self.log.trace('Parent %i: deblending %i peaks', int(src.getId()), len(peaks))
+            print(f"deblending parent with area {foot.getArea()}")
+
+            nDeblendedParents += 1
+            self.log.trace(f"Parent {parent.getId()}: deblending {len(peaks)} peaks")
             # Run the deblender
             blendError = None
             try:
@@ -660,25 +680,21 @@ class ScarletDeblendTask(pipeBase.Task):
                 blend, skipped, spectrumInit = deblend(mExposure, foot, self.config)
                 tf = time.time()
                 runtime = (tf-t0)*1000
-                src.set(self.deblendFailedKey, False)
-                src.set(self.runtimeKey, runtime)
-                src.set(self.scarletSpectrumInitKey, spectrumInit)
                 converged = _checkBlendConvergence(blend, self.config.relativeError)
-                src.set(self.blendConvergenceFailedFlagKey, converged)
-                sources = [src for src in blend.sources]
+                scarletSources = [src for src in blend.sources]
+                nChild = len(scarletSources)
                 # Re-insert place holders for skipped sources
                 # to propagate them in the catalog so
                 # that the peaks stay consistent
                 for k in skipped:
-                    sources.insert(k, None)
+                    scarletSources.insert(k, None)
             # Catch all errors and filter out the ones that we know about
             except Exception as e:
                 blendError = type(e).__name__
                 if isinstance(e, ScarletGradientError):
-                    src.set(self.iterKey, e.iterations)
+                    parent.set(self.iterKey, e.iterations)
                 elif not isinstance(e, IncompleteDataError):
                     blendError = "UnknownError"
-                    self._skipParent(src, mExposure.mask)
                     if self.config.catchFailures:
                         # Make it easy to find UnknownErrors in the log file
                         self.log.warn("UnknownError")
@@ -687,55 +703,91 @@ class ScarletDeblendTask(pipeBase.Task):
                     else:
                         raise
 
-                self.log.warn("Unable to deblend source %d: %s" % (src.getId(), blendError))
-                src.set(self.deblendFailedKey, True)
-                src.set(self.deblendErrorKey, blendError)
-                self._skipParent(src, mExposure.mask)
+                self._skipParent(
+                    parent=parent,
+                    skipKey=self.deblendFailedKey,
+                    logMessage=f"Unable to deblend source {parent.getId}: {blendError}",
+                )
+                parent.set(self.deblendErrorKey, blendError)
+                skippedParents.append(parentIndex)
                 continue
 
-            # Calculate the number of children deblended from the parent
-            nChild = len([k for k in range(len(sources)) if k not in skipped])
+            # Update the parent record with the deblending results
+            logL = blend.loss[-1]-blend.observations[0].log_norm
+            self._updateParentRecord(
+                parent=parent,
+                nPeaks=len(peaks),
+                nChild=nChild,
+                runtime=runtime,
+                iterations=len(blend.loss),
+                logL=logL,
+                spectrumInit=spectrumInit,
+                converged=converged,
+            )
 
-            # Add the merged source as a parent in the catalog for each band
-            templateParents = {}
-            parentId = src.getId()
-            for f in filters:
-                templateParents[f] = templateCatalogs[f][pk]
-                templateParents[f].set(self.nChildKey, nChild)
-                templateParents[f].set(self.nPeaksKey, len(foot.peaks))
-                templateParents[f].set(self.runtimeKey, runtime)
-                templateParents[f].set(self.iterKey, len(blend.loss))
-                logL = blend.loss[-1]-blend.observations[0].log_norm
-                templateParents[f].set(self.scarletLogLKey, logL)
-
-            # Add each source to the catalogs in each band
-            for k, source in enumerate(sources):
+            # Add each deblended source to the catalog
+            for k, scarletSource in enumerate(scarletSources):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
                 if k in skipped:
                     # No need to propagate anything
                     continue
-                else:
-                    src.set(self.deblendSkippedKey, False)
-                    models = modelToHeavy(source, filters, xy0=bbox.getMin(),
-                                          observation=blend.observations[0])
+                parent.set(self.deblendSkippedKey, False)
+                mHeavy = modelToHeavy(scarletSource, filters, xy0=bbox.getMin(),
+                                      observation=blend.observations[0])
+                multibandColumns["heavies"].append(mHeavy)
+                flux = scarlet.measure.flux(scarletSource)
+                multibandColumns["fluxes"].append({
+                    filters[fidx]: _flux
+                    for fidx, _flux in enumerate(flux)
+                })
+                centerFlux = self._getCenterFlux(mHeavy, scarletSource, xy0=bbox.getMin())
+                multibandColumns["centerFluxes"].append(centerFlux)
 
-                flux = scarlet.measure.flux(source)
-                for fidx, f in enumerate(filters):
-                    if len(models[f].getPeaks()) != 1:
-                        err = "Heavy footprint should have a single peak, got {0}"
-                        raise ValueError(err.format(len(models[f].peaks)))
-                    cat = templateCatalogs[f]
-                    child = self._addChild(src, cat, models[f], source, converged,
-                                           xy0=bbox.getMin(), flux=flux[fidx])
-                    if parentId == 0:
-                        child.setId(src.getId())
-                        child.set(self.runtimeKey, runtime)
+                # Add all fields except the HeavyFootprint to the
+                # source record
+                self._addChild(
+                    parent=parent,
+                    mHeavy=mHeavy,
+                    catalog=catalog,
+                    scarletSource=scarletSource,
+                )
 
-        K = len(list(templateCatalogs.values())[0])
-        self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
-                      % (n0, nparents, K-n0, K))
-        return templateCatalogs
+        # Make sure that the number of new sources matches the number of
+        # entries in each of the band dependent columns.
+        # This should never trigger and is just a sanity check.
+        nChildren = len(catalog) - nParents
+        if np.any([len(meas) != nChildren for meas in multibandColumns.values()]):
+            msg = f"Added {len(catalog)-nParents} new sources, but have "
+            msg += ", ".join([
+                f"{len(value)} {key}"
+                for key, value in multibandColumns
+            ])
+            raise RuntimeError(msg)
+        # Make a copy of the catlog in each band and update the footprints
+        catalogs = {}
+        for f in filters:
+            _catalog = afwTable.SourceCatalog(catalog.table.clone())
+            _catalog.extend(catalog, deep=True)
+            # Update the footprints and columns that are different
+            # for each filter
+            for sourceIndex, source in enumerate(_catalog[nParents:]):
+                source.setFootprint(multibandColumns["heavies"][sourceIndex][f])
+                source.set(self.scarletFluxKey, multibandColumns["fluxes"][sourceIndex][f])
+                source.set(self.modelCenterFlux, multibandColumns["centerFluxes"][sourceIndex][f])
+            catalogs[f] = _catalog
+
+        # Update the mExposure mask with the footprint of skipped parents
+        if self.config.notDeblendedMask:
+            for mask in mExposure.mask:
+                for parentIndex in skippedParents:
+                    fp = _catalog[parentIndex].getFootprint()
+                    fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
+
+        self.log.info(f"Deblender results: of {nParents} parent sources, {nDeblendedParents} "
+                      f"were deblended, creating {nChildren} children, "
+                      f"for a total of {len(catalog)} sources")
+        return catalogs
 
     def _isLargeFootprint(self, footprint):
         """Returns whether a Footprint is large
@@ -773,66 +825,126 @@ class ScarletDeblendTask(pipeBase.Task):
                 return True
         return False
 
-    def _skipParent(self, source, masks):
-        """Indicate that the parent source is not being deblended
+    def _skipParent(self, parent, skipKey, logMessage):
+        """Update a parent record that is not being deblended.
 
-        We set the appropriate flags and masks for each exposure.
+        This is a fairly trivial function but is implemented to ensure
+        that a skipped parent updates the appropriate columns
+        consistently, and always has a flag to mark the reason that
+        it is being skipped.
 
         Parameters
         ----------
-        source : `lsst.afw.table.source.source.SourceRecord`
-            The source to flag as skipped
-        masks : list of `lsst.afw.image.MaskX`
-            The mask in each band to update with the non-detection
+        parent : `lsst.afw.table.source.source.SourceRecord`
+            The parent record to flag as skipped.
+        skipKey : `bool`
+            The name of the flag to mark the reason for skipping.
+        logMessage : `str`
+            The message to display in a log.trace when a source
+            is skipped.
         """
-        fp = source.getFootprint()
-        source.set(self.deblendSkippedKey, True)
-        if self.config.notDeblendedMask:
-            for mask in masks:
-                mask.addMaskPlane(self.config.notDeblendedMask)
-                fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
-        # The deblender didn't run on this source, so it has zero runtime
-        source.set(self.runtimeKey, 0)
-        # Set the center of the parent
-        bbox = fp.getBBox()
-        centerX = int(bbox.getMinX()+bbox.getWidth()/2)
-        centerY = int(bbox.getMinY()+bbox.getHeight()/2)
-        source.set(self.peakCenter, Point2I(centerX, centerY))
-        # There are no deblended children, so nChild = 0
-        source.set(self.nChildKey, 0)
-        # But we also want to know how many peaks that we would have
-        # deblended if the parent wasn't skipped.
-        source.set(self.nPeaksKey, len(fp.peaks))
-        # The blend was skipped, so it didn't take any iterations
-        source.set(self.iterKey, 0)
-        # Top level parents are not a detected peak, so they have no peakId
-        source.set(self.peakIdKey, 0)
-        # Top level parents also have no parentNPeaks
-        source.set(self.parentNPeaksKey, 0)
+        if logMessage is not None:
+            self.log.trace(logMessage)
+        self._updateParentRecord(
+            parent=parent,
+            nPeaks=len(parent.getFootprint().peaks),
+            nChild=0,
+            runtime=np.nan,
+            iterations=0,
+            logL=np.nan,
+            spectrumInit=False,
+            converged=False,
+        )
 
-    def _addChild(self, parent, sources, heavy, scarletSource, blend_converged, xy0, flux):
-        """Add a child to a catalog
+        # Mark the source as skipped by the deblender and
+        # flag the reason why.
+        parent.set(self.deblendSkippedKey, True)
+        parent.set(skipKey, True)
+
+    def _updateParentRecord(self, parent, nPeaks, nChild,
+                            runtime, iterations, logL, spectrumInit, converged):
+        """Update a parent record in all of the single band catalogs.
+
+        This is a fairly trivial function but is implemented to ensure
+        that all locations that update a parent record, whether it is
+        skipped or updated after deblending, update all of the
+        appropriate columns.
+
+        Parameters
+        ----------
+        parent : `lsst.afw.table.source.source.SourceRecord`
+            The parent record to update.
+        nPeaks : int
+            Number of peaks in the parent footprint.
+        nChild : int
+            Number of children deblended from the parent.
+            This may differ from `nPeaks` if some of the peaks
+            were culled and have no deblended model.
+        runtime : float
+            Total runtime for deblending.
+        iterations : int
+            Total number of iterations in scarlet before convergence.
+        logL : float
+            Final log likelihood of the blend.
+        spectrumInit : bool
+            True when scarlet used `set_spectra` to initialize all
+            sources with better initial intensities.
+        converged : bool
+            True when the optimizer reached convergence before
+            reaching the maximum number of iterations.
+        """
+        parent.set(self.nPeaksKey, nPeaks)
+        parent.set(self.nChildKey, nChild)
+        parent.set(self.runtimeKey, runtime)
+        parent.set(self.iterKey, iterations)
+        parent.set(self.scarletLogLKey, logL)
+        parent.set(self.scarletSpectrumInitKey, spectrumInit)
+        parent.set(self.blendConvergenceFailedFlagKey, converged)
+
+    def _addChild(self, parent, mHeavy, catalog, scarletSource):
+        """Add a child to a catalog.
 
         This creates a new child in the source catalog,
-        assigning it a parent id, adding a footprint,
-        and setting all appropriate flags based on the
-        deblender result.
+        assigning it a parent id, and adding all columns
+        that are independent across all filter bands.
+
+        Parameters
+        ----------
+        parent : `lsst.afw.table.source.source.SourceRecord`
+            The parent of the new child record.
+        mHeavy : `lsst.detection.MultibandFootprint`
+            The multi-band footprint containing the model and
+            peak catalog for the new child record.
+        catalog : `lsst.afw.table.source.source.SourceCatalog`
+            The merged `SourceCatalog` that contains parent footprints
+            to (potentially) deblend.
+        scarletSource : `scarlet.Component`
+            The scarlet model for the new source record.
         """
-        assert len(heavy.getPeaks()) == 1
-        src = sources.addNew()
+        src = catalog.addNew()
         for key in self.toCopyFromParent:
             src.set(key, parent.get(key))
-        src.assign(heavy.getPeaks()[0], self.peakSchemaMapper)
+        # The peak catalog is the same for all bands,
+        # so we just use the first peak catalog
+        peaks = mHeavy[mHeavy.filters[0]].peaks
+        src.assign(peaks[0], self.peakSchemaMapper)
         src.setParent(parent.getId())
-        src.setFootprint(heavy)
+        # Currently all children only have a single peak,
+        # but it's possible in the future that there will be hierarchical
+        # deblending, so we use the footprint to set the number of peaks
+        # for each child.
+        src.set(self.nPeaksKey, len(peaks))
         # Set the psf key based on whether or not the source was
         # deblended using the PointSource model.
         # This key is not that useful anymore since we now keep track of
         # `modelType`, but we continue to propagate it in case code downstream
         # is expecting it.
         src.set(self.psfKey, scarletSource.__class__.__name__ == "PointSource")
+        src.set(self.modelTypeKey, scarletSource.__class__.__name__)
+        # We set the runtime to zero so that summing up the
+        # runtime column will give the total time spent
+        # running the deblender for the catalog.
         src.set(self.runtimeKey, 0)
-        src.set(self.blendConvergenceFailedFlagKey, not blend_converged)
 
         # Set the position of the peak from the parent footprint
         # This will make it easier to match the same source across
@@ -843,33 +955,33 @@ class ScarletDeblendTask(pipeBase.Task):
         src.set(self.peakCenter, Point2I(peak["i_x"], peak["i_y"]))
         src.set(self.peakIdKey, peak["id"])
 
-        # The children have a single peak
-        src.set(self.nPeaksKey, 1)
+        # Propagate columns from the parent to the child
+        for parentColumn, childColumn in self.config.columnInheritance.items():
+            src.set(childColumn, parent.get(parentColumn))
 
+    def _getCenterFlux(self, mHeavy, scarletSource, xy0):
+        """Get the flux at the center of a HeavyFootprint
+
+        Parameters
+        ----------
+        mHeavy : `lsst.detection.MultibandFootprint`
+            The multi-band footprint containing the model for the source.
+        scarletSource : `scarlet.Component`
+            The scarlet model for the heavy footprint
+        """
         # Store the flux at the center of the model and the total
         # scarlet flux measurement.
-        morph = afwDet.multiband.heavyFootprintToImage(heavy).image.array
+        mImage = mHeavy.getImage(fill=0.0).image
 
         # Set the flux at the center of the model (for SNR)
         try:
             cy, cx = scarletSource.center
-            cy = np.max([np.min([int(np.round(cy)), morph.shape[0]-1]), 0])
-            cx = np.max([np.min([int(np.round(cx)), morph.shape[1]-1]), 0])
-            src.set(self.modelCenterFlux, morph[cy, cx])
+            cy += xy0.y
+            cx += xy0.x
+            return mImage[:, cx, cy]
         except AttributeError:
             msg = "Did not recognize coordinates for source type of `{0}`, "
             msg += "could not write coordinates or center flux. "
             msg += "Add `{0}` to meas_extensions_scarlet to properly persist this information."
             logger.warning(msg.format(type(scarletSource)))
-
-        src.set(self.modelTypeKey, scarletSource.__class__.__name__)
-        # Include the source flux in the model space in the catalog.
-        # This uses the narrower model PSF, which ensures that all sources
-        # not located on an edge have all of their flux included in the
-        # measurement.
-        src.set(self.scarletFluxKey, flux)
-
-        # Propagate columns from the parent to the child
-        for parentColumn, childColumn in self.config.columnInheritance.items():
-            src.set(childColumn, parent.get(parentColumn))
-        return src
+        return {f: np.nan for f in mImage.filters}
