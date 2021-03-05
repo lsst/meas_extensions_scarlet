@@ -86,7 +86,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         # Add a footprint that is too large
         src = catalog.addNew()
-        ss = SpanSet.fromShape(20, Stencil.BOX, offset=(50, 50))
+        halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
+        ss = SpanSet.fromShape(halfLength, Stencil.BOX, offset=(50, 50))
         bigfoot = Footprint(ss)
         bigfoot.addPeak(50, 50, 100)
         src.setFootprint(bigfoot)
@@ -95,7 +96,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src = catalog.addNew()
         ss = SpanSet.fromShape(10, Stencil.BOX, offset=(75, 20))
         denseFoot = Footprint(ss)
-        for n in range(5):
+        for n in range(config.maxNumberOfPeaks+1):
             denseFoot.addPeak(70+2*n, 15+2*n, 10*n)
         src.setFootprint(denseFoot)
 

@@ -172,6 +172,30 @@ def getFootprintMask(footprint, mExposure):
     return fpMask
 
 
+def isPseudoSource(source, pseudoColumns):
+    """Check if a source is a pseudo source.
+
+    This is mostly for skipping sky objects,
+    but any other column can also be added to disable
+    deblending on a parent or individual source when
+    set to `True`.
+
+    Parameters
+    ----------
+    source : `lsst.afw.table.source.source.SourceRecord`
+        The source to check for the pseudo bit.
+    pseudoColumns : `list` of `str`
+        A list of columns to check for pseudo sources.
+    """
+    isPseudo = False
+    for col in pseudoColumns:
+        try:
+            isPseudo |= source[col]
+        except KeyError:
+            pass
+    return isPseudo
+
+
 def deblend(mExposure, footprint, config):
     """Deblend a parent footprint
 
@@ -238,7 +262,11 @@ def deblend(mExposure, footprint, config):
     # Convert the centers to pixel coordinates
     xmin = bbox.getMinX()
     ymin = bbox.getMinY()
-    centers = [np.array([peak.getIy()-ymin, peak.getIx()-xmin], dtype=int) for peak in footprint.peaks]
+    centers = [
+        np.array([peak.getIy() - ymin, peak.getIx() - xmin], dtype=int)
+        for peak in footprint.peaks
+        if not isPseudoSource(peak, config.pseudoColumns)
+    ]
 
     # Choose whether or not to use the improved spectral initialization
     if config.setSpectra:
@@ -426,6 +454,10 @@ class ScarletDeblendConfig(pexConfig.Config):
             "The key is the name of the column for the parent record, "
             "the value is the name of the column to use for the child."
     )
+    pseudoColumns = pexConfig.ListField(
+        dtype=str, default=['merge_peak_sky', 'sky_source'],
+        doc="Names of flags which should never be deblended."
+    )
 
 
 class ScarletDeblendTask(pipeBase.Task):
@@ -593,7 +625,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Returns
         -------
-        catalogs : dict or None
+        catalogs : `dict` or `None`
             Keys are the names of the filters and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
@@ -631,7 +663,10 @@ class ScarletDeblendTask(pipeBase.Task):
             # Note: this does not flag isolated sources as skipped or
             # set the NOT_DEBLENDED mask in the exposure,
             # since these aren't really a skipped blends.
-            if len(peaks) < 2 and not self.config.processSingles:
+            # We also skip pseudo sources, like sky objects, which
+            # are intended to be skipped
+            if ((len(peaks) < 2 and not self.config.processSingles)
+                    or isPseudoSource(parent, self.config.pseudoColumns)):
                 self._updateParentRecord(
                     parent=parent,
                     nPeaks=len(peaks),
@@ -639,6 +674,8 @@ class ScarletDeblendTask(pipeBase.Task):
                     runtime=np.nan,
                     iterations=0,
                     logL=np.nan,
+                    spectrumInit=False,
+                    converged=False,
                 )
                 continue
 
@@ -865,31 +902,30 @@ class ScarletDeblendTask(pipeBase.Task):
                             runtime, iterations, logL, spectrumInit, converged):
         """Update a parent record in all of the single band catalogs.
 
-        This is a fairly trivial function but is implemented to ensure
-        that all locations that update a parent record, whether it is
-        skipped or updated after deblending, update all of the
-        appropriate columns.
+        Ensure that all locations that update a parent record,
+        whether it is skipped or updated after deblending,
+        update all of the appropriate columns.
 
         Parameters
         ----------
         parent : `lsst.afw.table.source.source.SourceRecord`
             The parent record to update.
-        nPeaks : int
+        nPeaks : `int`
             Number of peaks in the parent footprint.
-        nChild : int
+        nChild : `int`
             Number of children deblended from the parent.
             This may differ from `nPeaks` if some of the peaks
             were culled and have no deblended model.
-        runtime : float
+        runtime : `float`
             Total runtime for deblending.
-        iterations : int
+        iterations : `int`
             Total number of iterations in scarlet before convergence.
-        logL : float
+        logL : `float`
             Final log likelihood of the blend.
-        spectrumInit : bool
+        spectrumInit : `bool`
             True when scarlet used `set_spectra` to initialize all
             sources with better initial intensities.
-        converged : bool
+        converged : `bool`
             True when the optimizer reached convergence before
             reaching the maximum number of iterations.
         """
