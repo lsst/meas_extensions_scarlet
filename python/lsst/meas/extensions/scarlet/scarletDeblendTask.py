@@ -535,11 +535,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                              "This includes peaks that may have been culled "
                                              "during deblending or failed to deblend")
         self.parentNPeaksKey = schema.addField("deblend_parentNPeaks", type=np.int32,
-                                               doc="Same as deblend_n_peaks, but the number of peaks "
-                                                   "in the parent footprint")
+                                               doc="deblend_nPeaks from this records parent.")
         self.parentNChildKey = schema.addField("deblend_parentNChild", type=np.int32,
-                                               doc="Same as deblend_nChild, but the number of "
-                                                   "deblended children from the parent footprint")
+                                               doc="deblend_nChild from this records parent.")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
                                               doc="Flux measurement from scarlet")
         self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
