@@ -414,6 +414,18 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc=("If True, catch exceptions thrown by the deblender, log them, "
              "and set a flag on the parent, instead of letting them propagate up"))
 
+    # Other options
+    columnInheritance = pexConfig.DictField(
+        keytype=str, itemtype=str, default={
+            "deblend_nChild": "deblend_parentNChild",
+            "deblend_nPeaks": "deblend_parentNPeaks",
+            "deblend_spectrumInitFlag": "deblend_spectrumInitFlag",
+        },
+        doc="Columns to pass from the parent to the child. "
+            "The key is the name of the column for the parent record, "
+            "the value is the name of the column to use for the child."
+    )
+
 
 class ScarletDeblendTask(pipeBase.Task):
     """ScarletDeblendTask
@@ -523,8 +535,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                              "This includes peaks that may have been culled "
                                              "during deblending or failed to deblend")
         self.parentNPeaksKey = schema.addField("deblend_parentNPeaks", type=np.int32,
-                                               doc="Same as deblend_n_peaks, but the number of peaks "
-                                                   "in the parent footprint")
+                                               doc="deblend_nPeaks from this records parent.")
+        self.parentNChildKey = schema.addField("deblend_parentNChild", type=np.int32,
+                                               doc="deblend_nChild from this records parent.")
         self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
                                               doc="Flux measurement from scarlet")
         self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
@@ -680,11 +693,15 @@ class ScarletDeblendTask(pipeBase.Task):
                 self._skipParent(src, mExposure.mask)
                 continue
 
+            # Calculate the number of children deblended from the parent
+            nChild = len([k for k in range(len(sources)) if k not in skipped])
+
             # Add the merged source as a parent in the catalog for each band
             templateParents = {}
             parentId = src.getId()
             for f in filters:
                 templateParents[f] = templateCatalogs[f][pk]
+                templateParents[f].set(self.nChildKey, nChild)
                 templateParents[f].set(self.nPeaksKey, len(foot.peaks))
                 templateParents[f].set(self.runtimeKey, runtime)
                 templateParents[f].set(self.iterKey, len(blend.loss))
@@ -692,7 +709,6 @@ class ScarletDeblendTask(pipeBase.Task):
                 templateParents[f].set(self.scarletLogLKey, logL)
 
             # Add each source to the catalogs in each band
-            nchild = 0
             for k, source in enumerate(sources):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
@@ -715,11 +731,6 @@ class ScarletDeblendTask(pipeBase.Task):
                     if parentId == 0:
                         child.setId(src.getId())
                         child.set(self.runtimeKey, runtime)
-                nchild += 1
-
-            # Set the number of children for each parent
-            for f in filters:
-                templateParents[f].set(self.nChildKey, nchild)
 
         K = len(list(templateCatalogs.values())[0])
         self.log.info('Deblended: of %i sources, %i were deblended, creating %i children, total %i sources'
@@ -858,6 +869,7 @@ class ScarletDeblendTask(pipeBase.Task):
         # measurement.
         src.set(self.scarletFluxKey, flux)
 
-        # Set the spectrum init flag from the parent
-        src.set(self.scarletSpectrumInitKey, parent.get(self.scarletSpectrumInitKey))
+        # Propagate columns from the parent to the child
+        for parentColumn, childColumn in self.config.columnInheritance.items():
+            src.set(childColumn, parent.get(parentColumn))
         return src
