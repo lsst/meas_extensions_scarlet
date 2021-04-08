@@ -40,19 +40,14 @@ import lsst.afw.table as afwTable
 
 from .source import modelToHeavy
 
-# scarlet initialization allows the user to specify the maximum number
-# of components for a source but will fall back to fewer components or
-# an initial PSF morphology depending on the S/N. If either of those happen
-# then scarlet currently warnings that the type of source created by the
-# user was modified. This is not ideal behavior, as it creates a lot of
-# unnecessary warnings for expected behavior and the information is
-# already persisted due to the change in source type.
-# So we silence all of the initialization warnings here to prevent
-# polluting the log files.
-scarletInitLogger = logging.getLogger("scarlet.initialisation")
-scarletSourceLogger = logging.getLogger("scarlet.source")
-scarletInitLogger.setLevel(logging.ERROR)
-scarletSourceLogger.setLevel(logging.ERROR)
+# Scarlet and proxmin have a different definition of log levels than the stack,
+# so even "warnings" occur far more often than we would like.
+# So for now we only display scarlet and proxmin errors, as all other
+# scarlet outputs would be considered "TRACE" by our standards.
+scarletLogger = logging.getLogger("scarlet")
+scarletLogger.setLevel(logging.ERROR)
+proxminLogger = logging.getLogger("proxmin")
+proxminLogger.setLevel(logging.ERROR)
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
@@ -704,8 +699,6 @@ class ScarletDeblendTask(pipeBase.Task):
                 )
                 skippedParents.append(parentIndex)
                 continue
-
-            print(f"deblending parent with area {foot.getArea()}")
 
             nDeblendedParents += 1
             self.log.trace(f"Parent {parent.getId()}: deblending {len(peaks)} peaks")
