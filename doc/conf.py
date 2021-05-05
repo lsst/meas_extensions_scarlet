@@ -1,13 +1,14 @@
-"""Sphinx configuration file for an LSST stack package.
 
+"""Sphinx configuration file for an LSST stack package.
 This configuration only affects single-package Sphinx documentation builds.
+For more information, see:
+https://developer.lsst.io/stack/building-single-package-docs.html
 """
 
-from documenteer.sphinxconfig.stackconf import build_package_configs
-import lsst.meas.extensions.scarlet
+from documenteer.conf.pipelinespkg import *
 
 
-_g = globals()
-_g.update(build_package_configs(
-    project_name='meas_extensions_scarlet',
-    version=lsst.meas.extensions.scarlet.version.__version__))
+project = "meas_extensions_scarlet"
+html_theme_options["logotext"] = project
+html_title = project
+html_short_title = project
