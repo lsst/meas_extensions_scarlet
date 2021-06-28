@@ -21,6 +21,7 @@
 
 import numpy as np
 from scarlet.bbox import Box
+from scarlet.frame import Frame
 
 from lsst.geom import Point2I
 import lsst.log
@@ -64,7 +65,7 @@ def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.floa
         # to take the intersection of two boxes.
 
         # Get the PSF size and radii to grow the box
-        py, px = observation.psf.get_model().shape[1:]
+        py, px = observation.frame.psf.get_model().shape[1:]
         dh = py // 2
         dw = px // 2
         shape = (source.bbox.shape[0], source.bbox.shape[1] + py, source.bbox.shape[2] + px)
@@ -74,10 +75,10 @@ def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.floa
         # Only use the portion of the convolved model that fits in the image
         overlap = bbox & source.frame.bbox
         # Load the full multiband model in the larger box
-        model = source.model_to_box(overlap)
+        model = source.model_to_frame(Frame(overlap, filters))
         # Convolve the model with the PSF in each band
         # Always use a real space convolution to limit artifacts
-        model = observation.renderer.convolve(model, convolution_type="real").astype(dtype)
+        model = observation.convolve(model, convolution_type="real").astype(dtype)
         # Update xy0 with the origin of the sources box
         xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     else:

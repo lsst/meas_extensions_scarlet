@@ -1061,7 +1061,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Set the flux at the center of the model (for SNR)
         try:
-            cy, cx = scarletSource.center
+            cy, cx = int(scarletSource.center[0]), int(scarletSource.center[1])
             cy += xy0.y
             cx += xy0.x
             return mImage[:, cx, cy]
