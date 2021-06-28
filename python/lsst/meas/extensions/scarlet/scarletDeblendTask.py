@@ -21,10 +21,12 @@
 
 import logging
 import numpy as np
+# Temporary import needed to make old scarlet work
+import autograd.numpy as anp
 import scarlet
 from scarlet.psf import ImagePSF, GaussianPSF
 from scarlet import Blend, Frame, Observation
-#from scarlet.renderer import ConvolutionRenderer
+# from scarlet.renderer import ConvolutionRenderer
 from scarlet.initialization import initAllSources as init_all_sources
 
 import lsst.log
@@ -56,8 +58,6 @@ logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 # Temporary fix to allow old scarlet to build
 np.int = int
 np.float = float
-
-import autograd.numpy as anp
 anp.int = int
 anp.float = float
 
@@ -241,8 +241,8 @@ def deblend(mExposure, footprint, config):
         observation.match(frame)
     elif config.convolutionType == "real":
         raise NotImplementedError("real convolutions are temporarily disabled to test a scarlet bug")
-        #renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
-        #observation.match(frame, renderer=renderer)
+        # renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
+        # observation.match(frame, renderer=renderer)
     else:
         raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
 
@@ -287,14 +287,14 @@ def deblend(mExposure, footprint, config):
         centers=centers,
         observation=observation,
         thresh=config.morphThresh,
-        #max_components=maxComponents,
+        # max_components=maxComponents,
         maxComponents=maxComponents,
-        #min_snr=config.minSNR,
+        # min_snr=config.minSNR,
         shifting=False,
         downgrade=True,
         fallback=config.fallback,
-        #silent=config.catchFailures,
-        #set_spectra=spectrumInit,
+        # silent=config.catchFailures,
+        # set_spectra=spectrumInit,
     )
 
     # Attach the peak to all of the initialized sources
