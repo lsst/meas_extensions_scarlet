@@ -292,7 +292,7 @@ def deblend(mExposure, footprint, config):
         maxComponents=maxComponents,
         # min_snr=config.minSNR,
         shifting=False,
-        downgrade=True,
+        downgrade=False,
         fallback=config.fallback,
         # silent=config.catchFailures,
         # set_spectra=spectrumInit,
