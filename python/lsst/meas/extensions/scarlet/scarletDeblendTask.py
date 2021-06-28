@@ -241,7 +241,8 @@ def deblend(mExposure, footprint, config):
         observation.match(frame)
     elif config.convolutionType == "real":
         raise NotImplementedError("real convolutions are temporarily disabled to test a scarlet bug")
-        # renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
+        # renderer = ConvolutionRenderer(observation,
+        # frame, convolution_type="real")
         # observation.match(frame, renderer=renderer)
     else:
         raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
