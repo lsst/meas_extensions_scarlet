@@ -24,8 +24,8 @@ import numpy as np
 import scarlet
 from scarlet.psf import ImagePSF, GaussianPSF
 from scarlet import Blend, Frame, Observation
-from scarlet.renderer import ConvolutionRenderer
-from scarlet.initialization import init_all_sources
+#from scarlet.renderer import ConvolutionRenderer
+from scarlet.initialization import initAllSources as init_all_sources
 
 import lsst.log
 import lsst.pex.config as pexConfig
@@ -227,13 +227,14 @@ def deblend(mExposure, footprint, config):
     psfs = ImagePSF(psfs)
     model_psf = GaussianPSF(sigma=(config.modelPsfSigma,)*len(mExposure.filters))
 
-    frame = Frame(images.shape, psf=model_psf, channels=mExposure.filters)
-    observation = Observation(images, psf=psfs, weights=weights, channels=mExposure.filters)
+    frame = Frame(images.shape, psfs=model_psf, channels=mExposure.filters)
+    observation = Observation(images, psfs=psfs, weights=weights, channels=mExposure.filters)
     if config.convolutionType == "fft":
         observation.match(frame)
     elif config.convolutionType == "real":
-        renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
-        observation.match(frame, renderer=renderer)
+        raise NotImplementedError("real convolutions are temporarily disabled to test a scarlet bug")
+        #renderer = ConvolutionRenderer(observation, frame, convolution_type="real")
+        #observation.match(frame, renderer=renderer)
     else:
         raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
 
@@ -276,14 +277,16 @@ def deblend(mExposure, footprint, config):
     sources, skipped = init_all_sources(
         frame=frame,
         centers=centers,
-        observations=observation,
+        observation=observation,
         thresh=config.morphThresh,
-        max_components=maxComponents,
-        min_snr=config.minSNR,
+        #max_components=maxComponents,
+        maxComponents=maxComponents,
+        #min_snr=config.minSNR,
         shifting=False,
+        downgrade=True,
         fallback=config.fallback,
-        silent=config.catchFailures,
-        set_spectra=spectrumInit,
+        #silent=config.catchFailures,
+        #set_spectra=spectrumInit,
     )
 
     # Attach the peak to all of the initialized sources
