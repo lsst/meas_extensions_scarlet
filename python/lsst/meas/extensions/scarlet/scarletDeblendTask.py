@@ -53,6 +53,14 @@ __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = lsst.log.Log.getLogger("meas.deblender.deblend")
 
+# Temporary fix to allow old scarlet to build
+np.int = int
+np.float = float
+
+import autograd.numpy as anp
+anp.int = int
+anp.float = float
+
 
 class IncompleteDataError(Exception):
     """The PSF could not be computed due to incomplete data
