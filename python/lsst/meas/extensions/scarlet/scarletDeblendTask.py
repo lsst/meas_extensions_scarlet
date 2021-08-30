@@ -650,8 +650,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Cull footprints if required by ci
         if self.config.useCiLimits:
-            self.log.info(f"Using CI catalog limits, "
-                          f"the original number of sources to deblend was {len(catalog)}.")
+            self.log.info("Using CI catalog limits, the original number of sources to deblend was %d.",
+                          len(catalog))
             # Select parents with a number of children in the range
             # config.ciDeblendChildRange
             minChildren, maxChildren = self.config.ciDeblendChildRange
@@ -674,7 +674,7 @@ class ScarletDeblendTask(pipeBase.Task):
             idFactory.notify(maxId)
 
         filters = mExposure.filters
-        self.log.info(f"Deblending {len(catalog)} sources in {len(mExposure)} exposure bands")
+        self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
 
         # Add the NOT_DEBLENDED mask to the mask plane in each band
         if self.config.notDeblendedMask:
@@ -746,7 +746,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 continue
 
             nDeblendedParents += 1
-            self.log.trace(f"Parent {parent.getId()}: deblending {len(peaks)} peaks")
+            self.log.trace("Parent %d: deblending %d peaks", parent.getId(), len(peaks))
             # Run the deblender
             blendError = None
             try:
@@ -859,9 +859,9 @@ class ScarletDeblendTask(pipeBase.Task):
                     fp = _catalog[parentIndex].getFootprint()
                     fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
 
-        self.log.info(f"Deblender results: of {nParents} parent sources, {nDeblendedParents} "
-                      f"were deblended, creating {nChildren} children, "
-                      f"for a total of {len(catalog)} sources")
+        self.log.info("Deblender results: of %d parent sources, %d were deblended, "
+                      "creating %d children, for a total of %d sources",
+                      nParents, nDeblendedParents, nChildren, len(catalog))
         return catalogs
 
     def _isLargeFootprint(self, footprint):
