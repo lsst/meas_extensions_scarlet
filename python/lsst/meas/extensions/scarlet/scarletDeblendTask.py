@@ -454,6 +454,11 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Names of flags which should never be deblended."
     )
 
+    # Logging option(s)
+    loggingInterval = pexConfig.Field(
+        dtype=int, default=600,
+        doc="Interval (in seconds) to log messages (at VERBOSE level) while deblending sources."
+    )
     # Testing options
     # Some obs packages and ci packages run the full pipeline on a small
     # subset of data to test that the pipeline is functioning properly.
@@ -675,6 +680,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         filters = mExposure.filters
         self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
+        nextLogTime = time.time() + self.config.loggingInterval
 
         # Add the NOT_DEBLENDED mask to the mask plane in each band
         if self.config.notDeblendedMask:
@@ -827,6 +833,10 @@ class ScarletDeblendTask(pipeBase.Task):
                     catalog=catalog,
                     scarletSource=scarletSource,
                 )
+            # Log a message if it has been a while since the last log.
+            if (currentTime := time.time()) > nextLogTime:
+                nextLogTime = currentTime + self.config.loggingInterval
+                self.log.verbose("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
 
         # Make sure that the number of new sources matches the number of
         # entries in each of the band dependent columns.
