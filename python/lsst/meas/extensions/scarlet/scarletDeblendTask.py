@@ -454,6 +454,11 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Names of flags which should never be deblended."
     )
 
+    # Logging option(s)
+    loggingInterval = pexConfig.Field(
+        dtype=int, default=600,
+        doc="Interval (in seconds) to log messages (at VERBOSE level) while deblending sources."
+    )
     # Testing options
     # Some obs packages and ci packages run the full pipeline on a small
     # subset of data to test that the pipeline is functioning properly.
@@ -650,8 +655,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Cull footprints if required by ci
         if self.config.useCiLimits:
-            self.log.info(f"Using CI catalog limits, "
-                          f"the original number of sources to deblend was {len(catalog)}.")
+            self.log.info("Using CI catalog limits, the original number of sources to deblend was %d.",
+                          len(catalog))
             # Select parents with a number of children in the range
             # config.ciDeblendChildRange
             minChildren, maxChildren = self.config.ciDeblendChildRange
@@ -674,7 +679,8 @@ class ScarletDeblendTask(pipeBase.Task):
             idFactory.notify(maxId)
 
         filters = mExposure.filters
-        self.log.info(f"Deblending {len(catalog)} sources in {len(mExposure)} exposure bands")
+        self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
+        nextLogTime = time.time() + self.config.loggingInterval
 
         # Add the NOT_DEBLENDED mask to the mask plane in each band
         if self.config.notDeblendedMask:
@@ -746,7 +752,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 continue
 
             nDeblendedParents += 1
-            self.log.trace(f"Parent {parent.getId()}: deblending {len(peaks)} peaks")
+            self.log.trace("Parent %d: deblending %d peaks", parent.getId(), len(peaks))
             # Run the deblender
             blendError = None
             try:
@@ -827,6 +833,10 @@ class ScarletDeblendTask(pipeBase.Task):
                     catalog=catalog,
                     scarletSource=scarletSource,
                 )
+            # Log a message if it has been a while since the last log.
+            if (currentTime := time.time()) > nextLogTime:
+                nextLogTime = currentTime + self.config.loggingInterval
+                self.log.verbose("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
 
         # Make sure that the number of new sources matches the number of
         # entries in each of the band dependent columns.
@@ -859,9 +869,9 @@ class ScarletDeblendTask(pipeBase.Task):
                     fp = _catalog[parentIndex].getFootprint()
                     fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
 
-        self.log.info(f"Deblender results: of {nParents} parent sources, {nDeblendedParents} "
-                      f"were deblended, creating {nChildren} children, "
-                      f"for a total of {len(catalog)} sources")
+        self.log.info("Deblender results: of %d parent sources, %d were deblended, "
+                      "creating %d children, for a total of %d sources",
+                      nParents, nDeblendedParents, nChildren, len(catalog))
         return catalogs
 
     def _isLargeFootprint(self, footprint):
