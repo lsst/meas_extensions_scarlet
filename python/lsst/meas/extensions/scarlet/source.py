@@ -22,33 +22,65 @@
 import logging
 
 import numpy as np
-from scarlet.bbox import Box
 
+<<<<<<< HEAD
 from lsst.geom import Point2I
 import lsst.afw.detection as afwDet
+=======
+from lsst.geom import Point2I, Box2I, Extent2I
+from lsst.afw.geom import SpanSet, Stencil
+from lsst.afw.detection import Footprint, PeakCatalog
+from lsst.afw.detection.multiband import MultibandFootprint
+from lsst.afw.image import Mask, MultibandImage
+import lsst.log
+>>>>>>> 2d40ab5 (Fix HeavyFootprints generated from scarlet models)
 
 __all__ = ["modelToHeavy"]
 
 logger = logging.getLogger(__name__)
 
 
-def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.float32):
-    """Convert the model to a `MultibandFootprint`
+def scarletBoxToBBox(box, xy0=Point2I()):
+    """Convert a scarlet.Box to a Box2I
+
+    Parameters
+    ----------
+    box : `scarlet.Box`
+        The scarlet bounding box to convert
+    xy0 : `Point2I`
+        An additional offset to apply to the scarlet box.
+        This is common since scarlet sources have an origin of
+        `(0,0)` at the lower left corner of the blend while
+        the blend itself is likely to have an offset in the
+        `Exposure`.
+
+    Returns
+    -------
+    bbox : `lsst.geom.box2I`
+        The converted bounding box
+    """
+    xy0 = Point2I(box.origin[-1]+xy0.x, box.origin[-2]+xy0.y)
+    extent = Extent2I(box.shape[-1], box.shape[-2])
+    return Box2I(xy0, extent)
+
+
+def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
+    """Convert a scarlet model to a `MultibandFootprint`.
 
     Parameters
     ----------
     source : `scarlet.Component`
         The source to convert to a `HeavyFootprint`.
-    filters : `iterable`
-        A "list" of names for each filter.
+    mExposure : `lsst.image.MultibandExposure`
+        The multiband exposure containing the image,
+        mask, and variance data.
+    blend : `scarlet.Blend`
+        The `Blend` object that contains information about
+        the observation, PSF, etc, used to convolve the
+        scarlet model to the observed seeing in each band.
     xy0 : `lsst.geom.Point2I`
-        `(x,y)` coordinates of the bounding box containing the
-        `HeavyFootprint`. If `observation` is not `None` then
-        this parameter is updated with the position of the new model
-    observation : `scarlet.Observation`
-        The scarlet observation, used to convolve the image with
-        the origin PSF. If `observation`` is `None` then the
-        `HeavyFootprint` will exist in the model frame.
+        `(x,y)` coordinates of the lower-left pixel of the
+        entire blend.
     dtype : `numpy.dtype`
         The data type for the returned `HeavyFootprint`.
 
@@ -57,34 +89,37 @@ def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.floa
     mHeavy : `lsst.detection.MultibandFootprint`
         The multi-band footprint containing the model for the source.
     """
-    if observation is not None:
-        # We want to convolve the model with the observed PSF,
-        # which means we need to grow the model box by the PSF to
-        # account for all of the flux after convolution.
-        # FYI: The `scarlet.Box` class implements the `&` operator
-        # to take the intersection of two boxes.
+    # Get the SpanSet that contains all of the model pixels
+    model = np.array(source.get_model()).astype(np.float32)
+    bbox = scarletBoxToBBox(source.bbox, xy0)
+    mask = np.max(np.array(model), axis=0) > 0
+    mask = Mask(mask.astype(np.int32), xy0=bbox.getMin())
+    spans = SpanSet.fromMask(mask)
 
-        # Get the PSF size and radii to grow the box
-        py, px = observation.psf.get_model().shape[1:]
-        dh = py // 2
-        dw = px // 2
-        shape = (source.bbox.shape[0], source.bbox.shape[1] + py, source.bbox.shape[2] + px)
-        origin = (source.bbox.origin[0], source.bbox.origin[1] - dh, source.bbox.origin[2] - dw)
-        # Create the larger box to fit the model + PSf
-        bbox = Box(shape, origin=origin)
-        # Only use the portion of the convolved model that fits in the image
-        overlap = bbox & source.frame.bbox
-        # Load the full multiband model in the larger box
-        model = source.model_to_box(overlap)
-        # Convolve the model with the PSF in each band
-        # Always use a real space convolution to limit artifacts
-        model = observation.renderer.convolve(model, convolution_type="real").astype(dtype)
-        # Update xy0 with the origin of the sources box
-        xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
-    else:
-        model = source.get_model().astype(dtype)
-    mHeavy = afwDet.MultibandFootprint.fromArrays(filters, model, xy0=xy0)
-    peakCat = afwDet.PeakCatalog(source.detectedPeak.table)
+    # Grow the spanset to allow the model to grow by the PSF
+    observation = blend.observations[0]
+    py, px = observation.psf.get_model().shape[1:]
+    psfSize = np.max([py, px])
+    dilation = psfSize // 2
+    spans = spans.dilated(dilation, stencil=Stencil.BOX)
+
+    # convolve the model
+    dilatedBox = spans.getBBox()
+    shape = (len(mExposure.filters), dilatedBox.getHeight(), dilatedBox.getWidth())
+    emptyModel = np.zeros(shape, dtype=dtype)
+    convolved = MultibandImage(mExposure.filters, emptyModel, dilatedBox)
+    convolved[:, bbox].array = model
+    convolved.array[:] = observation.renderer.convolve(
+        convolved.array, convolution_type="real").astype(dtype)
+
+    # Create the MultibandHeavyFootprint
+    foot = Footprint(spans)
+    # Clip to the Exposure, just in case the edge sources
+    # have convolved flux outside the image
+    foot.clipTo(mExposure.getBBox())
+    mHeavy = MultibandFootprint.fromImages(mExposure.filters, convolved, footprint=foot)
+    # Add the location of the source to the peak catalog
+    peakCat = PeakCatalog(source.detectedPeak.table)
     peakCat.append(source.detectedPeak)
     for footprint in mHeavy:
         footprint.setPeakCatalog(peakCat)

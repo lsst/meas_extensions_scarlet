@@ -202,6 +202,20 @@ def deblend(mExposure, footprint, config):
         - The footprint of the parent to deblend
     config : `ScarletDeblendConfig`
         - Configuration of the deblending task
+
+    Returns
+    -------
+    blend : `scarlet.Blend`
+        The scarlet blend class that contains all of the information
+        about the parameters and results from scarlet
+    skipped : `list` of `int`
+        The indices of any children that failed to initialize
+        and were skipped.
+    spectrumInit : `bool`
+        Whether or not all of the sources were initialized by jointly
+        fitting their SED's. This provides a better initialization
+        but created memory issues when a blend is too large or
+        contains too many sources.
     """
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
@@ -813,8 +827,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     # No need to propagate anything
                     continue
                 parent.set(self.deblendSkippedKey, False)
-                mHeavy = modelToHeavy(scarletSource, filters, xy0=bbox.getMin(),
-                                      observation=blend.observations[0])
+                mHeavy = modelToHeavy(scarletSource, mExposure, blend, xy0=bbox.getMin())
                 multibandColumns["heavies"].append(mHeavy)
                 flux = scarlet.measure.flux(scarletSource)
                 multibandColumns["fluxes"].append({
@@ -832,6 +845,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     catalog=catalog,
                     scarletSource=scarletSource,
                 )
+
             # Log a message if it has been a while since the last log.
             if (currentTime := time.time()) > nextLogTime:
                 nextLogTime = currentTime + self.config.loggingInterval
