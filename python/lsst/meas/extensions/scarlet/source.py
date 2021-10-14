@@ -22,6 +22,7 @@
 import logging
 
 import numpy as np
+from scarlet.bbox import Box
 
 from lsst.geom import Point2I, Box2I, Extent2I
 from lsst.afw.geom import SpanSet
