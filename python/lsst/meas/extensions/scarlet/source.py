@@ -22,6 +22,7 @@
 import logging
 
 import numpy as np
+from scarlet.bbox import Box
 
 <<<<<<< HEAD
 from lsst.geom import Point2I
@@ -64,6 +65,31 @@ def scarletBoxToBBox(box, xy0=Point2I()):
     return Box2I(xy0, extent)
 
 
+def bboxToScarletBox(nBands, bbox, xy0=Point2I()):
+    """Convert a Box2I to a scarlet bounding Box
+
+    Parameters
+    ----------
+    nBands : `int`
+        Number of bands in the full image.
+    bbox : `lsst.geom.Box2I`
+        The Box2I to convert into a scarlet `Box`.
+    xy0 : `lsst.geom.Point2I`.
+        An overall offset to subtract from the `Box2I`.
+        This is common in blends, where `xy0` is the minimum pixel
+        location of the blend and `bbox` is the box containing
+        a source in the blend.
+
+    Returns
+    -------
+    box : `scarlet.Box`
+        A scarlet `Box` that is more useful for slicing image data
+        as a numpy array.
+    """
+    origin = (0, bbox.getMinY()-xy0.y, bbox.getMinX()-xy0.x)
+    return Box((nBands, bbox.getHeight(), bbox.getWidth()), origin)
+
+
 def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     """Convert a scarlet model to a `MultibandFootprint`.
 
@@ -94,7 +120,7 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     bbox = scarletBoxToBBox(source.bbox, xy0)
     mask = np.max(np.array(model), axis=0) > 0
     mask = Mask(mask.astype(np.int32), xy0=bbox.getMin())
-    spans = SpanSet.fromMask(mask)
+    spans = SpanSet.fromMask(mask).clippedTo(mExposure.getBBox())
 
     # Grow the spanset to allow the model to grow by the PSF
     observation = blend.observations[0]
@@ -102,21 +128,24 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     psfSize = np.max([py, px])
     dilation = psfSize // 2
     spans = spans.dilated(dilation, stencil=Stencil.BOX)
+    # Clip by the full image
+    spans = spans.clippedTo(mExposure.getBBox())
 
     # convolve the model
     dilatedBox = spans.getBBox()
     shape = (len(mExposure.filters), dilatedBox.getHeight(), dilatedBox.getWidth())
     emptyModel = np.zeros(shape, dtype=dtype)
     convolved = MultibandImage(mExposure.filters, emptyModel, dilatedBox)
-    convolved[:, bbox].array = model
+
+    clippedBox = bbox.clippedTo(mExposure.getBBox())
+    _bbox = bboxToScarletBox(source.bbox.shape[0], clippedBox, bbox.getMin())
+
+    convolved[:, clippedBox].array = model[_bbox.slices]
     convolved.array[:] = observation.renderer.convolve(
         convolved.array, convolution_type="real").astype(dtype)
 
     # Create the MultibandHeavyFootprint
     foot = Footprint(spans)
-    # Clip to the Exposure, just in case the edge sources
-    # have convolved flux outside the image
-    foot.clipTo(mExposure.getBBox())
     mHeavy = MultibandFootprint.fromImages(mExposure.filters, convolved, footprint=foot)
     # Add the location of the source to the peak catalog
     peakCat = PeakCatalog(source.detectedPeak.table)
