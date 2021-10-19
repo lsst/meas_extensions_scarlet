@@ -37,6 +37,7 @@ import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
+from lsst.utils.timer import timeMethod
 
 from .source import modelToHeavy
 
@@ -606,7 +607,7 @@ class ScarletDeblendTask(pipeBase.Task):
         #               (self.nChildKey, self.tooManyPeaksKey, self.tooBigKey))
         #               )
 
-    @pipeBase.timeMethod
+    @timeMethod
     def run(self, mExposure, mergedSources):
         """Get the psf from each exposure and then run deblend().
 
@@ -629,7 +630,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         return self.deblend(mExposure, mergedSources)
 
-    @pipeBase.timeMethod
+    @timeMethod
     def deblend(self, mExposure, catalog):
         """Deblend a data cube of multiband images
 
