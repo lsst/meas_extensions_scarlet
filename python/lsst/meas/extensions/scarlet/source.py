@@ -29,7 +29,7 @@ from lsst.geom import Point2I
 import lsst.afw.detection as afwDet
 =======
 from lsst.geom import Point2I, Box2I, Extent2I
-from lsst.afw.geom import SpanSet, Stencil
+from lsst.afw.geom import SpanSet
 from lsst.afw.detection import Footprint, PeakCatalog
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.image import Mask, MultibandImage
