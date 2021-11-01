@@ -851,6 +851,9 @@ class ScarletDeblendTask(pipeBase.Task):
                 nextLogTime = currentTime + self.config.loggingInterval
                 self.log.verbose("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
 
+            # Clear the cached values in scarlet to clear out memory
+            scarlet.cache.Cache._cache = {}
+
         # Make sure that the number of new sources matches the number of
         # entries in each of the band dependent columns.
         # This should never trigger and is just a sanity check.
