@@ -115,41 +115,40 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     mHeavy : `lsst.detection.MultibandFootprint`
         The multi-band footprint containing the model for the source.
     """
-    # Get the SpanSet that contains all of the model pixels
-    model = np.array(source.get_model()).astype(np.float32)
-    bbox = scarletBoxToBBox(source.bbox, xy0)
-    mask = np.max(np.array(model), axis=0) > 0
-    mask = Mask(mask.astype(np.int32), xy0=bbox.getMin())
-    spans = SpanSet.fromMask(mask).clippedTo(mExposure.getBBox())
+    # We want to convolve the model with the observed PSF,
+    # which means we need to grow the model box by the PSF to
+    # account for all of the flux after convolution.
+    # FYI: The `scarlet.Box` class implements the `&` operator
+    # to take the intersection of two boxes.
 
-    # Grow the spanset to allow the model to grow by the PSF
-    observation = blend.observations[0]
-    py, px = observation.psf.get_model().shape[1:]
-    psfSize = np.max([py, px])
-    dilation = psfSize // 2
-    spans = spans.dilated(dilation, stencil=Stencil.BOX)
-    # Clip by the full image
-    spans = spans.clippedTo(mExposure.getBBox())
+    # Get the PSF size and radii to grow the box
+    py, px = blend.observations[0].psf.get_model().shape[1:]
+    dh = py // 2
+    dw = px // 2
+    shape = (source.bbox.shape[0], source.bbox.shape[1] + py, source.bbox.shape[2] + px)
+    origin = (source.bbox.origin[0], source.bbox.origin[1] - dh, source.bbox.origin[2] - dw)
+    # Create the larger box to fit the model + PSf
+    bbox = Box(shape, origin=origin)
+    # Only use the portion of the convolved model that fits in the image
+    overlap = bbox & source.frame.bbox
+    # Load the full multiband model in the larger box
+    model = source.model_to_box(overlap)
+    # Convolve the model with the PSF in each band
+    # Always use a real space convolution to limit artifacts
+    model = blend.observations[0].renderer.convolve(model, convolution_type="real").astype(dtype)
+    # Update xy0 with the origin of the sources box
+    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    # Create the spans for the footprint
+    valid = np.max(np.array(model), axis=0) != 0
+    valid = Mask(valid.astype(np.int32), xy0=xy0)
+    spans = SpanSet.fromMask(valid)
 
-    # convolve the model
-    dilatedBox = spans.getBBox()
-    shape = (len(mExposure.filters), dilatedBox.getHeight(), dilatedBox.getWidth())
-    emptyModel = np.zeros(shape, dtype=dtype)
-    convolved = MultibandImage(mExposure.filters, emptyModel, dilatedBox)
-
-    clippedBox = bbox.clippedTo(mExposure.getBBox())
-    _bbox = bboxToScarletBox(source.bbox.shape[0], clippedBox, bbox.getMin())
-
-    convolved[:, clippedBox].array = model[_bbox.slices]
-    convolved.array[:] = observation.renderer.convolve(
-        convolved.array, convolution_type="real").astype(dtype)
-
-    # Create the MultibandHeavyFootprint
-    foot = Footprint(spans)
-    mHeavy = MultibandFootprint.fromImages(mExposure.filters, convolved, footprint=foot)
     # Add the location of the source to the peak catalog
     peakCat = PeakCatalog(source.detectedPeak.table)
     peakCat.append(source.detectedPeak)
-    for footprint in mHeavy:
-        footprint.setPeakCatalog(peakCat)
+    # Create the MultibandHeavyFootprint
+    foot = Footprint(spans)
+    foot.setPeakCatalog(peakCat)
+    model = MultibandImage(mExposure.filters, model, spans.getBBox())
+    mHeavy = MultibandFootprint.fromImages(mExposure.filters, model, footprint=foot)
     return mHeavy
