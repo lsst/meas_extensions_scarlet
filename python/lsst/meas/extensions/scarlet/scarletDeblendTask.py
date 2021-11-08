@@ -32,7 +32,6 @@ from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
 from lsst.geom import Point2I, Box2I, Point2D
 import lsst.afw.geom.ellipses as afwEll
-import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
