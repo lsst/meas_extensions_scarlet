@@ -27,7 +27,6 @@ from scarlet import Blend, Frame, Observation
 from scarlet.renderer import ConvolutionRenderer
 from scarlet.initialization import init_all_sources
 
-import lsst.log
 import lsst.pex.config as pexConfig
 from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
@@ -52,7 +51,7 @@ proxminLogger.setLevel(logging.ERROR)
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
-logger = lsst.log.Log.getLogger("lsst.meas.deblender.deblend")
+logger = logging.getLogger("lsst.meas.deblender.deblend")
 
 
 class IncompleteDataError(Exception):
