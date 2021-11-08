@@ -50,7 +50,7 @@ proxminLogger.setLevel(logging.ERROR)
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
-logger = logging.getLogger("lsst.meas.deblender.deblend")
+logger = logging.getLogger(__name__)
 
 
 class IncompleteDataError(Exception):
