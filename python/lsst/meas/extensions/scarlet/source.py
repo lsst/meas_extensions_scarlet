@@ -28,7 +28,7 @@ import lsst.afw.detection as afwDet
 
 __all__ = ["modelToHeavy"]
 
-logger = lsst.log.Log.getLogger("meas.extensions.scarlet.source")
+logger = lsst.log.Log.getLogger("lsst.meas.extensions.scarlet.source")
 
 
 def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.float32):
