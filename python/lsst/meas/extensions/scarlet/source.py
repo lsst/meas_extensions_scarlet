@@ -149,6 +149,6 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     # Create the MultibandHeavyFootprint
     foot = Footprint(spans)
     foot.setPeakCatalog(peakCat)
-    model = MultibandImage(mExposure.filters, model, spans.getBBox())
+    model = MultibandImage(mExposure.filters, model, valid.getBBox())
     mHeavy = MultibandFootprint.fromImages(mExposure.filters, model, footprint=foot)
     return mHeavy
