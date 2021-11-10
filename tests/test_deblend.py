@@ -63,7 +63,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         images += noise
 
         filters = "grizy"
-        _images = afwImage.MultibandMaskedImage.fromArrays(filters, images.astype(np.float32), None, noise)
+        _images = afwImage.MultibandMaskedImage.fromArrays(filters, images.astype(np.float32), None, noise**2)
         coadds = [afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images]
         coadds = afwImage.MultibandExposure.fromExposures(filters, coadds)
         for b, coadd in enumerate(coadds):
@@ -101,7 +101,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        result = deblendTask.run(coadds, catalog)
+        result, flux = deblendTask.run(coadds, catalog)
 
         # Make sure that the catalogs have the same sources in all bands,
         # and check that band-independent columns are equal
@@ -119,6 +119,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
             "deblend_blendConvergenceFailedFlag",
         ]
         self.assertEqual(len(filters), len(result))
+        self.assertEqual(len(filters), len(flux))
         ref = result[filters[0]]
         for f in filters[1:]:
             for col in bandIndependentColumns:

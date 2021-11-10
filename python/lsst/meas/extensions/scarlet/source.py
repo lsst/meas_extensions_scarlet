@@ -89,7 +89,7 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
 
     Parameters
     ----------
-    source : `scarlet.Component`
+    source : `scarlet.Source`
         The source to convert to a `HeavyFootprint`.
     mExposure : `lsst.image.MultibandExposure`
         The multiband exposure containing the image,
@@ -130,6 +130,85 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     # Convolve the model with the PSF in each band
     # Always use a real space convolution to limit artifacts
     model = blend.observations[0].renderer.convolve(model, convolution_type="real").astype(dtype)
+    # Update xy0 with the origin of the sources box
+    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    # Create the spans for the footprint
+    valid = np.max(np.array(model), axis=0) != 0
+    valid = Mask(valid.astype(np.int32), xy0=xy0)
+    spans = SpanSet.fromMask(valid)
+
+    # Add the location of the source to the peak catalog
+    peakCat = PeakCatalog(source.detectedPeak.table)
+    peakCat.append(source.detectedPeak)
+    # Create the MultibandHeavyFootprint
+    foot = Footprint(spans)
+    foot.setPeakCatalog(peakCat)
+    model = MultibandImage(mExposure.filters, model, valid.getBBox())
+    mHeavy = MultibandFootprint.fromImages(mExposure.filters, model, footprint=foot)
+    return mHeavy
+
+
+def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFlux=False):
+    """Convert a scarlet model to a `MultibandFootprint`.
+    Parameters
+    ----------
+    source : `scarlet.LiteSource`
+        The source to convert to a `HeavyFootprint`.
+    mExposure : `lsst.image.MultibandExposure`
+        The multiband exposure containing the image,
+        mask, and variance data.
+    blend : `scarlet.Blend`
+        The `Blend` object that contains information about
+        the observation, PSF, etc, used to convolve the
+        scarlet model to the observed seeing in each band.
+    xy0 : `lsst.geom.Point2I`
+        `(x,y)` coordinates of the lower-left pixel of the
+        entire blend. If no pixel is specified then this
+        will be `Point2I(0, 0)`.
+    dtype : `numpy.dtype`
+        The data type for the returned `HeavyFootprint`.
+    Returns
+    -------
+    mHeavy : `lsst.detection.MultibandFootprint`
+        The multi-band footprint containing the model for the source.
+    """
+    if xy0 is None:
+        xy0 = Point2I()
+
+    # We want to convolve the model with the observed PSF,
+    # which means we need to grow the model box by the PSF to
+    # account for all of the flux after convolution.
+    # FYI: The `scarlet.Box` class implements the `&` operator
+    # to take the intersection of two boxes.
+
+    # Get the PSF size and radii to grow the box
+    py, px = blend.observation.psfs.shape[1:]
+    dh = py // 2
+    dw = px // 2
+
+    if useFlux:
+        source_box = source.flux_box
+        shape = source_box.shape
+        origin = source_box.origin
+    else:
+        source_box = source.bbox
+        shape = (source_box.shape[0], source_box.shape[1] + 2*dh, source_box.shape[2] + 2*dw)
+        origin = (source_box.origin[0], source_box.origin[1] - dh, source_box.origin[2] - dw)
+    # Create the larger box to fit the model + PSf
+    bbox = Box(shape, origin=origin)
+    # Only use the portion of the convolved model that fits in the image
+    overlap = bbox & blend.observation.bbox
+    # Load the full multiband model in the larger box
+    if useFlux:
+        # The flux weighted model is already convolved, so we just load it
+        _bbox = overlap - bbox.origin
+        model = source.get_model(use_flux=True)[_bbox.slices]
+    else:
+        model = source.get_model(bbox=overlap)
+        # Convolve the model with the PSF in each band
+        # Always use a real space convolution to limit artifacts
+        model = blend.observation.convolve(model, mode="real").astype(dtype)
+
     # Update xy0 with the origin of the sources box
     xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
