@@ -24,17 +24,12 @@ import logging
 import numpy as np
 from scarlet.bbox import Box
 
-<<<<<<< HEAD
-from lsst.geom import Point2I
-import lsst.afw.detection as afwDet
-=======
 from lsst.geom import Point2I, Box2I, Extent2I
 from lsst.afw.geom import SpanSet
 from lsst.afw.detection import Footprint, PeakCatalog
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.image import Mask, MultibandImage
 import lsst.log
->>>>>>> 2d40ab5 (Fix HeavyFootprints generated from scarlet models)
 
 __all__ = ["modelToHeavy"]
 
