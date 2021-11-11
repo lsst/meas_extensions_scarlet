@@ -29,7 +29,6 @@ from lsst.afw.geom import SpanSet
 from lsst.afw.detection import Footprint, PeakCatalog
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.image import Mask, MultibandImage
-import lsst.log
 
 __all__ = ["modelToHeavy"]
 
