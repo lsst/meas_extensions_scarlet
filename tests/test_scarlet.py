@@ -24,8 +24,6 @@ import unittest
 import numpy as np
 import scarlet
 from scarlet.initialization import init_source
-
-import lsst.meas.extensions.scarlet as mes
 import lsst.utils.tests
 
 from utils import numpyToStack, initData
@@ -52,19 +50,6 @@ class TestLsstSource(lsst.utils.tests.TestCase):
         # Convolve the model with the observed PSF
         model = src.get_model(frame=src.frame)
         model = observation.render(model)
-
-        # Test Model to Heavy
-        filters = [f for f in "grizy"]
-        src.detectedPeak = peak
-        hFoot = mes.source.modelToHeavy(src, filters, bbox.getMin(), observation)
-
-        # Test the peak in each band
-        for single in hFoot:
-            peaks = single.getPeaks()
-            self.assertEqual(len(peaks), 1)
-            hPeak = peaks[0]
-            self.assertEqual(hPeak.getIx()-xmin, coords[0][1])
-            self.assertEqual(hPeak.getIy()-ymin, coords[0][0])
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
