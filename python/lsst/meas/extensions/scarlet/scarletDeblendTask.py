@@ -27,13 +27,11 @@ from scarlet import Blend, Frame, Observation
 from scarlet.renderer import ConvolutionRenderer
 from scarlet.initialization import init_all_sources
 
-import lsst.log
 import lsst.pex.config as pexConfig
 from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
 from lsst.geom import Point2I, Box2I, Point2D
 import lsst.afw.geom.ellipses as afwEll
-import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
@@ -52,7 +50,7 @@ proxminLogger.setLevel(logging.ERROR)
 
 __all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
-logger = lsst.log.Log.getLogger("meas.deblender.deblend")
+logger = logging.getLogger(__name__)
 
 
 class IncompleteDataError(Exception):

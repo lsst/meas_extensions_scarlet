@@ -19,16 +19,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import logging
+
 import numpy as np
 from scarlet.bbox import Box
 
 from lsst.geom import Point2I
-import lsst.log
 import lsst.afw.detection as afwDet
 
 __all__ = ["modelToHeavy"]
 
-logger = lsst.log.Log.getLogger("meas.extensions.scarlet.source")
+logger = logging.getLogger(__name__)
 
 
 def modelToHeavy(source, filters, xy0=Point2I(), observation=None, dtype=np.float32):
