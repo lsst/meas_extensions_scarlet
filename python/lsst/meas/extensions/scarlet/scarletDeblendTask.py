@@ -37,6 +37,7 @@ import lsst.afw.image.utils
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
+from lsst.utils.logging import PeriodicLogger
 
 from .source import modelToHeavy
 
@@ -680,7 +681,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         filters = mExposure.filters
         self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
-        nextLogTime = time.time() + self.config.loggingInterval
+        periodicLog = PeriodicLogger(self.log)
 
         # Add the NOT_DEBLENDED mask to the mask plane in each band
         if self.config.notDeblendedMask:
@@ -834,9 +835,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     scarletSource=scarletSource,
                 )
             # Log a message if it has been a while since the last log.
-            if (currentTime := time.time()) > nextLogTime:
-                nextLogTime = currentTime + self.config.loggingInterval
-                self.log.verbose("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
+            periodicLog.log("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
 
         # Make sure that the number of new sources matches the number of
         # entries in each of the band dependent columns.
