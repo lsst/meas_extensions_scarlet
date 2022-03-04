@@ -651,7 +651,8 @@ class ScarletDeblendConfig(pexConfig.Config):
     # Logging option(s)
     loggingInterval = pexConfig.Field(
         dtype=int, default=600,
-        doc="Interval (in seconds) to log messages (at VERBOSE level) while deblending sources."
+        doc="Interval (in seconds) to log messages (at VERBOSE level) while deblending sources.",
+        deprecated="This field is no longer used and will be removed in v25.",
     )
     # Testing options
     # Some obs packages and ci packages run the full pipeline on a small
