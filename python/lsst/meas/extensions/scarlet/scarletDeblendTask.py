@@ -38,6 +38,7 @@ import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
+from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
 from .source import bboxToScarletBox, modelToHeavy, liteModelToHeavy
@@ -873,7 +874,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         filters = mExposure.filters
         self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
-        nextLogTime = time.time() + self.config.loggingInterval
+        periodicLog = PeriodicLogger(self.log)
 
         # Create a set of wavelet coefficients if using wavelet initialization
         if self.config.version == "lite" and self.config.morphImage == "wavelet":
@@ -1055,9 +1056,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 )
 
             # Log a message if it has been a while since the last log.
-            if (currentTime := time.time()) > nextLogTime:
-                nextLogTime = currentTime + self.config.loggingInterval
-                self.log.verbose("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
+            periodicLog.log("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
 
             # Clear the cached values in scarlet to clear out memory
             scarlet.cache.Cache._cache = {}
