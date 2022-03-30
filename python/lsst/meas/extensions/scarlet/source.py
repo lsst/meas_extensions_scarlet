@@ -22,7 +22,10 @@
 import logging
 
 import numpy as np
-from scarlet.bbox import Box
+from scarlet.bbox import Box, overlapped_slices
+from scarlet.detect_pybind11 import get_footprints
+from scarlet.detect import bounds_to_bbox
+from scarlet.lite import LiteSource
 
 from lsst.geom import Point2I, Box2I, Extent2I
 from lsst.afw.geom import SpanSet
@@ -84,12 +87,134 @@ def bboxToScarletBox(nBands, bbox, xy0=Point2I()):
     return Box((nBands, bbox.getHeight(), bbox.getWidth()), origin)
 
 
+def scarletFootprintsToArray(footprints, shape):
+    """Convert scarlet footprints to an integer array.
+
+    Given a set of footprints, create an image array that
+    contains the index of each footprint as the value
+    for all of its pixels in the mask. Because the
+    footprints do not overlap (by definition), we can store the
+    footprint indices as integers as opposed to bit values,
+    which would limit the number of sources per blend.
+
+    Parameters
+    ----------
+    footprints : `list` of `scarlet.Footprint`
+        The scarlet footprints to insert into
+        the array.
+    shape : `tuple` of `int`
+        The shape of the image that contains all
+        of the footprints. Typically this is the
+        shape of the blend.
+    """
+    mask = np.zeros(shape, dtype=int)
+    for idx, fp in enumerate(footprints):
+        bbox = bounds_to_bbox(fp.bounds)
+        mask[bbox.slices] += fp.footprint * (idx+1)
+    return mask
+
+
+def mergeDeblendedSources(blend, footprintArr, factor=0.5):
+    """Merge sources that are contained in the same footprint
+
+    In order to prevent large galaxies from being shredded or
+    very tight blends (that are unlikely to be deblended correctly)
+    from making it into the output catalog,
+    sources with peaks contained in the same footprint above the
+    noise level of the observations are grouped together to
+    be listed in the catalog as a single object and flagged as
+    a compound source.
+
+    This works because the model exists in a partially
+    deconvolved image space where there is rarely any flux overlap
+    above the noise level between objects not physically interacting.
+
+    Parameters
+    ----------
+    blend: `~scarlet.LiteBlend`
+        The blend containing the observations and models
+        for all of the sources.
+    footprintArr: `numpy.ndarray`
+        The array that contains the pixels contained in the
+        stack footprint for the entire blend.
+    factor: `float`
+        The factor to multiply the noise by in order to set the
+        detection threshold.
+
+    Returns
+    -------
+    new_sources: `list`
+        A list of peaks for each source in the output catalog.
+        Each element of `soures` is a list of indices that
+        gives the index for each source in `blend.sources`
+        that is to be merged into a single source model.
+    """
+    # Get the deconvolved model
+    model = blend.get_model() * footprintArr
+
+    # Get the pixels above the noise
+    noise = np.max(blend.observation.noise_rms) * factor
+    template = model > noise
+    template = np.sum(template, axis=0) > len(blend.observation.images) - 1
+
+    # Get the merged footprints
+    footprints = get_footprints(np.sum(model, axis=0)*template, 1, 4, 0, False)
+    peakIndices = [[] for i in range(len(footprints))]
+    footprints = scarletFootprintsToArray(footprints, model.shape[1:])
+
+    # Combine peaks that are contained in the same merged footprint
+    for k, src in enumerate(blend.sources):
+        if src.is_null:
+            continue
+        idx = footprints[src.center]
+
+        if idx == 0:
+            peakIndices.append([k])
+        else:
+            peakIndices[idx-1].append(k)
+    sourceIndices = [peak for peak in peakIndices if len(peak) > 0]
+
+    # Order the sources from brightest to faintest
+    flux = [np.sum([np.sum(blend.sources[peak].get_model()) for peak in peaks]) for peaks in sourceIndices]
+    indices = np.argsort(flux)
+
+    # Create the merged sources by combining the appropriate components
+    newSources = []
+    for idx in indices:
+        peakIndicess = sourceIndices[idx]
+        components = []
+        boxes = []
+        detectedPeaks = []
+        for peak in peakIndicess:
+            src = blend.sources[peak]
+            components.extend(src.components)
+            if hasattr(src, "flux"):
+                boxes.append(src.flux_box)
+            detectedPeaks.extend(src.detectedPeaks)
+        src = LiteSource(components, src.dtype)
+        src.detectedPeaks = detectedPeaks
+        if len(boxes) > 0:
+            flux_box = boxes[0]
+            for bbox in boxes[1:]:
+                flux_box |= bbox
+            flux_img = np.zeros(flux_box.shape, dtype=model.dtype)
+            for peak in peakIndicess:
+                _src = blend.sources[peak]
+                slices = overlapped_slices(flux_box, _src.flux_box)
+                flux_img[slices[0]] += _src.flux
+            src.flux = flux_img
+            src.flux_box = flux_box
+
+        newSources.append(src)
+    return newSources
+
+
 def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     """Convert a scarlet model to a `MultibandFootprint`.
 
     Parameters
     ----------
-    source : `scarlet.Source`
+    source : `scarlet.Component`
         The source to convert to a `HeavyFootprint`.
     mExposure : `lsst.image.MultibandExposure`
         The multiband exposure containing the image,
@@ -131,10 +256,11 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     # Always use a real space convolution to limit artifacts
     model = blend.observations[0].renderer.convolve(model, convolution_type="real").astype(dtype)
     # Update xy0 with the origin of the sources box
-    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    # Update xy0 with the origin of the sources box
+    _xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
     valid = np.max(np.array(model), axis=0) != 0
-    valid = Mask(valid.astype(np.int32), xy0=xy0)
+    valid = Mask(valid.astype(np.int32), xy0=_xy0)
     spans = SpanSet.fromMask(valid)
 
     # Add the location of the source to the peak catalog
@@ -148,11 +274,11 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     return mHeavy
 
 
-def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFlux=False):
+def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, useFlux=False):
     """Convert a scarlet model to a `MultibandFootprint`.
     Parameters
     ----------
-    source : `scarlet.LiteSource`
+    source : `scarlet.Component`
         The source to convert to a `HeavyFootprint`.
     mExposure : `lsst.image.MultibandExposure`
         The multiband exposure containing the image,
@@ -163,8 +289,7 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
         scarlet model to the observed seeing in each band.
     xy0 : `lsst.geom.Point2I`
         `(x,y)` coordinates of the lower-left pixel of the
-        entire blend. If no pixel is specified then this
-        will be `Point2I(0, 0)`.
+        entire blend.
     dtype : `numpy.dtype`
         The data type for the returned `HeavyFootprint`.
     Returns
@@ -172,9 +297,6 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
     mHeavy : `lsst.detection.MultibandFootprint`
         The multi-band footprint containing the model for the source.
     """
-    if xy0 is None:
-        xy0 = Point2I()
-
     # We want to convolve the model with the observed PSF,
     # which means we need to grow the model box by the PSF to
     # account for all of the flux after convolution.
@@ -210,15 +332,17 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
         model = blend.observation.convolve(model, mode="real").astype(dtype)
 
     # Update xy0 with the origin of the sources box
-    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    _xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
     valid = np.max(np.array(model), axis=0) != 0
-    valid = Mask(valid.astype(np.int32), xy0=xy0)
+    valid = Mask(valid.astype(np.int32), xy0=_xy0)
     spans = SpanSet.fromMask(valid)
 
-    # Add the location of the source to the peak catalog
-    peakCat = PeakCatalog(source.detectedPeak.table)
-    peakCat.append(source.detectedPeak)
+    # Add the location of the peaks to the peak catalog
+    peakCat = PeakCatalog(source.detectedPeaks[0].table)
+    for detectedPeak in source.detectedPeaks:
+        peakCat.append(detectedPeak)
+
     # Create the MultibandHeavyFootprint
     foot = Footprint(spans)
     foot.setPeakCatalog(peakCat)
