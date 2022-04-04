@@ -592,13 +592,21 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Size restrictions
     maxNumberOfPeaks = pexConfig.Field(
-        dtype=int, default=0,
+        dtype=int, default=200,
         doc=("Only deblend the brightest maxNumberOfPeaks peaks in the parent"
              " (<= 0: unlimited)"))
     maxFootprintArea = pexConfig.Field(
-        dtype=int, default=1000000,
+        dtype=int, default=100_000,
         doc=("Maximum area for footprints before they are ignored as large; "
              "non-positive means no threshold applied"))
+    maxAreaTimesPeaks = pexConfig.Field(
+        dtype=int, default=10_000_000,
+        doc=("Maximum rectangular footprint area * nPeaks in the footprint. "
+             "This was introduced in DM-33690 to prevent fields that are crowded or have a "
+             "LSB galaxy that causes memory intensive initialization in scarlet from dominating "
+             "the overall runtime and/or causing the task to run out of memory. "
+             "(<= 0: unlimited)")
+    )
     maxFootprintSize = pexConfig.Field(
         dtype=int, default=0,
         doc=("Maximum linear dimension for footprints before they are ignored "
@@ -608,7 +616,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc=("Minimum axis ratio for footprints before they are ignored "
              "as large; non-positive means no threshold applied"))
     maxSpectrumCutoff = pexConfig.Field(
-        dtype=int, default=1000000,
+        dtype=int, default=1_000_000,
         doc=("Maximum number of pixels * number of sources in a blend. "
              "This is different than `maxFootprintArea` because this isn't "
              "the footprint area but the area of the bounding box that "
@@ -1118,13 +1126,11 @@ class ScarletDeblendTask(pipeBase.Task):
     def _isLargeFootprint(self, footprint):
         """Returns whether a Footprint is large
 
-        'Large' is defined by thresholds on the area, size and axis ratio.
+        'Large' is defined by thresholds on the area, size and axis ratio,
+        and total area of the bounding box multiplied by
+        the number of children.
         These may be disabled independently by configuring them to be
         non-positive.
-
-        This is principally intended to get rid of satellite streaks, which the
-        deblender or other downstream processing can have trouble dealing with
-        (e.g., multiple large HeavyFootprints can chew up memory).
         """
         if self.config.maxFootprintArea > 0 and footprint.getArea() > self.config.maxFootprintArea:
             return True
@@ -1135,6 +1141,9 @@ class ScarletDeblendTask(pipeBase.Task):
         if self.config.minFootprintAxisRatio > 0:
             axes = afwEll.Axes(footprint.getShape())
             if axes.getB() < self.config.minFootprintAxisRatio*axes.getA():
+                return True
+        if self.config.maxAreaTimesPeaks > 0:
+            if footprint.getBBox().getArea() * len(footprint.peaks) > self.config.maxAreaTimesPeaks:
                 return True
         return False
 
