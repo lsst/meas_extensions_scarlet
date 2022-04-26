@@ -41,7 +41,7 @@ import lsst.afw.table as afwTable
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from .source import bboxToScarletBox, modelToHeavy, liteModelToHeavy, mergeDeblendedSources
+from .source import bboxToScarletBox, modelToHeavy, liteModelToHeavy
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -304,7 +304,6 @@ def deblend(mExposure, footprint, config):
 
     # Create the blend and attempt to optimize it
     blend = Blend(sources, observation)
-    blend.mask = mask
     try:
         blend.fit(max_iter=config.maxIter, e_rel=config.relativeError)
     except ArithmeticError:
@@ -419,10 +418,9 @@ def deblend_lite(mExposure, footprint, config, wavelets=None):
         if len(sources[k].components) > 0 and np.any(sources[k].center != center):
             raise ValueError("Misaligned center, expected {center} but got {sources[k].center}")
         # Store the record for the peak with the appropriate source
-        sources[k].detectedPeaks = [footprint.peaks[k]]
+        sources[k].detectedPeak = footprint.peaks[k]
 
     blend = lite.LiteBlend(sources, observation)
-    blend.mask = mask
 
     # Initialize each source with its best fit spectrum
     # This significantly cuts down on the number of iterations
@@ -576,7 +574,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     maskLimits = pexConfig.DictField(
         keytype=str,
         itemtype=float,
-        default={"SAT": 0},
+        default={},
         doc=("Mask planes with the corresponding limit on the fraction of masked pixels. "
              "Sources violating this limit will not be deblended. "
              "If the fraction is `0` then the limit is a single pixel."),
@@ -616,12 +614,6 @@ class ScarletDeblendConfig(pexConfig.Config):
              "sources in the footprint. This prevents large skinny blends with "
              "a high density of sources from running out of memory. "
              "If `maxSpectrumCutoff == -1` then there is no cutoff.")
-    )
-    # Blend quality fields
-    mergeShredded = pexConfig.Field(
-        dtype=bool, default=True,
-        doc="Whether or not to merge sources together that are likely have been shredded or "
-            "deblended incorrectly."
     )
     # Failure modes
     fallback = pexConfig.Field(
@@ -946,10 +938,8 @@ class ScarletDeblendTask(pipeBase.Task):
                 tf = time.monotonic()
                 runtime = (tf-t0)*1000
                 converged = _checkBlendConvergence(blend, self.config.relativeError)
-                # Merge sources that are likely to be part of the same source,
-                # or are too close to be deblended properly
+                # Store the number of components in the blend
                 if self.config.version == "lite":
-                    blend.sources = mergeDeblendedSources(blend, ~blend.mask, factor=0.5)
                     nComponents = len(blend.components)
                 else:
                     nComponents = 0
@@ -1118,7 +1108,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 return True
         return False
 
-    def _isMasked(self, footprint, mMask):
+    def _isMasked(self, footprint, mExposure):
         """Returns whether the footprint violates the mask limits
 
         Parameters
@@ -1136,10 +1126,10 @@ class ScarletDeblendTask(pipeBase.Task):
             `self.config.maskLimits`.
         """
         bbox = footprint.getBBox()
-        mask = np.bitwise_or.reduce(mMask[:, bbox].array, axis=0)
+        mask = np.bitwise_or.reduce(mExposure.mask[:, bbox].array, axis=0)
         size = float(footprint.getArea())
         for maskName, limit in self.config.maskLimits.items():
-            maskVal = mMask.getPlaneBitMask(maskName)
+            maskVal = mExposure.mask.getPlaneBitMask(maskName)
             _mask = afwImage.MaskX(mask & maskVal, xy0=bbox.getMin())
             # spanset of masked pixels
             maskedSpan = footprint.spans.intersect(_mask, maskVal)
@@ -1221,7 +1211,7 @@ class ScarletDeblendTask(pipeBase.Task):
             # The footprint is above the maximum footprint size limit
             skipKey = self.tooBigKey
             skipMessage = f"Parent {parent.getId()}: skipping large footprint"
-        elif self._isMasked(footprint, mExposure.mask):
+        elif self._isMasked(footprint, mExposure):
             # The footprint exceeds the maximum number of masked pixels
             skipKey = self.maskedKey
             skipMessage = f"Parent {parent.getId()}: skipping masked footprint"
@@ -1276,6 +1266,11 @@ class ScarletDeblendTask(pipeBase.Task):
             Number of children deblended from the parent.
             This may differ from `nPeaks` if some of the peaks
             were culled and have no deblended model.
+        nComponents : `int`
+            Total number of components in the parent.
+            This is usually different than the number of children,
+            since it is common for a single source to have multiple
+            components.
         runtime : `float`
             Total runtime for deblending.
         iterations : `int`
