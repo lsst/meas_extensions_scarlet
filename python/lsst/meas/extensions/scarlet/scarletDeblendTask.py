@@ -19,6 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from dataclasses import dataclass
 from functools import partial
 import logging
 import numpy as np
@@ -441,6 +442,81 @@ def deblend_lite(mExposure, footprint, config, wavelets=None):
     return blend, skipped, spectrumInit
 
 
+@dataclass
+class DeblenderMetrics:
+    """Metrics and measurements made on single sources.
+
+    Store deblender metrics to be added as attributes to a scarlet source
+    before it is converted into a `SourceRecord`.
+    When DM-34414 is finished this class will be eliminated and the metrics
+    will be added to the schema using a pipeline task that calculates them
+    from the stored deconvolved models.
+
+    All of the parameters are one dimensional numpy arrays,
+    with an element for each band in the observed images.
+
+    `maxOverlap` is useful as a metric for determining how blended a source
+    is because if it only overlaps with other sources at or below
+    the noise level, it is likely to be a mostly isolated source
+    in the deconvolved model frame.
+
+    `fluxOverlapFraction` is potentially more useful than the canonical
+    "blendedness" (or purity) metric because it accounts for potential
+    biases created during deblending by not weighting the overlapping
+    flux with the flux of this sources model.
+
+    Attributes
+    ----------
+    maxOverlap : `numpy.ndarray`
+        The maximum overlap that the source has with its neighbors in
+        a single pixel.
+    fluxOverlap : `numpy.ndarray`
+        The total flux from neighbors overlapping with the current source.
+    fluxOverlapFraction : `numpy.ndarray`
+        The fraction of `flux from neighbors/source flux` for a
+        given source within the source's footprint.
+    blendedness : `numpy.ndarray`
+        The metric for determining how blended a source is using the
+        Bosch et al. 2018 metric for "blendedness." Note that some
+        surveys use the term "purity," which is `1-blendedness`.
+    """
+    maxOverlap: np.array
+    fluxOverlap: np.array
+    fluxOverlapFraction: np.array
+    blendedness: np.array
+
+
+def setDeblenderMetrics(blend):
+    """Set metrics that can be used to evalute the deblender accuracy
+
+    This function calculates the `DeblenderMetrics` for each source in the
+    blend, and assigns it to that sources `metrics` property in place.
+
+    Parameters
+    ----------
+    blend : `scarlet.lite.Blend`
+        The blend containing the sources to measure.
+    """
+    # Store the full model of the scene for comparison
+    blendModel = blend.get_model()
+    for k, src in enumerate(blend.sources):
+        # Extract the source model in the full bounding box
+        model = src.get_model(bbox=blend.bbox)
+        # The footprint is the 2D array of non-zero pixels in each band
+        footprint = np.bitwise_or.reduce(model > 0, axis=0)
+        # Calculate the metrics.
+        # See `DeblenderMetrics` for a description of each metric.
+        neighborOverlap = (blendModel-model) * footprint[None, :, :]
+        maxOverlap = np.max(neighborOverlap, axis=(1, 2))
+        fluxOverlap = np.sum(neighborOverlap, axis=(1, 2))
+        fluxModel = np.sum(model, axis=(1, 2))
+        fluxOverlapFraction = np.zeros((len(model), ), dtype=float)
+        isFinite = fluxModel > 0
+        fluxOverlapFraction[isFinite] = fluxOverlap[isFinite]/fluxModel[isFinite]
+        blendedness = 1 - np.sum(model*model, axis=(1, 2))/np.sum(blendModel*model, axis=(1, 2))
+        src.metrics = DeblenderMetrics(maxOverlap, fluxOverlap, fluxOverlapFraction, blendedness)
+
+
 class ScarletDeblendConfig(pexConfig.Config):
     """MultibandDeblendConfig
 
@@ -806,6 +882,24 @@ class ScarletDeblendTask(pipeBase.Task):
                                                   "this column is set to zero.")
         self.psfKey = schema.addField('deblend_deblendedAsPsf', type='Flag',
                                       doc='Deblender thought this source looked like a PSF')
+        # Blendedness/classification metrics
+        self.maxOverlapKey = schema.addField("deblend_maxOverlap", type=np.float32,
+                                             doc="Maximum overlap with all of the other neighbors flux "
+                                                 "combined."
+                                                 "This is useful as a metric for determining how blended a "
+                                                 "source is because if it only overlaps with other sources "
+                                                 "at or below the noise level, it is likely to be a mostly "
+                                                 "isolated source in the deconvolved model frame.")
+        self.fluxOverlapKey = schema.addField("deblend_fluxOverlap", type=np.float32,
+                                              doc="This is the total flux from neighboring objects that "
+                                                  "overlaps with this source.")
+        self.fluxOverlapFractionKey = schema.addField("deblend_fluxOverlapFraction", type=np.float32,
+                                                      doc="This is the fraction of "
+                                                          "`flux from neighbors/source flux` "
+                                                          "for a given source within the source's"
+                                                          "footprint.")
+        self.blendednessKey = schema.addField("deblend_blendedness", type=np.float32,
+                                              doc="The Bosch et al. 2018 metric for 'blendedness.' ")
 
     @timeMethod
     def run(self, mExposure, mergedSources):
@@ -903,6 +997,7 @@ class ScarletDeblendTask(pipeBase.Task):
             "heavies": [],
             "fluxes": [],
             "centerFluxes": [],
+            "metrics": [],
         }
         weightedColumns = {
             "heavies": [],
@@ -973,6 +1068,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 logL = -blend.loss[-1] + blend.observations[0].log_norm
             elif self.config.version == "lite":
                 logL = blend.loss[-1]
+                setDeblenderMetrics(blend)
             self._updateParentRecord(
                 parent=parent,
                 nPeaks=len(peaks),
@@ -1005,6 +1101,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     })
                     centerFlux = self._getCenterFlux(weightedHeavy, scarletSource, xy0=bbox.getMin())
                     weightedColumns["centerFluxes"].append(centerFlux)
+                    multibandColumns["metrics"].append(scarletSource.metrics)
                 else:
                     mHeavy = modelToHeavy(scarletSource, mExposure, blend, xy0=bbox.getMin())
                 multibandColumns["heavies"].append(mHeavy)
@@ -1044,7 +1141,7 @@ class ScarletDeblendTask(pipeBase.Task):
             raise RuntimeError(msg)
         # Make a copy of the catlog in each band and update the footprints
         catalogs = {}
-        for f in filters:
+        for fidx, f in enumerate(filters):
             _catalog = afwTable.SourceCatalog(catalog.table.clone())
             _catalog.extend(catalog, deep=True)
 
@@ -1054,13 +1151,15 @@ class ScarletDeblendTask(pipeBase.Task):
                 source.setFootprint(multibandColumns["heavies"][sourceIndex][f])
                 source.set(self.scarletFluxKey, multibandColumns["fluxes"][sourceIndex][f])
                 source.set(self.modelCenterFlux, multibandColumns["centerFluxes"][sourceIndex][f])
+                if self.config.version == "lite":
+                    self._setMetrics(source, multibandColumns["metrics"][sourceIndex], fidx)
             catalogs[f] = _catalog
 
         weightedCatalogs = {}
         if self.config.version == "lite":
             # Also create a catalog by reweighting the flux
             weightedCatalogs = {}
-            for f in filters:
+            for fidx, f in enumerate(filters):
                 _catalog = afwTable.SourceCatalog(catalog.table.clone())
                 _catalog.extend(catalog, deep=True)
 
@@ -1070,6 +1169,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     source.setFootprint(weightedColumns["heavies"][sourceIndex][f])
                     source.set(self.scarletFluxKey, weightedColumns["fluxes"][sourceIndex][f])
                     source.set(self.modelCenterFlux, weightedColumns["centerFluxes"][sourceIndex][f])
+                    self._setMetrics(source, multibandColumns["metrics"][sourceIndex], fidx)
                 weightedCatalogs[f] = _catalog
 
         # Update the mExposure mask with the footprint of skipped parents
@@ -1083,6 +1183,24 @@ class ScarletDeblendTask(pipeBase.Task):
                       "creating %d children, for a total of %d sources",
                       nParents, nDeblendedParents, nChildren, len(catalog))
         return catalogs, weightedCatalogs
+
+    def _setMetrics(self, source, metrics, filterIndex):
+        """Set the metrics for a source in either a template or weighted
+        catalog.
+
+        Parameters
+        ----------
+        source : `lsst.afw.SourceRecord`
+            The source that is being updated.
+        metrics : `DeblenderMetric`
+            The deblender metrics calculated in the deconvolved seeing.
+        filterIndex : `int`
+            The index of the filter to select a given element of the metric.
+        """
+        source.set(self.maxOverlapKey, metrics.maxOverlap[filterIndex])
+        source.set(self.fluxOverlapKey, metrics.fluxOverlap[filterIndex])
+        source.set(self.fluxOverlapFractionKey, metrics.fluxOverlapFraction[filterIndex])
+        source.set(self.blendednessKey, metrics.blendedness[filterIndex])
 
     def _isLargeFootprint(self, footprint):
         """Returns whether a Footprint is large
@@ -1201,7 +1319,7 @@ class ScarletDeblendTask(pipeBase.Task):
             # Skip isolated sources unless processSingles is turned on.
             # Note: this does not flag isolated sources as skipped or
             # set the NOT_DEBLENDED mask in the exposure,
-            # since these aren't really a skipped blends.
+            # since these aren't really any skipped blends.
             skipKey = self.isolatedParentKey
         elif isPseudoSource(parent, self.config.pseudoColumns):
             # We also skip pseudo sources, like sky objects, which

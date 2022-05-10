@@ -131,7 +131,6 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     # Always use a real space convolution to limit artifacts
     model = blend.observations[0].renderer.convolve(model, convolution_type="real").astype(dtype)
     # Update xy0 with the origin of the sources box
-    # Update xy0 with the origin of the sources box
     _xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
     valid = np.max(np.array(model), axis=0) != 0
@@ -153,7 +152,7 @@ def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, 
     """Convert a scarlet model to a `MultibandFootprint`.
     Parameters
     ----------
-    source : `scarlet.Source`
+    source : `scarlet.LiteSource`
         The source to convert to a `HeavyFootprint`.
     mExposure : `lsst.image.MultibandExposure`
         The multiband exposure containing the image,
@@ -207,10 +206,10 @@ def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, 
         model = blend.observation.convolve(model, mode="real").astype(dtype)
 
     # Update xy0 with the origin of the sources box
-    _xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
     valid = np.max(np.array(model), axis=0) != 0
-    valid = Mask(valid.astype(np.int32), xy0=_xy0)
+    valid = Mask(valid.astype(np.int32), xy0=xy0)
     spans = SpanSet.fromMask(valid)
 
     # Add the location of the source to the peak catalog
