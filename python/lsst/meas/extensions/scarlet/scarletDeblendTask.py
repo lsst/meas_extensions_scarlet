@@ -88,12 +88,6 @@ def _checkBlendConvergence(blend, f_rel):
     return deltaLoss < convergence
 
 
-def _getPsfFwhm(psf):
-    """Calculate the FWHM of the `psf`
-    """
-    return psf.computeShape().getDeterminantRadius() * 2.35
-
-
 def _computePsfImage(self, position):
     """Get a multiband PSF image
     The PSF Kernel Image is computed for each band
