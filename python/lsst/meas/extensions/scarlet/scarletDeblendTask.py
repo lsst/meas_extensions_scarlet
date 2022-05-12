@@ -88,13 +88,7 @@ def _checkBlendConvergence(blend, f_rel):
     return deltaLoss < convergence
 
 
-def _getPsfFwhm(psf):
-    """Calculate the FWHM of the `psf`
-    """
-    return psf.computeShape().getDeterminantRadius() * 2.35
-
-
-def _computePsfImage(self, position=None):
+def _computePsfImage(self, position):
     """Get a multiband PSF image
     The PSF Kernel Image is computed for each band
     and combined into a (filter, y, x) array and stored
@@ -108,8 +102,7 @@ def _computePsfImage(self, position=None):
     Parameters
     ----------
     position : `Point2D` or `tuple`
-        Coordinates to evaluate the PSF. If `position` is `None`
-        then `Psf.getAveragePosition()` is used.
+        Coordinates to evaluate the PSF.
     Returns
     -------
     self._psfImage: array
@@ -117,17 +110,13 @@ def _computePsfImage(self, position=None):
     """
     psfs = []
     # Make the coordinates into a Point2D (if necessary)
-    if not isinstance(position, Point2D) and position is not None:
+    if not isinstance(position, Point2D):
         position = Point2D(position[0], position[1])
 
     for bidx, single in enumerate(self.singles):
         try:
-            if position is None:
-                psf = single.getPsf().computeImage()
-                psfs.append(psf)
-            else:
-                psf = single.getPsf().computeKernelImage(position)
-                psfs.append(psf)
+            psf = single.getPsf().computeKernelImage(position)
+            psfs.append(psf)
         except InvalidParameterError:
             # This band failed to compute the PSF due to incomplete data
             # at that location. This is unlikely to be a problem for Rubin,
