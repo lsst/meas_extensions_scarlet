@@ -91,7 +91,7 @@ def _checkBlendConvergence(blend, f_rel):
 def _getPsfFwhm(psf):
     """Calculate the FWHM of the `psf`
     """
-    return psf.computeShape().getDeterminantRadius() * 2.35
+    return psf.computeShape(psf.getAveragePosition()).getDeterminantRadius() * 2.35
 
 
 def _computePsfImage(self, position=None):
@@ -123,7 +123,8 @@ def _computePsfImage(self, position=None):
     for bidx, single in enumerate(self.singles):
         try:
             if position is None:
-                psf = single.getPsf().computeImage()
+                # TODO: DM-34777 to raise exception if position is None
+                psf = single.getPsf().computeImage(single.getPsf().getAveragePosition())
                 psfs.append(psf)
             else:
                 psf = single.getPsf().computeKernelImage(position)
