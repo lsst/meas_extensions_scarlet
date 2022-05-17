@@ -1015,7 +1015,8 @@ class ScarletDeblendTask(pipeBase.Task):
             parent.assign(peaks[0], self.peakSchemaMapper)
 
             # Block of conditions for skipping a parent with multiple children
-            if self._isSkipped(parent, mExposure):
+            if (skipArgs := self._checkSkipped(parent, mExposure)) is not None:
+                self._skipParent(parent, *skipArgs)
                 skippedParents.append(parentIndex)
                 continue
 
@@ -1292,7 +1293,7 @@ class ScarletDeblendTask(pipeBase.Task):
         parent.set(self.deblendSkippedKey, True)
         parent.set(skipKey, True)
 
-    def _isSkipped(self, parent, mExposure):
+    def _checkSkipped(self, parent, mExposure):
         """Update a parent record that is not being deblended.
 
         This is a fairly trivial function but is implemented to ensure
@@ -1341,9 +1342,8 @@ class ScarletDeblendTask(pipeBase.Task):
             skipKey = self.tooManyPeaksKey
             skipMessage = f"Parent {parent.getId()}: skipping blend with too many peaks"
         if skipKey is not None:
-            self._skipParent(parent, skipKey, skipMessage)
-            return True
-        return False
+            return (skipKey, skipMessage)
+        return None
 
     def setSkipFlags(self, mExposure, catalog):
         """Set the skip flags for all of the parent sources
@@ -1364,7 +1364,8 @@ class ScarletDeblendTask(pipeBase.Task):
             appended to this catalog in place.
         """
         for src in catalog:
-            self._isSkipped(src, mExposure)
+            if skipArgs := self._checkSkipped(src, mExposure) is not None:
+                self._skipParent(src, *skipArgs)
 
     def _updateParentRecord(self, parent, nPeaks, nChild, nComponents,
                             runtime, iterations, logL, spectrumInit, converged):
