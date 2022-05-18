@@ -131,10 +131,10 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     # Always use a real space convolution to limit artifacts
     model = blend.observations[0].renderer.convolve(model, convolution_type="real").astype(dtype)
     # Update xy0 with the origin of the sources box
-    xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
+    _xy0 = Point2I(overlap.origin[-1] + xy0.x, overlap.origin[-2] + xy0.y)
     # Create the spans for the footprint
     valid = np.max(np.array(model), axis=0) != 0
-    valid = Mask(valid.astype(np.int32), xy0=xy0)
+    valid = Mask(valid.astype(np.int32), xy0=_xy0)
     spans = SpanSet.fromMask(valid)
 
     # Add the location of the source to the peak catalog
@@ -148,7 +148,7 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     return mHeavy
 
 
-def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFlux=False):
+def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, useFlux=False):
     """Convert a scarlet model to a `MultibandFootprint`.
     Parameters
     ----------
@@ -163,8 +163,7 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
         scarlet model to the observed seeing in each band.
     xy0 : `lsst.geom.Point2I`
         `(x,y)` coordinates of the lower-left pixel of the
-        entire blend. If no pixel is specified then this
-        will be `Point2I(0, 0)`.
+        entire blend.
     dtype : `numpy.dtype`
         The data type for the returned `HeavyFootprint`.
     Returns
@@ -172,9 +171,6 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
     mHeavy : `lsst.detection.MultibandFootprint`
         The multi-band footprint containing the model for the source.
     """
-    if xy0 is None:
-        xy0 = Point2I()
-
     # We want to convolve the model with the observed PSF,
     # which means we need to grow the model box by the PSF to
     # account for all of the flux after convolution.
@@ -219,6 +215,7 @@ def liteModelToHeavy(source, mExposure, blend, xy0=None, dtype=np.float32, useFl
     # Add the location of the source to the peak catalog
     peakCat = PeakCatalog(source.detectedPeak.table)
     peakCat.append(source.detectedPeak)
+
     # Create the MultibandHeavyFootprint
     foot = Footprint(spans)
     foot.setPeakCatalog(peakCat)
