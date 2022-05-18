@@ -22,12 +22,16 @@
 import unittest
 
 import numpy as np
+from scarlet.bbox import Box
+from scarlet.lite.measure import weight_sources
 
-from lsst.geom import Point2I
+from lsst.geom import Point2I, Point2D
 import lsst.utils.tests
 import lsst.afw.image as afwImage
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet import ScarletDeblendTask
+from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask, getFootprintMask
+from lsst.meas.extensions.scarlet.source import bboxToScarletBox, scarletBoxToBBox
+from lsst.meas.extensions.scarlet.io import dataToScarlet, DummyObservation
 from lsst.afw.table import SourceCatalog
 from lsst.afw.detection import Footprint
 from lsst.afw.detection.multiband import heavyFootprintToImage
@@ -101,81 +105,132 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        result, flux = deblendTask.run(coadds, catalog)
+        catalog, modelData = deblendTask.run(coadds, catalog)
 
-        # Make sure that the catalogs have the same sources in all bands,
-        # and check that band-independent columns are equal
-        bandIndependentColumns = [
-            "id",
-            "parent",
-            "deblend_nPeaks",
-            "deblend_nChild",
-            "deblend_peak_center_x",
-            "deblend_peak_center_y",
-            "deblend_runtime",
-            "deblend_iterations",
-            "deblend_logL",
-            "deblend_spectrumInitFlag",
-            "deblend_blendConvergenceFailedFlag",
-        ]
-        self.assertEqual(len(filters), len(result))
-        self.assertEqual(len(filters), len(flux))
-        ref = result[filters[0]]
-        for f in filters[1:]:
-            for col in bandIndependentColumns:
-                np.testing.assert_array_equal(result[f][col], ref[col])
+        # Attach the footprints in each band and compare to the full
+        # data model. This is done in each band, both with and without
+        # flux re-distribution to test all of the different possible
+        # options of loading catalog footprints.
+        for useFlux in [False, True]:
+            for band in filters:
+                bandIndex = filters.index(band)
+                coadd = coadds[band]
+                psfModel = coadd.getPsf()
 
-        # Check that other columns are consistent
-        for f, _catalog in result.items():
-            parents = _catalog[_catalog["parent"] == 0]
-            # Check that the number of deblended children is consistent
-            self.assertEqual(np.sum(_catalog["deblend_nChild"]), len(_catalog)-len(parents))
+                if useFlux:
+                    redistributeImage = coadd.image
+                else:
+                    redistributeImage = None
 
-            for parent in parents:
-                children = _catalog[_catalog["parent"] == parent.get("id")]
-                # Check that nChild is set correctly
-                self.assertEqual(len(children), parent.get("deblend_nChild"))
-                # Check that parent columns are propagated to their children
-                for parentCol, childCol in config.columnInheritance.items():
-                    np.testing.assert_array_equal(parent.get(parentCol), children[childCol])
+                modelData.updateCatalogFootprints(
+                    catalog,
+                    band=band,
+                    psfModel=psfModel,
+                    redistributeImage=redistributeImage,
+                    removeScarletData=False,
+                )
 
-            children = _catalog[_catalog["parent"] != 0]
-            for child in children:
-                fp = child.getFootprint()
-                img = heavyFootprintToImage(fp)
-                # Check that the flux at the center is correct.
-                # Note: this only works in this test image because the
-                # detected peak is in the same location as the scarlet peak.
-                # If the peak is shifted, the flux value will be correct
-                # but deblend_peak_center is not the correct location.
-                px = child.get("deblend_peak_center_x")
-                py = child.get("deblend_peak_center_y")
-                flux = img.image[Point2I(px, py)]
-                self.assertEqual(flux, child.get("deblend_peak_instFlux"))
+                # Check that the number of deblended children is consistent
+                parents = catalog[catalog["parent"] == 0]
+                self.assertEqual(np.sum(catalog["deblend_nChild"]), len(catalog)-len(parents))
 
-                # Check that the peak positions match the catalog entry
-                peaks = fp.getPeaks()
-                self.assertEqual(px, peaks[0].getIx())
-                self.assertEqual(py, peaks[0].getIy())
+                # Check that the models have not been cleared
+                # from the modelData
+                self.assertEqual(len(modelData.blends), np.sum(~parents["deblend_skipped"]))
 
-            # Check that all sources have the correct number of peaks
-            for src in _catalog:
-                fp = src.getFootprint()
-                self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
+                for parent in parents:
+                    children = catalog[catalog["parent"] == parent.get("id")]
+                    # Check that nChild is set correctly
+                    self.assertEqual(len(children), parent.get("deblend_nChild"))
+                    # Check that parent columns are propagated
+                    # to their children
+                    for parentCol, childCol in config.columnInheritance.items():
+                        np.testing.assert_array_equal(parent.get(parentCol), children[childCol])
 
-            # Check that only the large foorprint was flagged as too big
-            largeFootprint = np.zeros(len(_catalog), dtype=bool)
-            largeFootprint[2] = True
-            np.testing.assert_array_equal(largeFootprint, _catalog["deblend_parentTooBig"])
+                children = catalog[catalog["parent"] != 0]
+                for child in children:
+                    fp = child.getFootprint()
+                    img = heavyFootprintToImage(fp, fill=0.0)
+                    # Check that the flux at the center is correct.
+                    # Note: this only works in this test image because the
+                    # detected peak is in the same location as the
+                    # scarlet peak.
+                    # If the peak is shifted, the flux value will be correct
+                    # but deblend_peak_center is not the correct location.
+                    px = child.get("deblend_peak_center_x")
+                    py = child.get("deblend_peak_center_y")
+                    flux = img.image[Point2I(px, py)]
+                    self.assertEqual(flux, child.get("deblend_peak_instFlux"))
 
-            # Check that only the dense foorprint was flagged as too dense
-            denseFootprint = np.zeros(len(_catalog), dtype=bool)
-            denseFootprint[3] = True
-            np.testing.assert_array_equal(denseFootprint, _catalog["deblend_tooManyPeaks"])
+                    # Check that the peak positions match the catalog entry
+                    peaks = fp.getPeaks()
+                    self.assertEqual(px, peaks[0].getIx())
+                    self.assertEqual(py, peaks[0].getIy())
 
-            # Check that only the appropriate parents were skipped
-            skipped = largeFootprint | denseFootprint
-            np.testing.assert_array_equal(skipped, _catalog["deblend_skipped"])
+                    # Load the data to check against the HeavyFootprint
+                    blendData = modelData.blends[child["parent"]]
+                    blend = dataToScarlet(
+                        blendData=blendData,
+                        nBands=1,
+                        bandIndex=bandIndex,
+                    )
+                    # We need to set an observation in order to convolve
+                    # the model.
+                    position = Point2D(*blendData.psfCenter)
+                    _psfs = coadds[band].getPsf().computeKernelImage(position).array[None, :, :]
+                    modelBox = Box((1,) + tuple(blendData.extent[::-1]), origin=(0, 0, 0))
+                    blend.observation = DummyObservation(
+                        psfs=_psfs,
+                        model_psf=modelData.psf[None, :, :],
+                        bbox=modelBox,
+                        dtype=np.float32,
+                    )
+
+                    # Get the scarlet model for the source
+                    source = [src for src in blend.sources if src.recordId == child.getId()][0]
+
+                    if useFlux:
+                        # Get the flux re-weighted model and test against
+                        # the HeavyFootprint.
+                        # The HeavyFootprint needs to be projected onto
+                        # the image of the flux-redistributed model,
+                        # since the HeavyFootprint may trim rows or columns.
+                        parentFootprint = catalog[catalog["id"] == child["parent"]][0].getFootprint()
+                        blend.observation.images = redistributeImage[parentFootprint.getBBox()].array
+                        blend.observation.images = blend.observation.images[None, :, :]
+                        blend.observation.weights = ~getFootprintMask(parentFootprint, None)[None, :, :]
+                        weight_sources(blend)
+                        model = source.flux[0]
+                        bbox = scarletBoxToBBox(source.flux_box, Point2I(*blendData.xy0))
+                        image = afwImage.ImageF(model, xy0=bbox.getMin())
+                        fp.insert(image)
+                        np.testing.assert_almost_equal(image.array, model)
+                    else:
+                        # Get the model for the source and test
+                        # against the HeavyFootprint
+                        bbox = fp.getBBox()
+                        bbox = bboxToScarletBox(1, bbox, Point2I(*blendData.xy0))
+                        model = blend.observation.convolve(source.get_model(bbox=bbox))[0]
+                        np.testing.assert_almost_equal(img.image.array, model)
+
+        # Check that all sources have the correct number of peaks
+        for src in catalog:
+            fp = src.getFootprint()
+            self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
+
+        # Check that only the large footprint was flagged as too big
+        largeFootprint = np.zeros(len(catalog), dtype=bool)
+        largeFootprint[2] = True
+        np.testing.assert_array_equal(largeFootprint, catalog["deblend_parentTooBig"])
+
+        # Check that only the dense footprint was flagged as too dense
+        denseFootprint = np.zeros(len(catalog), dtype=bool)
+        denseFootprint[3] = True
+        np.testing.assert_array_equal(denseFootprint, catalog["deblend_tooManyPeaks"])
+
+        # Check that only the appropriate parents were skipped
+        skipped = largeFootprint | denseFootprint
+        np.testing.assert_array_equal(skipped, catalog["deblend_skipped"])
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
