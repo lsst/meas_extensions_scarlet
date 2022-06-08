@@ -26,9 +26,9 @@ from scarlet.bbox import Box
 
 from lsst.geom import Point2I, Box2I, Extent2I
 from lsst.afw.geom import SpanSet
-from lsst.afw.detection import Footprint, PeakCatalog
+from lsst.afw.detection import Footprint, PeakCatalog, makeHeavyFootprint
 from lsst.afw.detection.multiband import MultibandFootprint
-from lsst.afw.image import Mask, MultibandImage
+from lsst.afw.image import Mask, MultibandImage, Image, MaskedImage
 
 __all__ = ["modelToHeavy"]
 
@@ -148,15 +148,15 @@ def modelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32):
     return mHeavy
 
 
-def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, useFlux=False):
+def liteModelToHeavy(source, blend, xy0=Point2I(), dtype=np.float32, useFlux=False, filters=None):
     """Convert a scarlet model to a `MultibandFootprint`.
     Parameters
     ----------
     source : `scarlet.LiteSource`
         The source to convert to a `HeavyFootprint`.
-    mExposure : `lsst.image.MultibandExposure`
-        The multiband exposure containing the image,
-        mask, and variance data.
+    filters : `list` of `str`
+        The names of the filters from the `MultibandExposure`.
+        This is only required if the model is multi-band.
     blend : `scarlet.Blend`
         The `Blend` object that contains information about
         the observation, PSF, etc, used to convolve the
@@ -168,8 +168,8 @@ def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, 
         The data type for the returned `HeavyFootprint`.
     Returns
     -------
-    mHeavy : `lsst.detection.MultibandFootprint`
-        The multi-band footprint containing the model for the source.
+    heavy : `lsst.detection.Footprint`
+        The footprint (possibly multiband) containing the model for the source.
     """
     # We want to convolve the model with the observed PSF,
     # which means we need to grow the model box by the PSF to
@@ -219,6 +219,15 @@ def liteModelToHeavy(source, mExposure, blend, xy0=Point2I(), dtype=np.float32, 
     # Create the MultibandHeavyFootprint
     foot = Footprint(spans)
     foot.setPeakCatalog(peakCat)
-    model = MultibandImage(mExposure.filters, model, valid.getBBox())
-    mHeavy = MultibandFootprint.fromImages(mExposure.filters, model, footprint=foot)
-    return mHeavy
+    if len(model) == 1:
+        image = Image(
+            array=model[0].astype(dtype),
+            xy0=valid.getBBox().getMin(),
+            dtype=dtype
+        )
+        maskedImage = MaskedImage(image, dtype=dtype)
+        heavy = makeHeavyFootprint(foot, maskedImage)
+    else:
+        model = MultibandImage(filters, model.astype(dtype), valid.getBBox())
+        heavy = MultibandFootprint.fromImages(filters, model.astype(dtype), footprint=foot)
+    return heavy
