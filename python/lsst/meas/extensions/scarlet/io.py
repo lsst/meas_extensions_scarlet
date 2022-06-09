@@ -13,6 +13,20 @@ from lsst.afw.detection.multiband import heavyFootprintToImage
 
 from .source import liteModelToHeavy
 
+__all__ = [
+    "ScarletComponentData",
+    "ScarletFactorizedComponentData",
+    "ScarletSourceData",
+    "ScarletBlendData",
+    "ScarletModelData",
+    "updateBlendRecords",
+    "boundedDataToBox",
+    "ComponentCube",
+    "dataToScarlet",
+    "scarletLiteToData",
+    "scarletToData",
+]
+
 
 @dataclass
 class ScarletComponentData:
