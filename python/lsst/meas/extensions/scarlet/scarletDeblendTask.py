@@ -134,14 +134,11 @@ def _computePsfImage(psfModels, position, filters):
     return psfs
 
 
-def getFootprintMask(footprint, mExposure):
+def getFootprintMask(footprint):
     """Mask pixels outside the footprint
 
     Parameters
     ----------
-    mExposure : `lsst.image.MultibandExposure`
-        - The multiband exposure containing the image,
-          mask, and variance data
     footprint : `lsst.detection.Footprint`
         - The footprint of the parent to deblend
 

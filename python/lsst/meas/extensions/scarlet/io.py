@@ -481,7 +481,7 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
         extent = Extent2I(*blendData.extent)
         bbox = Box2I(xy0, extent)
         blend.observation.images = redistributeImage[bbox].array[None, :, :]
-        blend.observation.weights = ~getFootprintMask(parentFootprint, None)[None, :, :]
+        blend.observation.weights = ~getFootprintMask(parentFootprint)[None, :, :]
         # Re-distribute the flux for each source in-place
         weight_sources(blend)
 
