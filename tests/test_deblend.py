@@ -201,7 +201,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         parentFootprint = catalog[catalog["id"] == child["parent"]][0].getFootprint()
                         blend.observation.images = redistributeImage[parentFootprint.getBBox()].array
                         blend.observation.images = blend.observation.images[None, :, :]
-                        blend.observation.weights = ~getFootprintMask(parentFootprint, None)[None, :, :]
+                        blend.observation.weights = ~getFootprintMask(parentFootprint)[None, :, :]
                         weight_sources(blend)
                         model = source.flux[0]
                         bbox = scarletBoxToBBox(source.flux_box, Point2I(*blendData.xy0))
