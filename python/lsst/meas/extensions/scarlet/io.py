@@ -299,14 +299,14 @@ class ScarletBlendData:
 class ScarletModelData:
     """A container that propagates scarlet models for an entire `SourceCatalog`
     """
-    def __init__(self, filters, psf, blends=None):
+    def __init__(self, bands, psf, blends=None):
         """Initialize an instance
 
         Parameters
         ----------
-        filters : `list` of `str`
-            The names of the filters.
-            The order of the filters must be the same as the order of
+        bands : `list` of `str`
+            The names of the bands.
+            The order of the bands must be the same as the order of
             the multiband model arrays, and SEDs.
         psf : `numpy.ndarray`
             The 2D array of the PSF in scarlet model space.
@@ -316,7 +316,7 @@ class ScarletModelData:
             Initial `dict` that maps parent IDs from the source catalog
             to the scarlet model data for the parent blend.
         """
-        self.filters = filters
+        self.bands = bands
         self.psf = psf
         if blends is None:
             blends = {}
@@ -331,7 +331,7 @@ class ScarletModelData:
             The result of the object converted into a JSON format
         """
         result = {
-            "filters": self.filters,
+            "bands": self.bands,
             "psfShape": self.psf.shape,
             "psf": list(self.psf.flatten()),
             "blends": {id: blend.asDict() for id, blend in self.blends.items()}
@@ -390,7 +390,7 @@ class ScarletModelData:
         # all of the children with the same parent
         parents = catalog[catalog["parent"] == 0]
         # Get the index of the model for the given band
-        bandIndex = self.filters.index(band)
+        bandIndex = self.bands.index(band)
 
         for parentRecord in parents:
             parentId = parentRecord.getId()
