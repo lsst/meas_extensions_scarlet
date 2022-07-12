@@ -107,7 +107,9 @@ class ScarletFactorizedComponentData:
     extent : `tuple` of `int`
         The `(width, height)` of the component array.
     center : `tuple` of `int`
-        The center of the component.
+        The ``(x, y)`` center of the component.
+        Note: once this is converted into a scarlet `LiteBlend` the source has
+        the traditional c++ `(y, x)` ordering.
     sed : `numpy.ndarray`
         The SED of the component.
     morph : `numpy.ndarray`
