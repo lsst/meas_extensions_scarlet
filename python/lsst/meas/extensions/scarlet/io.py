@@ -519,7 +519,7 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
 
             img = heavy.extractImage(fill=0.0)
             try:
-                sourceRecord.set("deblend_peak_instFlux", img.image[Point2I(peak["i_x"], peak["i_y"])])
+                sourceRecord.set("deblend_peak_instFlux", img[Point2I(peak["i_x"], peak["i_y"])])
             except Exception:
                 srcId = sourceRecord.getId()
                 x = peak["i_x"]
