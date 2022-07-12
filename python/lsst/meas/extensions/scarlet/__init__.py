@@ -24,3 +24,4 @@ from .version import *
 from .source import *
 from .scarletDeblendTask import *
 from .io import *
+from . import utils
