@@ -6,17 +6,22 @@
 lsst.meas.extensions.scarlet
 ############################
 
-.. Paragraph that describes what this Python module does and links to related modules and frameworks.
+``lsst.meas.extensions.scarlet`` contains the pipeline task used to execute the
+`scarlet <https://github.com/pmelchior/scarlet>`_ deblending algorithm
+`(Melchior et. al 2018) <https://www.sciencedirect.com/science/article/abs/pii/S2213133718300301?via%3Dihub>`_.
 
-.. .. _lsst.meas.extensions.scarlet-using:
 
-.. Using lsst.meas.extensions.scarlet
-.. ==================================
+.. _lsst.meas.extensions.scarlet-using:
 
-.. toctree linking to topics related to using the module's APIs.
+Using lsst.meas.extensions.scarlet
+==================================
 
-.. .. toctree::
-..    :maxdepth: 1
+.. toctree::
+   :maxdepth: 1
+
+   overview.rst
+   catalog.rst
+   models.rst
 
 .. _lsst.meas.extensions.scarlet-contributing:
 

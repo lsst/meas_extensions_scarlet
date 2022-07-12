@@ -258,13 +258,7 @@ def buildLiteObservation(
     """Generate a LiteObservation from a set of parameters.
 
     Make the generation and reconstruction of a scarlet model consistent
-    by building either a `DummyObservation` or `LiteObservation` from a
-    set of parameters. Because this method serves a dual purpose, some
-    parameters (`mExposure`, `footprint`, `badPixelMasks`) are optional
-    when the observation is only used to reconstruct a model,
-    while others (`modelBox`, `observedPsfs`, `dtype`) are automatically
-    generated from `mExposure`, so they are unnecessary when building a
-    full observation.
+    by building a `LiteObservation` from a set of parameters.
 
     Parameters
     ----------
