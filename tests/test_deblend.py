@@ -29,12 +29,11 @@ from lsst.geom import Point2I, Point2D
 import lsst.utils.tests
 import lsst.afw.image as afwImage
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask, getFootprintMask
+from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.source import bboxToScarletBox, scarletBoxToBBox
 from lsst.meas.extensions.scarlet.io import dataToScarlet, DummyObservation
 from lsst.afw.table import SourceCatalog
 from lsst.afw.detection import Footprint
-from lsst.afw.detection.multiband import heavyFootprintToImage
 from lsst.afw.geom import SpanSet, Stencil
 
 from utils import initData
@@ -150,7 +149,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 children = catalog[catalog["parent"] != 0]
                 for child in children:
                     fp = child.getFootprint()
-                    img = heavyFootprintToImage(fp, fill=0.0)
+                    img = fp.extractImage(fill=0.0)
                     # Check that the flux at the center is correct.
                     # Note: this only works in this test image because the
                     # detected peak is in the same location as the
@@ -159,7 +158,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     # but deblend_peak_center is not the correct location.
                     px = child.get("deblend_peak_center_x")
                     py = child.get("deblend_peak_center_y")
-                    flux = img.image[Point2I(px, py)]
+                    flux = img[Point2I(px, py)]
                     self.assertEqual(flux, child.get("deblend_peak_instFlux"))
 
                     # Check that the peak positions match the catalog entry
@@ -201,7 +200,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         parentFootprint = catalog[catalog["id"] == child["parent"]][0].getFootprint()
                         blend.observation.images = redistributeImage[parentFootprint.getBBox()].array
                         blend.observation.images = blend.observation.images[None, :, :]
-                        blend.observation.weights = ~getFootprintMask(parentFootprint)[None, :, :]
+                        blend.observation.weights = parentFootprint.spans.asArray()[None, :, :]
                         weight_sources(blend)
                         model = source.flux[0]
                         bbox = scarletBoxToBBox(source.flux_box, Point2I(*blendData.xy0))
@@ -214,7 +213,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         bbox = fp.getBBox()
                         bbox = bboxToScarletBox(1, bbox, Point2I(*blendData.xy0))
                         model = blend.observation.convolve(source.get_model(bbox=bbox))[0]
-                        np.testing.assert_almost_equal(img.image.array, model)
+                        np.testing.assert_almost_equal(img.array, model)
 
         # Check that all sources have the correct number of peaks
         for src in catalog:
