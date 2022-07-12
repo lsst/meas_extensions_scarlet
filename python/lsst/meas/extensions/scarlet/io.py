@@ -132,7 +132,7 @@ class ScarletFactorizedComponentData:
         return {
             "xy0": self.xy0,
             "extent": self.extent,
-            "center": self.extent,
+            "center": self.center,
             "sed": tuple(self.sed.astype(float)),
             "morph": tuple(self.morph.flatten().astype(float))
         }
