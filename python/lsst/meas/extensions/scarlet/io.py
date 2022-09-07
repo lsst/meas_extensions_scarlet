@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from typing import Any
+import logging
 import numpy as np
 from scarlet.bbox import Box, overlapped_slices
 from scarlet.lite import LiteBlend, LiteFactorizedComponent, LiteObservation, LiteSource, LiteParameter
 from scarlet.lite.measure import weight_sources
+import traceback
 
 from lsst.geom import Box2I, Extent2I, Point2I, Point2D
 from lsst.afw.detection.multiband import heavyFootprintToImage
@@ -26,6 +28,8 @@ __all__ = [
     "scarletLiteToData",
     "scarletToData",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -506,7 +510,15 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
             # Set the flux at the center of the model
             peak = heavy.peaks[0]
             img = heavyFootprintToImage(heavy, fill=0.0)
-            sourceRecord.set("deblend_peak_instFlux", img.image[Point2I(peak["i_x"], peak["i_y"])])
+            try:
+                sourceRecord.set("deblend_peak_instFlux", img.image[Point2I(peak["i_x"], peak["i_y"])])
+            except Exception:
+                srcId = sourceRecord.getId()
+                x = peak["i_x"]
+                y = peak["i_y"]
+                logger.warn(f"Source {srcId} at {x},{y} could not set the peak flux with error:")
+                traceback.print_exc()
+                sourceRecord.set("deblend_peak_instFlux", np.nan)
 
             # Set the metrics columns.
             # TODO: remove this once DM-34558 runs all deblender metrics
