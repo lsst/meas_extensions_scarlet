@@ -8,7 +8,6 @@ import numpy as np
 from scarlet.bbox import Box, overlapped_slices
 from scarlet.lite import LiteBlend, LiteFactorizedComponent, LiteObservation, LiteSource, LiteParameter
 from scarlet.lite.measure import weight_sources
-import traceback
 
 from lsst.geom import Box2I, Extent2I, Point2I, Point2D
 from lsst.afw.detection.multiband import heavyFootprintToImage
@@ -518,8 +517,10 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
                 srcId = sourceRecord.getId()
                 x = peak["i_x"]
                 y = peak["i_y"]
-                logger.warn(f"Source {srcId} at {x},{y} could not set the peak flux with error:")
-                traceback.print_exc()
+                logger.warning(
+                    f"Source {srcId} at {x},{y} could not set the peak flux with error:",
+                    exc_info=1
+                )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
 
             # Set the metrics columns.
