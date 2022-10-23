@@ -188,6 +188,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
                     # Get the scarlet model for the source
                     source = [src for src in blend.sources if src.recordId == child.getId()][0]
+                    parentBox = catalog.find(child["parent"]).getFootprint().getBBox()
+                    self.assertEqual(source.center[1], px - parentBox.getMinX())
+                    self.assertEqual(source.center[0], py - parentBox.getMinY())
 
                     if useFlux:
                         # Get the flux re-weighted model and test against
