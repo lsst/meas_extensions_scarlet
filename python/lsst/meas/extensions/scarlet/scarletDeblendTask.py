@@ -507,7 +507,7 @@ class ScarletDeblendConfig(pexConfig.Config):
     - Other: Parameters that don't fit into the above categories
     """
     # Stopping Criteria
-    minIter = pexConfig.Field(dtype=int, default=1,
+    minIter = pexConfig.Field(dtype=int, default=15,
                               doc="Minimum number of iterations before the optimizer is allowed to stop.")
     maxIter = pexConfig.Field(dtype=int, default=300,
                               doc=("Maximum number of iterations to deblend a single parent"))
