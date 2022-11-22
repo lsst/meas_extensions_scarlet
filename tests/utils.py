@@ -73,7 +73,7 @@ def initData(shape, coords, amplitudes=None, convolve=True):
         targetPsfImage = targetPsf.get_model()[0]
 
         psfs = [GaussianPsf(psfShape[1], psfShape[0], 1+.2*b) for b in range(B)]
-        psfImages = np.array([psf.computeImage().array for psf in psfs])
+        psfImages = np.array([psf.computeImage(psf.getAveragePosition()).array for psf in psfs])
         psfImages /= psfImages.max(axis=(1, 2))[:, None, None]
 
         # Convolve the image with the psf in each channel
