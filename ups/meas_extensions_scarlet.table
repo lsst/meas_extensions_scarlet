@@ -4,14 +4,14 @@
 #   the "base" package.
 setupRequired(base)
 setupRequired(afw)
+setupRequired(meas_algorithms)
 setupRequired(log)
 setupRequired(scarlet)
-setupRequired(scarlet_extensions)
+setupRequired(scarlet_lite)
 setupRequired(log)
 setupRequired(pex_config)
 setupRequired(pex_exceptions)
 setupRequired(pipe_base)
-setupRequired(meas_algorithms)
 
 setupOptional(testdata_deblender)
 
