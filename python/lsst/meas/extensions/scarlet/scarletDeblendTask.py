@@ -40,7 +40,7 @@ import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
-from lsst.afw.image.exposure import IncompleteDataError
+from lsst.afw.image import IncompleteDataError
 
 from .source import bboxToScarletBox
 from .io import ScarletModelData, scarletToData, scarletLiteToData
