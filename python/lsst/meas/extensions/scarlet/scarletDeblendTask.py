@@ -194,7 +194,7 @@ def deblend(mExposure, footprint, config, spectrumInit):
     else:
         raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
 
-    assert(config.sourceModel in ["single", "double", "compact", "fit"])
+    assert config.sourceModel in ["single", "double", "compact", "fit"]
 
     # Set the appropriate number of components
     if config.sourceModel == "single":
