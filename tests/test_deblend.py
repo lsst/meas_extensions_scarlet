@@ -104,6 +104,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
+        print("RUNNING!")
         catalog, modelData = deblendTask.run(coadds, catalog)
 
         # Attach the footprints in each band and compare to the full
@@ -125,6 +126,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     catalog,
                     band=band,
                     psfModel=psfModel,
+                    maskImage=coadd.mask,
                     redistributeImage=redistributeImage,
                     removeScarletData=False,
                 )
@@ -170,7 +172,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     blendData = modelData.blends[child["parent"]]
                     blend = dataToScarlet(
                         blendData=blendData,
-                        nBands=1,
                         bandIndex=bandIndex,
                     )
                     # We need to set an observation in order to convolve
