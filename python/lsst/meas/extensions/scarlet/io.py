@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any
 import logging
 import numpy as np
 from scarlet.bbox import Box, overlapped_slices
@@ -12,6 +11,7 @@ import traceback
 
 from lsst.geom import Box2I, Extent2I, Point2I, Point2D
 from lsst.afw.image import computePsfImage
+from lsst.afw.detection import Footprint
 
 from .source import liteModelToHeavy
 
@@ -256,11 +256,16 @@ class ScarletBlendData:
     psfCenter : `tuple` of `int`
         The location used for the center of the PSF for
         the blend.
+    bands : `list` of `str`
+        The names of the bands.
+        The order of the bands must be the same as the order of
+        the multiband model arrays, and SEDs.
     """
     xy0: tuple[int, int]
     extent: tuple[int, int]
     sources: dict[int, ScarletSourceData]
     psfCenter: tuple[float, float]
+    bands: tuple[str]
 
     def asDict(self) -> dict:
         """Return the object encoded into a dict for JSON serialization
@@ -270,9 +275,13 @@ class ScarletBlendData:
         result : `dict`
             The object encoded as a JSON compatible dict
         """
-        result: dict[str, Any] = {"xy0": self.xy0, "extent": self.extent, "psfCenter": self.psfCenter}
-        result['sources'] = {id: source.asDict() for id, source in self.sources.items()}
-        return result
+        return {
+            "xy0": self.xy0,
+            "extent": self.extent,
+            "psfCenter": self.psfCenter,
+            "sources": {id: source.asDict() for id, source in self.sources.items()},
+            "bands": self.bands,
+        }
 
     @classmethod
     def fromDict(cls, data: dict) -> "ScarletBlendData":
@@ -295,21 +304,18 @@ class ScarletBlendData:
         dataShallowCopy["psfCenter"] = tuple(data["psfCenter"])
         dataShallowCopy["sources"] = {int(id): ScarletSourceData.fromDict(source)
                                       for id, source in data['sources'].items()}
+        dataShallowCopy["bands"] = tuple(data["bands"])
         return cls(**dataShallowCopy)
 
 
 class ScarletModelData:
     """A container that propagates scarlet models for an entire `SourceCatalog`
     """
-    def __init__(self, bands, psf, blends=None):
+    def __init__(self, psf, blends=None):
         """Initialize an instance
 
         Parameters
         ----------
-        bands : `list` of `str`
-            The names of the bands.
-            The order of the bands must be the same as the order of
-            the multiband model arrays, and SEDs.
         psf : `numpy.ndarray`
             The 2D array of the PSF in scarlet model space.
             This is typically a narrow Gaussian integrated over the
@@ -318,7 +324,6 @@ class ScarletModelData:
             Initial `dict` that maps parent IDs from the source catalog
             to the scarlet model data for the parent blend.
         """
-        self.bands = bands
         self.psf = psf
         if blends is None:
             blends = {}
@@ -333,7 +338,6 @@ class ScarletModelData:
             The result of the object converted into a JSON format
         """
         result = {
-            "bands": self.bands,
             "psfShape": self.psf.shape,
             "psf": list(self.psf.flatten()),
             "blends": {id: blend.asDict() for id, blend in self.blends.items()}
@@ -362,13 +366,9 @@ class ScarletModelData:
             int(id): ScarletBlendData.fromDict(blend)
             for id, blend in data['blends'].items()
         }
-        if "filters" in dataShallowCopy:
-            # Support the original version,
-            # which used "filters" instead of the now canonical "bands."
-            dataShallowCopy["bands"] = dataShallowCopy.pop("filters")
         return cls(**dataShallowCopy)
 
-    def updateCatalogFootprints(self, catalog, band, psfModel, redistributeImage=None,
+    def updateCatalogFootprints(self, catalog, band, psfModel, maskImage, redistributeImage=None,
                                 removeScarletData=True, updateFluxColumns=True):
         """Use the scarlet models to set HeavyFootprints for modeled sources
 
@@ -380,6 +380,9 @@ class ScarletModelData:
             The name of the band that the catalog data describes.
         psfModel : `lsst.afw.detection.Psf`
             The observed PSF model for the catalog.
+        maskImage : `lsst.afw.image.MaskX`
+            The masked image used to calculate the fraction of pixels
+            in each footprint with valid data.
         redistributeImage : `lsst.afw.image.Image`
             The image that is the source for flux re-distribution.
             If `redistributeImage` is `None` then flux re-distribution is
@@ -395,8 +398,6 @@ class ScarletModelData:
         # Iterate over the blends, since flux re-distribution must be done on
         # all of the children with the same parent
         parents = catalog[catalog["parent"] == 0]
-        # Get the index of the model for the given band
-        bandIndex = self.bands.index(band)
 
         for parentRecord in parents:
             parentId = parentRecord.getId()
@@ -407,11 +408,32 @@ class ScarletModelData:
                 # The parent was skipped in the deblender, so there are
                 # no models for its sources.
                 continue
+
+            if band not in blendModel.bands:
+                parent = catalog.find(parentId)
+                peaks = parent.getFootprint().peaks
+                # Set the footprint and coverage of the sources in this blend
+                # to zero
+                parentRecord["deblend_dataCoverage"] = 0
+                for sourceId, sourceData in blendModel.sources.items():
+                    sourceRecord = catalog.find(sourceId)
+                    footprint = Footprint()
+                    peakIdx = np.where(peaks["id"] == sourceData.peakId)[0][0]
+                    peak = peaks[peakIdx]
+                    footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
+                    sourceRecord.setFootprint(footprint)
+                    sourceRecord["deblend_dataCoverage"] = 0
+                continue
+
+            # Get the index of the model for the given band
+            bandIndex = blendModel.bands.index(band)
+
             updateBlendRecords(
                 blendData=blendModel,
                 catalog=catalog,
                 modelPsf=self.psf,
                 observedPsf=psfModel,
+                maskImage=maskImage,
                 redistributeImage=redistributeImage,
                 bandIndex=bandIndex,
                 parentFootprint=parentRecord.getFootprint(),
@@ -423,7 +445,35 @@ class ScarletModelData:
                 del self.blends[parentId]
 
 
-def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeImage, bandIndex,
+def calculateFootprintCoverage(footprint, maskImage):
+    """Calculate the fraction of pixels with no data in a Footprint
+
+    Parameters
+    ----------
+    footprint : `lsst.afw.detection.Footprint`
+        The footprint to check for missing data.
+    maskImage : `lsst.afw.image.MaskX`
+        The mask image with the ``NO_DATA`` bit set.
+
+    Returns
+    -------
+    coverage : `float`
+        The fraction of pixels in `footprint` where the ``NO_DATA`` bit is set.
+    """
+    # Store the value of "NO_DATA" from the mask plane.
+    noDataInt = 2**maskImage.getMaskPlaneDict()["NO_DATA"]
+
+    # Calculate the coverage in the footprint
+    bbox = footprint.getBBox()
+    spans = footprint.spans.asArray()
+    totalArea = footprint.getArea()
+    mask = maskImage[bbox].array & noDataInt
+    noData = (mask * spans) > 0
+    coverage = 1 - np.sum(noData)/totalArea
+    return coverage
+
+
+def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, maskImage, redistributeImage, bandIndex,
                        parentFootprint, updateFluxColumns):
     """Create footprints and update band-dependent columns in the catalog
 
@@ -437,6 +487,9 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
         The 2D model of the PSF.
     observedPsf : `lsst.afw.detection.Psf`
         The observed PSF model for the catalog.
+    maskImage : `lsst.afw.image.MaskX`
+        The masked image used to calculate the fraction of pixels
+        in each footprint with valid data.
     redistributeImage : `lsst.afw.image.Image`
         The image that is the source for flux re-distribution.
         If `redistributeImage` is `None` then flux re-distribution is
@@ -459,7 +512,6 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
 
     blend = dataToScarlet(
         blendData=blendData,
-        nBands=1,
         bandIndex=bandIndex,
         dtype=np.float32,
     )
@@ -507,6 +559,9 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
             useFlux=useFlux,
         )
         sourceRecord.setFootprint(heavy)
+        # Set the fraction of pixels with valid data.
+        coverage = calculateFootprintCoverage(heavy, maskImage)
+        sourceRecord.set("deblend_dataCoverage", coverage)
 
         if updateFluxColumns:
             # Set the flux of the scarlet model
@@ -720,12 +775,12 @@ def multibandDataToScarlet(
 
     # Extract the blend data
     blendData = modelData.blends[blendId]
-    nBands = len(modelData.bands)
+    nBands = len(blendData.bands)
     modelBox = Box((nBands,) + tuple(blendData.extent[::-1]), origin=(0, 0, 0))
     blend = dataToScarlet(blendData, nBands=nBands)
 
     if mExposure is None:
-        psfModels = computePsfImage(observedPsfs, blendData.psfCenter, modelData.bands)
+        psfModels = computePsfImage(observedPsfs, blendData.psfCenter, blendData.bands)
         blend.observation = DummyObservation(
             psfs=psfModels,
             model_psf=modelData.psf[None, :, :],
@@ -742,17 +797,13 @@ def multibandDataToScarlet(
     return blend
 
 
-def dataToScarlet(blendData, nBands=None, bandIndex=None, dtype=np.float32):
+def dataToScarlet(blendData, bandIndex=None, dtype=np.float32):
     """Convert the storage data model into a scarlet lite blend
 
     Parameters
     ----------
     blendData : `ScarletBlendData`
         Persistable data for the entire blend.
-    nBands : `int`
-        The number of bands in the image.
-        If `bandIndex` is `None` then this parameter is ignored and
-        the number of bands is set to 1.
     bandIndex : `int`
         Index of model to extract. If `bandIndex` is `None` then the
         full model is extracted.
@@ -766,6 +817,8 @@ def dataToScarlet(blendData, nBands=None, bandIndex=None, dtype=np.float32):
     """
     if bandIndex is not None:
         nBands = 1
+    else:
+        nBands = len(blendData.bands)
     modelBox = Box((nBands,) + tuple(blendData.extent[::-1]), origin=(0, 0, 0))
     sources = []
     for sourceId, sourceData in blendData.sources.items():
@@ -813,7 +866,7 @@ def dataToScarlet(blendData, nBands=None, bandIndex=None, dtype=np.float32):
     return LiteBlend(sources=sources, observation=None)
 
 
-def scarletLiteToData(blend, psfCenter, xy0):
+def scarletLiteToData(blend, psfCenter, xy0, bands):
     """Convert a scarlet lite blend into a persistable data object
 
     Parameters
@@ -824,6 +877,10 @@ def scarletLiteToData(blend, psfCenter, xy0):
         The center of the PSF.
     xy0 : `tuple` of `int`
         The lower coordinate of the entire blend.
+    bands : `tuple[str]`
+        The bands that were deblended.
+        This ignores bands that could not be deblended because the
+        observed PSF could not be modeled.
 
     Returns
     -------
@@ -862,12 +919,13 @@ def scarletLiteToData(blend, psfCenter, xy0):
         extent=blend.observation.bbox.shape[1:][::-1],
         sources=sources,
         psfCenter=psfCenter,
+        bands=bands,
     )
 
     return blendData
 
 
-def scarletToData(blend, psfCenter, xy0):
+def scarletToData(blend, psfCenter, xy0, bands):
     """Convert a scarlet blend into a persistable data object
 
     Parameters
@@ -878,6 +936,10 @@ def scarletToData(blend, psfCenter, xy0):
         The center of the PSF.
     xy0 : `tuple` of `int`
         The lower coordinate of the entire blend.
+    bands : `tuple[str]`
+        The bands that were deblended.
+        This ignores bands that could not be deblended because the
+        observed PSF could not be modeled.
 
     Returns
     -------
@@ -905,6 +967,7 @@ def scarletToData(blend, psfCenter, xy0):
         extent=tuple(int(x) for x in blend.observation.bbox.shape[1:][::-1]),
         sources=sources,
         psfCenter=psfCenter,
+        bands=bands,
     )
 
     return blendData
