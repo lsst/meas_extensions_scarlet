@@ -104,7 +104,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        print("RUNNING!")
         catalog, modelData = deblendTask.run(coadds, catalog)
 
         # Attach the footprints in each band and compare to the full
