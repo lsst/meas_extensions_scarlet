@@ -160,11 +160,6 @@ def deblend(mExposure, footprint, config, spectrumInit):
     skipped : `list` of `int`
         The indices of any children that failed to initialize
         and were skipped.
-    spectrumInit : `bool`
-        Whether or not all of the sources were initialized by jointly
-        fitting their SED's. This provides a better initialization
-        but created memory issues when a blend is too large or
-        contains too many sources.
     """
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
@@ -268,7 +263,7 @@ def deblend(mExposure, footprint, config, spectrumInit):
     # Store the location of the PSF center for storage
     blend.psfCenter = (psfCenter.x, psfCenter.y)
 
-    return blend, skipped, []
+    return blend, skipped
 
 
 def buildLiteObservation(
@@ -866,7 +861,7 @@ class ScarletDeblendTask(pipeBase.Task):
         self.deblendErrorKey = schema.addField('deblend_error', type="String", size=25,
                                                doc='Name of error if the blend failed')
         self.incompleteDataKey = schema.addField('deblend_incompleteData', type='Flag',
-                                                 doc='True when a bland has at least one band '
+                                                 doc='True when a blend has at least one band '
                                                      'that could not generate a PSF and was '
                                                      'not included in the model.')
         # Deblended source fields
@@ -1061,7 +1056,8 @@ class ScarletDeblendTask(pipeBase.Task):
                 t0 = time.monotonic()
                 # Build the parameter lists with the same ordering
                 if self.config.version == "scarlet":
-                    blend, skippedSources, skippedBands = deblend(mExposure, foot, self.config, spectrumInit)
+                    blend, skippedSources = deblend(mExposure, foot, self.config, spectrumInit)
+                    skippedBands = []
                 elif self.config.version == "lite":
                     blend, skippedSources, skippedBands = deblend_lite(
                         mExposure=mExposure,
