@@ -367,7 +367,7 @@ class ScarletModelData:
         }
         return cls(**dataShallowCopy)
 
-    def updateCatalogFootprints(self, catalog, band, psfModel, maskImage, redistributeImage=None,
+    def updateCatalogFootprints(self, catalog, band, psfModel, maskImage=None, redistributeImage=None,
                                 removeScarletData=True, updateFluxColumns=True):
         """Use the scarlet models to set HeavyFootprints for modeled sources
 
@@ -382,6 +382,8 @@ class ScarletModelData:
         maskImage : `lsst.afw.image.MaskX`
             The masked image used to calculate the fraction of pixels
             in each footprint with valid data.
+            This is only used when `updateFluxColumns` is `True`,
+            and is required if it is.
         redistributeImage : `lsst.afw.image.Image`
             The image that is the source for flux re-distribution.
             If `redistributeImage` is `None` then flux re-distribution is
@@ -489,6 +491,8 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, maskImage, red
     maskImage : `lsst.afw.image.MaskX`
         The masked image used to calculate the fraction of pixels
         in each footprint with valid data.
+        This is only used when `updateFluxColumns` is `True`,
+        and is required if it is.
     redistributeImage : `lsst.afw.image.Image`
         The image that is the source for flux re-distribution.
         If `redistributeImage` is `None` then flux re-distribution is
@@ -558,11 +562,12 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, maskImage, red
             useFlux=useFlux,
         )
         sourceRecord.setFootprint(heavy)
-        # Set the fraction of pixels with valid data.
-        coverage = calculateFootprintCoverage(heavy, maskImage)
-        sourceRecord.set("deblend_dataCoverage", coverage)
 
         if updateFluxColumns:
+            # Set the fraction of pixels with valid data.
+            coverage = calculateFootprintCoverage(heavy, maskImage)
+            sourceRecord.set("deblend_dataCoverage", coverage)
+
             # Set the flux of the scarlet model
             # TODO: this field should probably be deprecated,
             # since DM-33710 gives users access to the scarlet models.
