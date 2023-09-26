@@ -125,6 +125,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     catalog,
                     band=band,
                     psfModel=psfModel,
+                    maskImage=coadd.mask,
                     redistributeImage=redistributeImage,
                     removeScarletData=False,
                 )
@@ -170,7 +171,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     blendData = modelData.blends[child["parent"]]
                     blend = dataToScarlet(
                         blendData=blendData,
-                        nBands=1,
                         bandIndex=bandIndex,
                     )
                     # We need to set an observation in order to convolve
