@@ -133,7 +133,7 @@ def computePsfKernelImage(mExposure, psfCenter):
     except IncompleteDataError as e:
         psfModels = e.partialPsf
         # Use only the bands that successfully generated a PSF image.
-        mExposure = mExposure[psfModels.filters,]
+        mExposure = mExposure[psfModels.filters, ]
 
     return psfModels.array, mExposure
 
