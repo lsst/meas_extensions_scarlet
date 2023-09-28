@@ -415,7 +415,8 @@ class ScarletModelData:
                 peaks = parent.getFootprint().peaks
                 # Set the footprint and coverage of the sources in this blend
                 # to zero
-                parentRecord["deblend_dataCoverage"] = 0
+                if updateFluxColumns:
+                    parentRecord["deblend_dataCoverage"] = 0
                 for sourceId, sourceData in blendModel.sources.items():
                     sourceRecord = catalog.find(sourceId)
                     footprint = Footprint()
@@ -423,7 +424,8 @@ class ScarletModelData:
                     peak = peaks[peakIdx]
                     footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
                     sourceRecord.setFootprint(footprint)
-                    sourceRecord["deblend_dataCoverage"] = 0
+                    if updateFluxColumns:
+                        sourceRecord["deblend_dataCoverage"] = 0
                 continue
 
             # Get the index of the model for the given band
