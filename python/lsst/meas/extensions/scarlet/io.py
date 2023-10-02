@@ -153,13 +153,18 @@ def updateCatalogFootprints(
             # no models for its sources.
             continue
 
+        parent = catalog.find(parentId)
+        if updateFluxColumns and imageForResdistibution is not None:
+            # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
+            parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
+                parent.getFootprint(),
+                imageForResdistibution.mask
+            )
+
         if band not in blendModel.bands:
-            parent = catalog.find(parentId)
             peaks = parent.getFootprint().peaks
             # Set the footprint and coverage of the sources in this blend
             # to zero
-            if updateFluxColumns:
-                parentRecord["deblend_dataCoverage"] = 0
             for sourceId, sourceData in blendModel.sources.items():
                 sourceRecord = catalog.find(sourceId)
                 footprint = afwFootprint()
