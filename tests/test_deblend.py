@@ -127,15 +127,15 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 coadd = self.coadds[band]
 
                 if useFlux:
-                    imageForResdistibution = coadd
+                    imageForRedistribution = coadd
                 else:
-                    imageForResdistibution = None
+                    imageForRedistribution = None
 
                 updateCatalogFootprints(
                     modelData,
                     catalog,
                     band=band,
-                    imageForResdistibution=imageForResdistibution,
+                    imageForRedistribution=imageForRedistribution,
                     removeScarletData=False,
                 )
 
@@ -210,7 +210,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         # the image of the flux-redistributed model,
                         # since the HeavyFootprint may trim rows or columns.
                         parentFootprint = catalog[catalog["id"] == child["parent"]][0].getFootprint()
-                        _images = imageForResdistibution[parentFootprint.getBBox()].image.array
+                        _images = imageForRedistribution[parentFootprint.getBBox()].image.array
                         blend.observation.images = scl.Image(
                             _images[None, :, :],
                             yx0=blendData.origin,

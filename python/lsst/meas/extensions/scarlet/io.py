@@ -115,7 +115,7 @@ def updateCatalogFootprints(
     modelData: scl.io.ScarletModelData,
     catalog: SourceCatalog,
     band: str,
-    imageForResdistibution: MaskedImage | Exposure | None = None,
+    imageForRedistribution: MaskedImage | Exposure | None = None,
     removeScarletData: bool = True,
     updateFluxColumns: bool = True
 ):
@@ -127,9 +127,9 @@ def updateCatalogFootprints(
         The catalog missing heavy footprints for deblended sources.
     band:
         The name of the band that the catalog data describes.
-    imageForResdistibution:
+    imageForRedistribution:
         The image that is the source for flux re-distribution.
-        If `imageForResdistibution` is `None` then flux re-distribution is
+        If `imageForRedistribution` is `None` then flux re-distribution is
         not performed.
     removeScarletData:
         Whether or not to remove `ScarletBlendData` for each blend
@@ -153,13 +153,18 @@ def updateCatalogFootprints(
             # no models for its sources.
             continue
 
+        parent = catalog.find(parentId)
+        if updateFluxColumns and imageForRedistribution is not None:
+            # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
+            parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
+                parent.getFootprint(),
+                imageForRedistribution.mask
+            )
+
         if band not in blendModel.bands:
-            parent = catalog.find(parentId)
             peaks = parent.getFootprint().peaks
             # Set the footprint and coverage of the sources in this blend
             # to zero
-            if updateFluxColumns:
-                parentRecord["deblend_dataCoverage"] = 0
             for sourceId, sourceData in blendModel.sources.items():
                 sourceRecord = catalog.find(sourceId)
                 footprint = afwFootprint()
@@ -178,7 +183,7 @@ def updateCatalogFootprints(
             blendData=blendModel,
             catalog=catalog,
             modelPsf=modelData.psf,
-            imageForResdistibution=imageForResdistibution,
+            imageForRedistribution=imageForRedistribution,
             bandIndex=bandIndex,
             parentFootprint=parentRecord.getFootprint(),
             updateFluxColumns=updateFluxColumns,
@@ -222,7 +227,7 @@ def updateBlendRecords(
     blendData: scl.io.ScarletBlendData,
     catalog: SourceCatalog,
     modelPsf: np.ndarray,
-    imageForResdistibution: MaskedImage | Exposure | None,
+    imageForRedistribution: MaskedImage | Exposure | None,
     bandIndex: int,
     parentFootprint: afwFootprint,
     updateFluxColumns: bool,
@@ -239,9 +244,9 @@ def updateBlendRecords(
         The 2D model of the PSF.
     observedPsf:
         The observed PSF model for the catalog.
-    imageForResdistibution:
+    imageForRedistribution:
         The image that is the source for flux re-distribution.
-        If `imageForResdistibution` is `None` then flux re-distribution is
+        If `imageForRedistribution` is `None` then flux re-distribution is
         not performed.
     bandIndex:
         The number of the band to extract.
@@ -253,7 +258,7 @@ def updateBlendRecords(
         This should only be true when the input catalog schema already
         contains those columns.
     """
-    useFlux = imageForResdistibution is not None
+    useFlux = imageForRedistribution is not None
     bands = ("dummy",)
 
     if useFlux:
@@ -263,13 +268,13 @@ def updateBlendRecords(
         bbox = Box2I(xy0, extent)
 
         images = Image(
-            imageForResdistibution[bbox].image.array[None, :, :],
+            imageForRedistribution[bbox].image.array[None, :, :],
             yx0=blendData.origin,
             bands=bands,
         )
 
         variance = Image(
-            imageForResdistibution[bbox].variance.array[None, :, :],
+            imageForRedistribution[bbox].variance.array[None, :, :],
             yx0=blendData.origin,
             bands=bands,
         )
@@ -331,7 +336,7 @@ def updateBlendRecords(
         if updateFluxColumns:
             if useFlux:
                 # Set the fraction of pixels with valid data.
-                coverage = calculateFootprintCoverage(heavy, imageForResdistibution.mask)
+                coverage = calculateFootprintCoverage(heavy, imageForRedistribution.mask)
                 sourceRecord.set("deblend_dataCoverage", coverage)
 
             # Set the flux of the scarlet model
