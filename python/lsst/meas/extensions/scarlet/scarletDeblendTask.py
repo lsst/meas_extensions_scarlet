@@ -134,7 +134,7 @@ def computePsfKernelImage(mExposure, psfCenter):
         psfModels = e.partialPsf
         # Use only the bands that successfully generated a PSF image.
         bands = psfModels.filters
-        mExposure = mExposure[bands,]
+        mExposure = mExposure[bands, ]
         if len(bands) == 1:
             # Only a single band generated a PSF, so the MultibandExposure
             # became a single band ExposureF.
