@@ -33,7 +33,7 @@ from scarlet import lite
 
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
-from lsst.geom import Point2I, Point2D
+import lsst.geom as geom
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
@@ -113,6 +113,36 @@ def isPseudoSource(source, pseudoColumns):
     return isPseudo
 
 
+def computePsfKernelImage(mExposure, psfCenter):
+    """Compute the PSF kernel image and update the multiband exposure
+    if not all of the PSF images could be computed.
+
+    Parameters
+    ----------
+    psfCenter : `tuple` or `Point2I` or `Point2D`
+        The location `(x, y)` used as the center of the PSF.
+
+    Returns
+    -------
+    psfModels : `np.ndarray`
+        The multiband PSF image
+    mExposure : `MultibandExposure`
+        The exposure, updated to only use bands that
+        successfully generated a PSF image.
+    """
+    if not isinstance(psfCenter, geom.Point2D):
+        psfCenter = geom.Point2D(*psfCenter)
+
+    try:
+        psfModels = mExposure.computePsfKernelImage(psfCenter)
+    except IncompleteDataError as e:
+        psfModels = e.partialPsf
+        # Use only the bands that successfully generated a PSF image.
+        mExposure = mExposure[psfModels.filters, ]
+
+    return psfModels.array, mExposure
+
+
 def deblend(mExposure, footprint, config, spectrumInit):
     """Deblend a parent footprint
 
@@ -135,11 +165,6 @@ def deblend(mExposure, footprint, config, spectrumInit):
     skipped : `list` of `int`
         The indices of any children that failed to initialize
         and were skipped.
-    spectrumInit : `bool`
-        Whether or not all of the sources were initialized by jointly
-        fitting their SED's. This provides a better initialization
-        but created memory issues when a blend is too large or
-        contains too many sources.
     """
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
@@ -293,9 +318,7 @@ def buildLiteObservation(
         The observation constructed from the input parameters.
     """
     # Initialize the observed PSFs
-    if not isinstance(psfCenter, Point2D):
-        psfCenter = Point2D(*psfCenter)
-    psfModels = mExposure.computePsfKernelImage(psfCenter)
+    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
 
     # Use the inverse variance as the weights
     if useWeights:
@@ -313,7 +336,7 @@ def buildLiteObservation(
         # Mask out the pixels outside the footprint
         weights *= footprint.spans.asArray()
 
-    return lite.LiteObservation(
+    observation = lite.LiteObservation(
         images=mExposure.image.array,
         variance=mExposure.variance.array,
         weights=weights,
@@ -321,6 +344,10 @@ def buildLiteObservation(
         model_psf=modelPsf[None, :, :],
         convolution_mode=convolutionType,
     )
+
+    # Store the bands used to create the observation
+    observation.bands = mExposure.filters
+    return observation
 
 
 def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=None):
@@ -335,6 +362,17 @@ def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=
         - The footprint of the parent to deblend
     config : `ScarletDeblendConfig`
         - Configuration of the deblending task
+
+    Returns
+    -------
+    blend : `scarlet.lite.Blend`
+        The blend this is to be deblended
+    skippedSources : `list[int]`
+        Indices of sources that were skipped due to no flux.
+        This usually means that a source was a spurrious detection in one
+        band that should not have been included in the merged catalog.
+    skippedBands : `list[str]`
+        Bands that were skipped because a PSF could not be generated for them.
     """
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
@@ -411,7 +449,7 @@ def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=
         blend.fit_spectra()
 
     # Set the sources that could not be initialized and were skipped
-    skipped = [src for src in sources if src.is_null]
+    skippedSources = [src for src in sources if src.is_null]
 
     blend.fit(
         max_iter=config.maxIter,
@@ -423,7 +461,10 @@ def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=
     # Store the location of the PSF center for storage
     blend.psfCenter = (psfCenter.x, psfCenter.y)
 
-    return blend, skipped
+    # Calculate the bands that were skipped
+    skippedBands = [band for band in mExposure.filters if band not in observation.bands]
+
+    return blend, skippedSources, skippedBands
 
 
 @dataclass
@@ -830,6 +871,10 @@ class ScarletDeblendTask(pipeBase.Task):
                                                 doc="Deblending failed on source")
         self.deblendErrorKey = schema.addField('deblend_error', type="String", size=25,
                                                doc='Name of error if the blend failed')
+        self.incompleteDataKey = schema.addField('deblend_incompleteData', type='Flag',
+                                                 doc='True when a blend has at least one band '
+                                                     'that could not generate a PSF and was '
+                                                     'not included in the model.')
         # Deblended source fields
         self.peakCenter = afwTable.Point2IKey.addFields(schema, name="deblend_peak_center",
                                                         doc="Center used to apply constraints in scarlet",
@@ -866,6 +911,9 @@ class ScarletDeblendTask(pipeBase.Task):
                                                   "this column is set to zero.")
         self.psfKey = schema.addField('deblend_deblendedAsPsf', type='Flag',
                                       doc='Deblender thought this source looked like a PSF')
+        self.coverageKey = schema.addField('deblend_dataCoverage', type=np.float32,
+                                           doc='Fraction of pixels with data. '
+                                               'In other words, 1 - fraction of pixels with NO_DATA set.')
         # Blendedness/classification metrics
         self.maxOverlapKey = schema.addField("deblend_maxOverlap", type=np.float32,
                                              doc="Maximum overlap with all of the other neighbors flux "
@@ -957,7 +1005,6 @@ class ScarletDeblendTask(pipeBase.Task):
             maxId = np.max(catalog["id"])
             idFactory.notify(maxId)
 
-        filters = mExposure.filters
         self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
         periodicLog = PeriodicLogger(self.log)
 
@@ -976,7 +1023,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Initialize the persistable data model
         modelPsf = lite.integrated_circular_gaussian(sigma=self.config.modelPsfSigma)
-        dataModel = ScarletModelData(filters, modelPsf)
+        dataModel = ScarletModelData(modelPsf)
 
         nParents = len(catalog)
         nDeblendedParents = 0
@@ -1020,9 +1067,10 @@ class ScarletDeblendTask(pipeBase.Task):
                 t0 = time.monotonic()
                 # Build the parameter lists with the same ordering
                 if self.config.version == "scarlet":
-                    blend, skipped = deblend(mExposure, foot, self.config, spectrumInit)
+                    blend, skippedSources = deblend(mExposure, foot, self.config, spectrumInit)
+                    skippedBands = []
                 elif self.config.version == "lite":
-                    blend, skipped = deblend_lite(
+                    blend, skippedSources, skippedBands = deblend_lite(
                         mExposure=mExposure,
                         modelPsf=modelPsf,
                         footprint=foot,
@@ -1039,6 +1087,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 else:
                     nComponents = 0
                 nChild = len(blend.sources)
+                parent.set(self.incompleteDataKey, len(skippedBands) > 0)
             # Catch all errors and filter out the ones that we know about
             except Exception as e:
                 print("deblend failed")
@@ -1046,7 +1095,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 blendError = type(e).__name__
                 if isinstance(e, ScarletGradientError):
                     parent.set(self.iterKey, e.iterations)
-                elif not isinstance(e, IncompleteDataError):
+                else:
                     blendError = "UnknownError"
                     if self.config.catchFailures:
                         # Make it easy to find UnknownErrors in the log file
@@ -1086,7 +1135,7 @@ class ScarletDeblendTask(pipeBase.Task):
             for k, scarletSource in enumerate(blend.sources):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
-                if k in skipped or (self.config.version == "lite" and scarletSource.is_null):
+                if k in skippedSources or (self.config.version == "lite" and scarletSource.is_null):
                     # No need to propagate anything
                     continue
                 parent.set(self.deblendSkippedKey, False)
@@ -1104,9 +1153,9 @@ class ScarletDeblendTask(pipeBase.Task):
 
             # Store the blend information so that it can be persisted
             if self.config.version == "lite":
-                blendData = scarletLiteToData(blend, blend.psfCenter, bbox.getMin())
+                blendData = scarletLiteToData(blend, blend.psfCenter, bbox.getMin(), blend.observation.bands)
             else:
-                blendData = scarletToData(blend, blend.psfCenter, bbox.getMin())
+                blendData = scarletToData(blend, blend.psfCenter, bbox.getMin(), mExposure.filters)
             dataModel.blends[parent.getId()] = blendData
 
             # Log a message if it has been a while since the last log.
@@ -1380,11 +1429,14 @@ class ScarletDeblendTask(pipeBase.Task):
         # deblenders and across observations, where the peak
         # position is unlikely to change unless enough time passes
         # for a source to move on the sky.
-        src.set(self.peakCenter, Point2I(peak["i_x"], peak["i_y"]))
+        src.set(self.peakCenter, geom.Point2I(peak["i_x"], peak["i_y"]))
         src.set(self.peakIdKey, peak["id"])
 
         # Store the number of components for the source
         src.set(self.nComponentsKey, len(scarletSource.components))
+
+        # Flag sources missing one or more bands
+        src.set(self.incompleteDataKey, parent.get(self.incompleteDataKey))
 
         # Propagate columns from the parent to the child
         for parentColumn, childColumn in self.config.columnInheritance.items():
