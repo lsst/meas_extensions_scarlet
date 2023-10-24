@@ -32,9 +32,8 @@ from scarlet.initialization import init_all_sources
 from scarlet import lite
 
 import lsst.pex.config as pexConfig
-from lsst.pex.exceptions import InvalidParameterError
 import lsst.pipe.base as pipeBase
-from lsst.geom import Point2I, Box2I, Point2D
+from lsst.geom import Point2I, Point2D
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
 import lsst.afw.detection as afwDet
@@ -54,7 +53,7 @@ scarletLogger.setLevel(logging.ERROR)
 proxminLogger = logging.getLogger("proxmin")
 proxminLogger.setLevel(logging.ERROR)
 
-__all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
+__all__ = ["deblend", "deblend_lite", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = logging.getLogger(__name__)
 
@@ -88,73 +87,6 @@ def _checkBlendConvergence(blend, f_rel):
     deltaLoss = np.abs(blend.loss[-2] - blend.loss[-1])
     convergence = f_rel * np.abs(blend.loss[-1])
     return deltaLoss < convergence
-
-
-def _computePsfImage(psfModels, position, filters):
-    """Get a multiband PSF image
-
-    The PSF Kernel Image is computed for each band
-    and combined into a (filter, y, x) array.
-
-    Parameters
-    ----------
-    psfList : `list` of `lsst.afw.detection.Psf`
-        The list of PSFs in each band.
-    position : `Point2D` or `tuple`
-        Coordinates to evaluate the PSF.
-    Returns
-    -------
-    psfs: `np.ndarray`
-        The multiband PSF image.
-    """
-    psfs = []
-    # Make the coordinates into a Point2D (if necessary)
-    if not isinstance(position, Point2D):
-        position = Point2D(position[0], position[1])
-
-    for bidx, psfModel in enumerate(psfModels):
-        try:
-            psf = psfModel.computeKernelImage(position)
-            psfs.append(psf)
-        except InvalidParameterError:
-            # This band failed to compute the PSF due to incomplete data
-            # at that location. This is unlikely to be a problem for Rubin,
-            # however the edges of some HSC COSMOS fields contain incomplete
-            # data in some bands, so we track this error to distinguish it
-            # from unknown errors.
-            msg = "Failed to compute PSF at {} in band {}"
-            raise IncompleteDataError(msg.format(position, filters[bidx])) from None
-
-    left = np.min([psf.getBBox().getMinX() for psf in psfs])
-    bottom = np.min([psf.getBBox().getMinY() for psf in psfs])
-    right = np.max([psf.getBBox().getMaxX() for psf in psfs])
-    top = np.max([psf.getBBox().getMaxY() for psf in psfs])
-    bbox = Box2I(Point2I(left, bottom), Point2I(right, top))
-    psfs = np.array([afwImage.utils.projectImage(psf, bbox).array for psf in psfs])
-    return psfs
-
-
-def getFootprintMask(footprint, mExposure):
-    """Mask pixels outside the footprint
-
-    Parameters
-    ----------
-    mExposure : `lsst.image.MultibandExposure`
-        - The multiband exposure containing the image,
-          mask, and variance data
-    footprint : `lsst.detection.Footprint`
-        - The footprint of the parent to deblend
-
-    Returns
-    -------
-    footprintMask : array
-        Boolean array with pixels not in the footprint set to one.
-    """
-    bbox = footprint.getBBox()
-    fpMask = afwImage.Mask(bbox)
-    footprint.spans.setMask(fpMask, 1)
-    fpMask = ~fpMask.getArray().astype(bool)
-    return fpMask
 
 
 def isPseudoSource(source, pseudoColumns):
@@ -225,12 +157,10 @@ def deblend(mExposure, footprint, config, spectrumInit):
         weights[mask > 0] = 0
 
     # Mask out the pixels outside the footprint
-    mask = getFootprintMask(footprint, mExposure)
-    weights *= ~mask
+    weights *= footprint.spans.asArray()
 
     psfCenter = footprint.getCentroid()
-    psfModels = [exp.getPsf() for exp in mExposure]
-    psfs = _computePsfImage(psfModels, psfCenter, mExposure.filters).astype(np.float32)
+    psfs = mExposure.computePsfKernelImage(psfCenter).astype(np.float32)
     psfs = ImagePSF(psfs)
     model_psf = GaussianPSF(sigma=(config.modelPsfSigma,)*len(mExposure.filters))
 
@@ -244,7 +174,7 @@ def deblend(mExposure, footprint, config, spectrumInit):
     else:
         raise ValueError("Unrecognized convolution type {}".format(config.convolutionType))
 
-    assert(config.sourceModel in ["single", "double", "compact", "fit"])
+    assert config.sourceModel in ["single", "double", "compact", "fit"]
 
     # Set the appropriate number of components
     if config.sourceModel == "single":
@@ -316,6 +246,83 @@ def deblend(mExposure, footprint, config, spectrumInit):
     return blend, skipped
 
 
+def buildLiteObservation(
+    modelPsf,
+    psfCenter,
+    mExposure,
+    footprint=None,
+    badPixelMasks=None,
+    useWeights=True,
+    convolutionType="real",
+):
+    """Generate a LiteObservation from a set of parameters.
+
+    Make the generation and reconstruction of a scarlet model consistent
+    by building a `LiteObservation` from a set of parameters.
+
+    Parameters
+    ----------
+    modelPsf : `numpy.ndarray`
+        The 2D model of the PSF in the partially deconvolved space.
+    psfCenter : `tuple` or `Point2I` or `Point2D`
+        The location `(x, y)` used as the center of the PSF.
+    mExposure : `lsst.afw.image.multiband.MultibandExposure`
+        The multi-band exposure that the model represents.
+        If `mExposure` is `None` then no image, variance, or weights are
+        attached to the observation.
+    footprint : `lsst.afw.detection.Footprint`
+        The footprint that is being fit.
+        If `Footprint` is `None` then the weights are not updated to mask
+        out pixels not contained in the footprint.
+    badPixelMasks : `list` of `str`
+        The keys from the bit mask plane used to mask out pixels
+        during the fit.
+        If `badPixelMasks` is `None` then the default values from
+        `ScarletDeblendConfig.badMask` is used.
+    useWeights : `bool`
+        Whether or not fitting should use inverse variance weights to
+        calculate the log-likelihood.
+    convolutionType : `str`
+        The type of convolution to use (either "real" or "fft").
+        When reconstructing an image it is advised to use "real" to avoid
+        polluting the footprint with
+
+    Returns
+    -------
+    observation : `scarlet.lite.LiteObservation`
+        The observation constructed from the input parameters.
+    """
+    # Initialize the observed PSFs
+    if not isinstance(psfCenter, Point2D):
+        psfCenter = Point2D(*psfCenter)
+    psfModels = mExposure.computePsfKernelImage(psfCenter)
+
+    # Use the inverse variance as the weights
+    if useWeights:
+        weights = 1/mExposure.variance.array
+    else:
+        # Mask out bad pixels
+        weights = np.ones_like(mExposure.image.array)
+        if badPixelMasks is None:
+            badPixelMasks = ScarletDeblendConfig().badMask
+        badPixels = mExposure.mask.getPlaneBitMask(badPixelMasks)
+        mask = mExposure.mask.array & badPixels
+        weights[mask > 0] = 0
+
+    if footprint is not None:
+        # Mask out the pixels outside the footprint
+        weights *= footprint.spans.asArray()
+
+    return lite.LiteObservation(
+        images=mExposure.image.array,
+        variance=mExposure.variance.array,
+        weights=weights,
+        psfs=psfModels,
+        model_psf=modelPsf[None, :, :],
+        convolution_mode=convolutionType,
+    )
+
+
 def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=None):
     """Deblend a parent footprint
 
@@ -331,35 +338,16 @@ def deblend_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=
     """
     # Extract coordinates from each MultiColorPeak
     bbox = footprint.getBBox()
-
-    # Create the data array from the masked images
-    images = mExposure.image[:, bbox].array
-    variance = mExposure.variance[:, bbox].array
-
-    # Use the inverse variance as the weights
-    if config.useWeights:
-        weights = 1/mExposure.variance[:, bbox].array
-    else:
-        weights = np.ones_like(images)
-        badPixels = mExposure.mask.getPlaneBitMask(config.badMask)
-        mask = mExposure.mask[:, bbox].array & badPixels
-        weights[mask > 0] = 0
-
-    # Mask out the pixels outside the footprint
-    mask = getFootprintMask(footprint, mExposure)
-    weights *= ~mask
-
     psfCenter = footprint.getCentroid()
-    psfModels = [exp.getPsf() for exp in mExposure]
-    psfs = _computePsfImage(psfModels, psfCenter, mExposure.filters).astype(np.float32)
 
-    observation = lite.LiteObservation(
-        images=images,
-        variance=variance,
-        weights=weights,
-        psfs=psfs,
-        model_psf=modelPsf[None, :, :],
-        convolution_mode=config.convolutionType,
+    observation = buildLiteObservation(
+        modelPsf=modelPsf,
+        psfCenter=psfCenter,
+        mExposure=mExposure[:, bbox],
+        footprint=footprint,
+        badPixelMasks=config.badMask,
+        useWeights=config.useWeights,
+        convolutionType=config.convolutionType,
     )
 
     # Convert the centers to pixel coordinates
@@ -1053,6 +1041,8 @@ class ScarletDeblendTask(pipeBase.Task):
                 nChild = len(blend.sources)
             # Catch all errors and filter out the ones that we know about
             except Exception as e:
+                print("deblend failed")
+                print(e)
                 blendError = type(e).__name__
                 if isinstance(e, ScarletGradientError):
                     parent.set(self.iterKey, e.iterations)

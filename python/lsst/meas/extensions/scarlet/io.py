@@ -11,9 +11,10 @@ from scarlet.lite.measure import weight_sources
 import traceback
 
 from lsst.geom import Box2I, Extent2I, Point2I, Point2D
-from lsst.afw.detection.multiband import heavyFootprintToImage
+from lsst.afw.image import computePsfImage
 
 from .source import liteModelToHeavy
+
 
 __all__ = [
     "ScarletComponentData",
@@ -27,6 +28,7 @@ __all__ = [
     "dataToScarlet",
     "scarletLiteToData",
     "scarletToData",
+    "DummyObservation",
 ]
 
 logger = logging.getLogger(__name__)
@@ -299,14 +301,14 @@ class ScarletBlendData:
 class ScarletModelData:
     """A container that propagates scarlet models for an entire `SourceCatalog`
     """
-    def __init__(self, filters, psf, blends=None):
+    def __init__(self, bands, psf, blends=None):
         """Initialize an instance
 
         Parameters
         ----------
-        filters : `list` of `str`
-            The names of the filters.
-            The order of the filters must be the same as the order of
+        bands : `list` of `str`
+            The names of the bands.
+            The order of the bands must be the same as the order of
             the multiband model arrays, and SEDs.
         psf : `numpy.ndarray`
             The 2D array of the PSF in scarlet model space.
@@ -316,7 +318,7 @@ class ScarletModelData:
             Initial `dict` that maps parent IDs from the source catalog
             to the scarlet model data for the parent blend.
         """
-        self.filters = filters
+        self.bands = bands
         self.psf = psf
         if blends is None:
             blends = {}
@@ -331,7 +333,7 @@ class ScarletModelData:
             The result of the object converted into a JSON format
         """
         result = {
-            "filters": self.filters,
+            "bands": self.bands,
             "psfShape": self.psf.shape,
             "psf": list(self.psf.flatten()),
             "blends": {id: blend.asDict() for id, blend in self.blends.items()}
@@ -360,6 +362,10 @@ class ScarletModelData:
             int(id): ScarletBlendData.fromDict(blend)
             for id, blend in data['blends'].items()
         }
+        if "filters" in dataShallowCopy:
+            # Support the original version,
+            # which used "filters" instead of the now canonical "bands."
+            dataShallowCopy["bands"] = dataShallowCopy.pop("filters")
         return cls(**dataShallowCopy)
 
     def updateCatalogFootprints(self, catalog, band, psfModel, redistributeImage=None,
@@ -390,7 +396,7 @@ class ScarletModelData:
         # all of the children with the same parent
         parents = catalog[catalog["parent"] == 0]
         # Get the index of the model for the given band
-        bandIndex = self.filters.index(band)
+        bandIndex = self.bands.index(band)
 
         for parentRecord in parents:
             parentId = parentRecord.getId()
@@ -446,7 +452,7 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
         contains those columns.
     """
     # We import here to avoid a circular dependency
-    from .scarletDeblendTask import setDeblenderMetrics, getFootprintMask
+    from .scarletDeblendTask import setDeblenderMetrics
 
     useFlux = redistributeImage is not None
     xy0 = Point2I(*blendData.xy0)
@@ -481,7 +487,7 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
         extent = Extent2I(*blendData.extent)
         bbox = Box2I(xy0, extent)
         blend.observation.images = redistributeImage[bbox].array[None, :, :]
-        blend.observation.weights = ~getFootprintMask(parentFootprint, None)[None, :, :]
+        blend.observation.weights = parentFootprint.spans.asArray()[None, :, :]
         # Re-distribute the flux for each source in-place
         weight_sources(blend)
 
@@ -511,9 +517,10 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, redistributeIm
 
             # Set the flux at the center of the model
             peak = heavy.peaks[0]
-            img = heavyFootprintToImage(heavy, fill=0.0)
+
+            img = heavy.extractImage(fill=0.0)
             try:
-                sourceRecord.set("deblend_peak_instFlux", img.image[Point2I(peak["i_x"], peak["i_y"])])
+                sourceRecord.set("deblend_peak_instFlux", img[Point2I(peak["i_x"], peak["i_y"])])
             except Exception:
                 srcId = sourceRecord.getId()
                 x = peak["i_x"]
@@ -658,6 +665,81 @@ class DummyObservation(LiteObservation):
             noise_rms=0,
             bbox=bbox,
         )
+
+
+def multibandDataToScarlet(
+    modelData,
+    blendId,
+    observedPsfs=None,
+    dtype=np.float32,
+    mExposure=None,
+    footprint=None,
+):
+    """Convert the store data model into a scarlet lite blend,
+    including observation information.
+
+    While the typical use case in the science pipelines is to attach
+    scarlet models as footprints to a `SourceCatalog`, it can be advantageous
+    to load an entire multi-band blend. This requires (at a minimum) the
+    PSF in each observed band for the final model.
+
+    Parameters
+    ----------
+    modelData : `ScarletModelData`
+        The model for all of the blends in a given tract/patch.
+    blendId : `int`
+        The source record ID of the parent record in the catalog.
+    observedPsfs : `list` of `lsst.detection.Psf`
+        The PSF for each observed image.
+        Typically this is obtained using
+        ```butler.get("deep_Coadd_calexp.psf", **dataId)``` for a given
+        (tract, patch, band).
+        If `mExposure` is not `None` then the observed PSFs are generated
+        automatically, otherwise this parameter is required.
+    dtype : `numpy.dtype`
+        Datatype for the rendered model. If `mExposure` is not `None` then
+        this parameter is ignored and the `dtype` of the image is used.
+    mExposure : `lsst.afw.image.MultibandExposure`
+        The observed exposure in each band.
+        This is not required in order to render the models into numpy arrays,
+        however it is required if the user plans to perform a warm restart
+        using the stored models.
+    footprint : `lsst.afw.detection.Footprint`
+        The footprint of the parent blend.
+        This is only required if the user desires to perform a warm restart
+        and wants to mask out the pixels outside of the parent footprint
+        similar to when scarlet was executed in the science pipelines.
+
+    Returns
+    -------
+    blend : `scarlet.lite.LiteBlend`
+        The full scarlet model for the blend.
+    """
+    # Import here to prevent circular import
+    from .scarletDeblendTask import buildLiteObservation
+
+    # Extract the blend data
+    blendData = modelData.blends[blendId]
+    nBands = len(modelData.bands)
+    modelBox = Box((nBands,) + tuple(blendData.extent[::-1]), origin=(0, 0, 0))
+    blend = dataToScarlet(blendData, nBands=nBands)
+
+    if mExposure is None:
+        psfModels = computePsfImage(observedPsfs, blendData.psfCenter, modelData.bands)
+        blend.observation = DummyObservation(
+            psfs=psfModels,
+            model_psf=modelData.psf[None, :, :],
+            bbox=modelBox,
+            dtype=dtype,
+        )
+    else:
+        blend.observation = buildLiteObservation(
+            modelPsf=modelData.psf,
+            psfCenter=blendData.psfCenter,
+            mExposure=mExposure,
+            footprint=footprint,
+        )
+    return blend
 
 
 def dataToScarlet(blendData, nBands=None, bandIndex=None, dtype=np.float32):
