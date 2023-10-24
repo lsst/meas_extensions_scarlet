@@ -411,6 +411,15 @@ class ScarletModelData:
                 # no models for its sources.
                 continue
 
+            parent = catalog.find(parentId)
+            if updateFluxColumns and redistributeImage is not None:
+                # Update the data coverage
+                # (1 - # of NO_DATA pixels/# of pixels)
+                parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
+                    parent.getFootprint(),
+                    maskImage
+                )
+
             if band not in blendModel.bands:
                 parent = catalog.find(parentId)
                 peaks = parent.getFootprint().peaks
