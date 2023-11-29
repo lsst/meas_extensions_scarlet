@@ -232,7 +232,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         # against the HeavyFootprint
                         bbox = fp.getBBox()
                         bbox = bboxToScarletBox(bbox)
-                        model = blend.observation.convolve(source.get_model().project(bbox=bbox)).data[0]
+                        model = blend.observation.convolve(
+                            source.get_model().project(bbox=bbox), mode="real"
+                        ).data[0]
                         np.testing.assert_almost_equal(img.array, model)
 
         # Check that all sources have the correct number of peaks
