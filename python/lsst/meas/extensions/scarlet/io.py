@@ -260,6 +260,8 @@ def updateBlendRecords(
     """
     useFlux = imageForRedistribution is not None
     bands = ("dummy",)
+    # Only use the PSF for the current image
+    psfs = np.array([blendData.psf[bandIndex]])
 
     if useFlux:
         # Extract the image array to re-distribute its flux
@@ -289,13 +291,13 @@ def updateBlendRecords(
             images=images,
             variance=variance,
             weights=weights,
-            psfs=blendData.psf,
+            psfs=psfs,
             model_psf=modelPsf[None, :, :],
         )
     else:
         observation = scl.io.Observation.empty(
             bands=bands,
-            psfs=blendData.psf,
+            psfs=psfs,
             model_psf=modelPsf[None, :, :],
             bbox=Box(blendData.shape, blendData.origin),
             dtype=np.float32,
