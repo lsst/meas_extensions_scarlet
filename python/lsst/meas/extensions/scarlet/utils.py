@@ -4,7 +4,14 @@ from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF, makeHeavyFootprint, PeakCatalog
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.geom import SpanSet
-from lsst.afw.image import Mask, MaskedImage, Image as afwImage, MultibandExposure, MultibandImage
+from lsst.afw.image import (
+    Mask,
+    MaskedImage,
+    Image as afwImage,
+    IncompleteDataError,
+    MultibandExposure,
+    MultibandImage
+)
 from lsst.afw.table import SourceCatalog
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
@@ -96,6 +103,41 @@ def bboxToScarletBox(bbox: geom.Box2I, xy0: geom.Point2I = geom.Point2I()) -> sc
     return scl.Box((bbox.getHeight(), bbox.getWidth()), origin)
 
 
+def computePsfKernelImage(mExposure, psfCenter):
+    """Compute the PSF kernel image and update the multiband exposure
+    if not all of the PSF images could be computed.
+
+    Parameters
+    ----------
+    psfCenter : `tuple` or `Point2I` or `Point2D`
+        The location `(x, y)` used as the center of the PSF.
+
+    Returns
+    -------
+    psfModels : `np.ndarray`
+        The multiband PSF image
+    mExposure : `MultibandExposure`
+        The exposure, updated to only use bands that
+        successfully generated a PSF image.
+    """
+    if not isinstance(psfCenter, geom.Point2D):
+        psfCenter = geom.Point2D(*psfCenter)
+
+    try:
+        psfModels = mExposure.computePsfKernelImage(psfCenter)
+    except IncompleteDataError as e:
+        psfModels = e.partialPsf
+        # Use only the bands that successfully generated a PSF image.
+        bands = psfModels.filters
+        mExposure = mExposure[bands,]
+        if len(bands) == 1:
+            # Only a single band generated a PSF, so the MultibandExposure
+            # became a single band ExposureF.
+            # Convert the result back into a MultibandExposure.
+            mExposure = MultibandExposure.fromExposures(bands, [mExposure])
+    return psfModels.array, mExposure
+
+
 def buildObservation(
     modelPsf: np.ndarray,
     psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
@@ -145,7 +187,7 @@ def buildObservation(
     # Initialize the observed PSFs
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-    psfModels = mExposure.computePsfKernelImage(psfCenter)
+    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
 
     # Use the inverse variance as the weights
     if useWeights:
@@ -168,7 +210,7 @@ def buildObservation(
         images=mExposure.image.array,
         variance=mExposure.variance.array,
         weights=weights,
-        psfs=psfModels.array,
+        psfs=psfModels,
         model_psf=modelPsf[None, :, :],
         convolution_mode=convolutionType,
         bands=mExposure.filters,

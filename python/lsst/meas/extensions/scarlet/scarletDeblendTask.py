@@ -33,10 +33,9 @@ import lsst.afw.table as afwTable
 import lsst.scarlet.lite as scl
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
-from lsst.afw.image import IncompleteDataError
 
 from . import io
-from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation
+from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation, computePsfKernelImage
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -99,41 +98,6 @@ def isPseudoSource(source, pseudoColumns):
         except KeyError:
             pass
     return isPseudo
-
-
-def computePsfKernelImage(mExposure, psfCenter):
-    """Compute the PSF kernel image and update the multiband exposure
-    if not all of the PSF images could be computed.
-
-    Parameters
-    ----------
-    psfCenter : `tuple` or `Point2I` or `Point2D`
-        The location `(x, y)` used as the center of the PSF.
-
-    Returns
-    -------
-    psfModels : `np.ndarray`
-        The multiband PSF image
-    mExposure : `MultibandExposure`
-        The exposure, updated to only use bands that
-        successfully generated a PSF image.
-    """
-    if not isinstance(psfCenter, geom.Point2D):
-        psfCenter = geom.Point2D(*psfCenter)
-
-    try:
-        psfModels = mExposure.computePsfKernelImage(psfCenter)
-    except IncompleteDataError as e:
-        psfModels = e.partialPsf
-        # Use only the bands that successfully generated a PSF image.
-        bands = psfModels.filters
-        mExposure = mExposure[bands,]
-        if len(bands) == 1:
-            # Only a single band generated a PSF, so the MultibandExposure
-            # became a single band ExposureF.
-            # Convert the result back into a MultibandExposure.
-            mExposure = afwImage.MultibandExposure.fromExposures(bands, [mExposure])
-    return psfModels.array, mExposure
 
 
 def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, wavelets=None):
