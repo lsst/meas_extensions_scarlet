@@ -168,7 +168,7 @@ def updateCatalogFootprints(
             for sourceId, sourceData in blendModel.sources.items():
                 sourceRecord = catalog.find(sourceId)
                 footprint = afwFootprint()
-                peakIdx = np.where(peaks["id"] == sourceData.peakId)[0][0]
+                peakIdx = np.where(peaks["id"] == sourceData.peak_id)[0][0]
                 peak = peaks[peakIdx]
                 footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
                 sourceRecord.setFootprint(footprint)
