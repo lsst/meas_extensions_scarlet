@@ -77,6 +77,55 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for b, coadd in enumerate(self.coadds):
             coadd.setPsf(psfs[b])
 
+    def _insert_blank_source(self, modelData, catalog):
+        # Add parent
+        parent = catalog.addNew()
+        parent.setParent(0)
+        parent["deblend_nChild"] = 1
+        parent["deblend_nPeaks"] = 1
+        ss = SpanSet.fromShape(5, Stencil.CIRCLE, offset=(30, 70))
+        footprint = Footprint(ss)
+        peak = footprint.addPeak(30, 70, 0)
+        parent.setFootprint(footprint)
+
+        # Add the zero flux source
+        dtype = np.float32
+        center = (70, 30)
+        origin = (center[0]-5, center[1]-5)
+        psf = list(modelData.blends.values())[0].psf
+        src = catalog.addNew()
+        src.setParent(parent.getId())
+        src["deblend_peak_center_x"] = center[1]
+        src["deblend_peak_center_y"] = center[0]
+        src["deblend_nPeaks"] = 1
+
+        sources = {
+            src.getId(): {
+                "components": [],
+                "factorized": [{
+                    "origin": origin,
+                    "peak": center,
+                    "spectrum": np.zeros((len(self.bands),), dtype=dtype),
+                    "morph": np.zeros((11, 11), dtype=dtype),
+                    "shape": (11, 11),
+                }],
+                "peak_id": peak.getId(),
+            }
+        }
+
+        blendData = scl.io.ScarletBlendData.from_dict({
+            "origin": origin,
+            "shape": (11, 11),
+            "psf_center": center,
+            "psf_shape": psf.shape,
+            "psf": psf.flatten(),
+            "sources": sources,
+            "bands": self.bands,
+        })
+        pid = parent.getId()
+        modelData.blends[pid] = blendData
+        return pid, src.getId()
+
     def _deblend(self, version):
         schema = SourceCatalog.Table.makeMinimalSchema()
         # Adjust config options to test skipping parents
@@ -117,6 +166,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
     def test_deblend_task(self):
         catalog, modelData, config = self._deblend("lite")
 
+        bad_blend_id, bad_src_id = self._insert_blank_source(modelData, catalog)
+
         # Attach the footprints in each band and compare to the full
         # data model. This is done in each band, both with and without
         # flux re-distribution to test all of the different possible
@@ -153,6 +204,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     self.assertEqual(len(children), parent.get("deblend_nChild"))
                     # Check that parent columns are propagated
                     # to their children
+                    if parent.getId() == bad_blend_id:
+                        continue
                     for parentCol, childCol in config.columnInheritance.items():
                         np.testing.assert_array_equal(parent.get(parentCol), children[childCol])
 
@@ -255,6 +308,10 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Check that only the appropriate parents were skipped
         skipped = largeFootprint | denseFootprint
         np.testing.assert_array_equal(skipped, catalog["deblend_skipped"])
+
+        # Check that the zero flux source was flagged
+        for src in catalog:
+            np.testing.assert_equal(src["deblend_zeroFlux"], src.getId() == bad_src_id)
 
     def test_continuity(self):
         """This test ensures that lsst.scarlet.lite gives roughly the same
