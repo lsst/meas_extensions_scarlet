@@ -26,7 +26,8 @@ import numpy as np
 
 from lsst.afw.table import SourceCatalog
 from lsst.afw.image import MaskedImage, Exposure
-from lsst.afw.detection import Footprint as afwFootprint
+from lsst.afw.detection import Footprint as afwFootprint, HeavyFootprintF
+from lsst.afw.geom import SpanSet, Span
 from lsst.geom import Box2I, Extent2I, Point2I
 import lsst.scarlet.lite as scl
 from lsst.scarlet.lite import Blend, Source, Box, Component, FixedParameter, FactorizedComponent, Image
@@ -333,9 +334,24 @@ def updateBlendRecords(
             blend=blend,
             useFlux=useFlux,
         )
-        sourceRecord.setFootprint(heavy)
 
         if updateFluxColumns:
+            if heavy.getArea() == 0:
+                # The source has no flux after being weighted with the PSF
+                # in this particular band (it might have flux in others).
+                sourceRecord.set("deblend_zeroFlux", True)
+                # Create a Footprint with a single pixel, set to zero,
+                # to avoid breakage in measurement algorithms.
+                center = Point2I(heavy.peaks[0]["i_x"], heavy.peaks[0]["i_y"])
+                spanList = [Span(center.y, center.x, center.x)]
+                footprint = afwFootprint(SpanSet(spanList))
+                footprint.setPeakCatalog(heavy.peaks)
+                heavy = HeavyFootprintF(footprint)
+                heavy.getImageArray()[0] = 0.0
+            else:
+                sourceRecord.set("deblend_zeroFlux", False)
+            sourceRecord.setFootprint(heavy)
+
             if useFlux:
                 # Set the fraction of pixels with valid data.
                 coverage = calculateFootprintCoverage(heavy, imageForRedistribution.mask)

@@ -783,6 +783,8 @@ class ScarletDeblendTask(pipeBase.Task):
         self.coverageKey = schema.addField('deblend_dataCoverage', type=np.float32,
                                            doc='Fraction of pixels with data. '
                                                'In other words, 1 - fraction of pixels with NO_DATA set.')
+        self.zeroFluxKey = schema.addField("deblend_zeroFlux", type="Flag",
+                                           doc="Source has zero flux.")
         # Blendedness/classification metrics
         self.maxOverlapKey = schema.addField("deblend_maxOverlap", type=np.float32,
                                              doc="Maximum overlap with all of the other neighbors flux "
