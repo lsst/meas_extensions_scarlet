@@ -576,7 +576,8 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, maskImage, red
                 xy0=xy0,
                 useFlux=useFlux,
             )
-        except:
+        except Exception as e:
+            logger.warn(e)
             zeroFlux = True
             # Add the location of the source to the peak catalog
             peakCat = PeakCatalog(source.detectedPeak.table)
