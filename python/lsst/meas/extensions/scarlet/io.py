@@ -10,6 +10,8 @@ from scarlet.lite.measure import weight_sources
 
 from lsst.geom import Box2I, Extent2I, Point2I, Point2D
 from lsst.afw.image import computePsfImage
+from lsst.afw.detection import Footprint as afwFootprint, HeavyFootprintF, PeakCatalog
+from lsst.afw.geom import SpanSet, Span
 from lsst.afw.detection import Footprint
 
 from .source import liteModelToHeavy
@@ -566,15 +568,36 @@ def updateBlendRecords(blendData, catalog, modelPsf, observedPsf, maskImage, red
         peakIdx = np.where(peaks["id"] == source.peakId)[0][0]
         source.detectedPeak = peaks[peakIdx]
         # Set the Footprint
-        heavy = liteModelToHeavy(
-            source=source,
-            blend=blend,
-            xy0=xy0,
-            useFlux=useFlux,
-        )
+        zeroFlux = False
+        try:
+            heavy = liteModelToHeavy(
+                source=source,
+                blend=blend,
+                xy0=xy0,
+                useFlux=useFlux,
+            )
+        except:
+            zeroFlux = True
+            # Add the location of the source to the peak catalog
+            peakCat = PeakCatalog(source.detectedPeak.table)
+            peakCat.append(source.detectedPeak)
+            # Create a Footprint with a single pixel, set to zero,
+            # to avoid breakage in measurement algorithms.
+            center = Point2I(peakCat[0]["i_x"] - xy0[0], peakCat[0]["i_y"] - xy0[1])
+            spanList = [Span(center.y + xy0[1], center.x + xy0[0], center.x + xy0[0])]
+            footprint = afwFootprint(SpanSet(spanList))
+            footprint.setPeakCatalog(peakCat)
+            heavy = HeavyFootprintF(footprint)
+            heavy.getImageArray()[0] = 0.0
         sourceRecord.setFootprint(heavy)
 
         if updateFluxColumns:
+            if zeroFlux or heavy.getArea() == 0:
+                # The source has no flux after being weighted with the PSF
+                # in this particular band (it might have flux in others).
+                sourceRecord.set("deblend_zeroFlux", True)
+            else:
+                sourceRecord.set("deblend_zeroFlux", False)
             # Set the fraction of pixels with valid data.
             coverage = calculateFootprintCoverage(heavy, maskImage)
             sourceRecord.set("deblend_dataCoverage", coverage)
