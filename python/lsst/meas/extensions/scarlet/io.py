@@ -386,6 +386,8 @@ def updateBlendRecords(
             sourceRecord.set("deblend_fluxOverlap", source.metrics.fluxOverlap[0])
             sourceRecord.set("deblend_fluxOverlapFraction", source.metrics.fluxOverlapFraction[0])
             sourceRecord.set("deblend_blendedness", source.metrics.blendedness[0])
+        else:
+            sourceRecord.setFootprint(heavy)
 
 
 def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
