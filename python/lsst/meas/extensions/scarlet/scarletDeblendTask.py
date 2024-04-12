@@ -40,6 +40,7 @@ import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
+from lsst.afw.image.exposure._multiband import IncompleteDataError
 
 from .source import bboxToScarletBox
 from .io import ScarletModelData, scarletToData, scarletLiteToData
@@ -56,12 +57,6 @@ proxminLogger.setLevel(logging.ERROR)
 __all__ = ["deblend", "deblend_lite", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = logging.getLogger(__name__)
-
-
-class IncompleteDataError(Exception):
-    """The PSF could not be computed due to incomplete data
-    """
-    pass
 
 
 class ScarletGradientError(Exception):
