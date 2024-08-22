@@ -313,61 +313,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for src in catalog:
             np.testing.assert_equal(src["deblend_zeroFlux"], src.getId() == bad_src_id)
 
-    def test_continuity(self):
-        """This test ensures that lsst.scarlet.lite gives roughly the same
-        result as scarlet.lite
-
-        TODO: This test can be removed once the deprecated scarlet.lite
-        module is removed from the science pipelines.
-        """
-        oldCatalog, oldModelData, oldConfig = self._deblend("old_lite")
-        catalog, modelData, config = self._deblend("lite")
-
-        # Ensure that the deblender used different versions
-        self.assertEqual(oldConfig.version, "old_lite")
-        self.assertEqual(config.version, "lite")
-
-        # Check that the PSF and other properties are the same
-        assert_almost_equal(oldModelData.psf, modelData.psf)
-        self.assertTupleEqual(tuple(oldModelData.blends.keys()), tuple(modelData.blends.keys()))
-
-        # Make sure that the sources have the same IDs
-        for i in range(len(catalog)):
-            self.assertEqual(catalog[i]["id"], oldCatalog[i]["id"])
-
-        for blendId in modelData.blends.keys():
-            oldBlendData = oldModelData.blends[blendId]
-            blendData = modelData.blends[blendId]
-
-            # Check that blend properties are the same
-            self.assertTupleEqual(oldBlendData.origin, blendData.origin)
-            self.assertTupleEqual(oldBlendData.shape, blendData.shape)
-            self.assertTupleEqual(oldBlendData.bands, blendData.bands)
-            self.assertTupleEqual(oldBlendData.psf_center, blendData.psf_center)
-            self.assertTupleEqual(tuple(oldBlendData.sources.keys()), tuple(blendData.sources.keys()))
-            assert_almost_equal(oldBlendData.psf, blendData.psf)
-
-            for sourceId in blendData.sources.keys():
-                oldSourceData = oldBlendData.sources[sourceId]
-                sourceData = blendData.sources[sourceId]
-                # Check that source properties are the same
-                self.assertEqual(len(oldSourceData.components), 0)
-                self.assertEqual(len(sourceData.components), 0)
-                self.assertEqual(
-                    len(oldSourceData.factorized_components),
-                    len(sourceData.factorized_components)
-                )
-
-                for c in range(len(sourceData.factorized_components)):
-                    oldComponentData = oldSourceData.factorized_components[c]
-                    componentData = sourceData.factorized_components[c]
-                    # Check that component properties are the same
-                    self.assertTupleEqual(oldComponentData.peak, componentData.peak)
-                    self.assertTupleEqual(
-                        tuple(oldComponentData.peak[i]-oldComponentData.shape[i]//2 for i in range(2)),
-                        oldComponentData.origin,
-                    )
-
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
     pass

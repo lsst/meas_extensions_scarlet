@@ -34,8 +34,7 @@ import lsst.scarlet.lite as scl
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from . import io
-from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation, computePsfKernelImage
+from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -46,7 +45,7 @@ scarletLogger.setLevel(logging.ERROR)
 proxminLogger = logging.getLogger("proxmin")
 proxminLogger.setLevel(logging.ERROR)
 
-__all__ = ["deblend", "deblend_old_lite", "ScarletDeblendConfig", "ScarletDeblendTask"]
+__all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = logging.getLogger(__name__)
 
@@ -219,204 +218,6 @@ def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, 
     return blend, skippedSources, skippedBands
 
 
-def buildOldObservation(
-    modelPsf,
-    psfCenter,
-    mExposure,
-    footprint=None,
-    badPixelMasks=None,
-    useWeights=True,
-    convolutionType="real",
-):
-    """Generate a LiteObservation from a set of parameters.
-
-    Make the generation and reconstruction of a scarlet model consistent
-    by building a `LiteObservation` from a set of parameters.
-
-    Parameters
-    ----------
-    modelPsf : `numpy.ndarray`
-        The 2D model of the PSF in the partially deconvolved space.
-    psfCenter : `tuple` or `Point2I` or `Point2D`
-        The location `(x, y)` used as the center of the PSF.
-    mExposure : `lsst.afw.image.multiband.MultibandExposure`
-        The multi-band exposure that the model represents.
-        If `mExposure` is `None` then no image, variance, or weights are
-        attached to the observation.
-    footprint : `lsst.afw.detection.Footprint`
-        The footprint that is being fit.
-        If `Footprint` is `None` then the weights are not updated to mask
-        out pixels not contained in the footprint.
-    badPixelMasks : `list` of `str`
-        The keys from the bit mask plane used to mask out pixels
-        during the fit.
-        If `badPixelMasks` is `None` then the default values from
-        `ScarletDeblendConfig.badMask` is used.
-    useWeights : `bool`
-        Whether or not fitting should use inverse variance weights to
-        calculate the log-likelihood.
-    convolutionType : `str`
-        The type of convolution to use (either "real" or "fft").
-        When reconstructing an image it is advised to use "real" to avoid
-        polluting the footprint with
-
-    Returns
-    -------
-    observation : `scarlet.lite.LiteObservation`
-        The observation constructed from the input parameters.
-    """
-    from scarlet import lite
-    # Initialize the observed PSFs
-    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
-
-    # Use the inverse variance as the weights
-    if useWeights:
-        weights = 1/mExposure.variance.array
-    else:
-        # Mask out bad pixels
-        weights = np.ones_like(mExposure.image.array)
-        if badPixelMasks is None:
-            badPixelMasks = ScarletDeblendConfig().badMask
-        badPixels = mExposure.mask.getPlaneBitMask(badPixelMasks)
-        mask = mExposure.mask.array & badPixels
-        weights[mask > 0] = 0
-
-    if footprint is not None:
-        # Mask out the pixels outside the footprint
-        weights *= footprint.spans.asArray()
-
-    observation = lite.LiteObservation(
-        images=mExposure.image.array,
-        variance=mExposure.variance.array,
-        weights=weights,
-        psfs=psfModels,
-        model_psf=modelPsf[None, :, :],
-        convolution_mode=convolutionType,
-    )
-
-    # Store the bands used to create the observation
-    observation.bands = mExposure.filters
-    return observation
-
-
-def deblend_old_lite(mExposure, modelPsf, footprint, config, spectrumInit, wavelets=None):
-    """Deblend a parent footprint
-
-    Parameters
-    ----------
-    mExposure : `lsst.image.MultibandExposure`
-        - The multiband exposure containing the image,
-          mask, and variance data
-    footprint : `lsst.detection.Footprint`
-        - The footprint of the parent to deblend
-    config : `ScarletDeblendConfig`
-        - Configuration of the deblending task
-
-    Returns
-    -------
-    blend : `scarlet.lite.Blend`
-        The blend this is to be deblended
-    skippedSources : `list[int]`
-        Indices of sources that were skipped due to no flux.
-        This usually means that a source was a spurrious detection in one
-        band that should not have been included in the merged catalog.
-    skippedBands : `list[str]`
-        Bands that were skipped because a PSF could not be generated for them.
-    """
-    from scarlet import lite
-    # Extract coordinates from each MultiColorPeak
-    bbox = footprint.getBBox()
-    psfCenter = footprint.getCentroid()
-
-    observation = buildOldObservation(
-        modelPsf=modelPsf,
-        psfCenter=psfCenter,
-        mExposure=mExposure[:, bbox],
-        footprint=footprint,
-        badPixelMasks=config.badMask,
-        useWeights=config.useWeights,
-        convolutionType=config.convolutionType,
-    )
-
-    # Convert the centers to pixel coordinates
-    xmin = bbox.getMinX()
-    ymin = bbox.getMinY()
-    centers = [
-        np.array([peak.getIy() - ymin, peak.getIx() - xmin], dtype=int)
-        for peak in footprint.peaks
-        if not isPseudoSource(peak, config.pseudoColumns)
-    ]
-
-    # Initialize the sources
-    if config.morphImage == "chi2":
-        sources = lite.init_all_sources_main(
-            observation,
-            centers,
-            min_snr=config.minSNR,
-            thresh=config.morphThresh,
-        )
-    elif config.morphImage == "wavelet":
-        _bbox = bboxToScarletBox(len(mExposure.filters), bbox, bbox.getMin())
-        _wavelets = wavelets[(slice(None), *_bbox[1:].slices)]
-        sources = lite.init_all_sources_wavelets(
-            observation,
-            centers,
-            use_psf=False,
-            wavelets=_wavelets,
-            min_snr=config.minSNR,
-        )
-    else:
-        raise ValueError("morphImage must be either 'chi2' or 'wavelet'.")
-
-    # Set the optimizer
-    if config.optimizer == "adaprox":
-        parameterization = partial(
-            lite.init_adaprox_component,
-            bg_thresh=config.backgroundThresh,
-            max_prox_iter=config.maxProxIter,
-        )
-    elif config.optimizer == "fista":
-        parameterization = partial(
-            lite.init_fista_component,
-            bg_thresh=config.backgroundThresh,
-        )
-    else:
-        raise ValueError("Unrecognized optimizer. Must be either 'adaprox' or 'fista'.")
-    sources = lite.parameterize_sources(sources, observation, parameterization)
-
-    # Attach the peak to all of the initialized sources
-    for k, center in enumerate(centers):
-        # This is just to make sure that there isn't a coding bug
-        if len(sources[k].components) > 0 and np.any(sources[k].center != center):
-            raise ValueError("Misaligned center, expected {center} but got {sources[k].center}")
-        # Store the record for the peak with the appropriate source
-        sources[k].detectedPeak = footprint.peaks[k]
-
-    blend = lite.LiteBlend(sources, observation)
-
-    # Initialize each source with its best fit spectrum
-    if spectrumInit:
-        blend.fit_spectra()
-
-    # Set the sources that could not be initialized and were skipped
-    skippedSources = [src for src in sources if src.is_null]
-
-    blend.fit(
-        max_iter=config.maxIter,
-        e_rel=config.relativeError,
-        min_iter=config.minIter,
-        reweight=False,
-    )
-
-    # Store the location of the PSF center for storage
-    blend.psfCenter = (psfCenter.x, psfCenter.y)
-
-    # Calculate the bands that were skipped
-    skippedBands = [band for band in mExposure.filters if band not in observation.bands]
-
-    return blend, skippedSources, skippedBands
-
-
 class ScarletDeblendConfig(pexConfig.Config):
     """MultibandDeblendConfig
 
@@ -448,7 +249,6 @@ class ScarletDeblendConfig(pexConfig.Config):
         dtype=str,
         default="lite",
         allowed={
-            "old_lite": "scarlet lite from the scarlet main package",
             "lite": "LSST optimized version of scarlet for survey data from a single instrument",
         },
         doc="The version of scarlet to use.",
@@ -952,15 +752,9 @@ class ScarletDeblendTask(pipeBase.Task):
                         wavelets=wavelets,
                         monotonicity=monotonicity,
                     )
-                elif self.config.version == "old_lite":
-                    blend, skippedSources, skippedBands = deblend_old_lite(
-                        mExposure=mExposure,
-                        modelPsf=modelPsf,
-                        footprint=foot,
-                        config=self.config,
-                        spectrumInit=spectrumInit,
-                        wavelets=wavelets,
-                    )
+                else:
+                    msg = f"The only currently support version is 'lite', got {self.config.version}"
+                    raise NotImplementedError(msg)
                 tf = time.monotonic()
                 runtime = (tf-t0)*1000
                 converged = _checkBlendConvergence(blend, self.config.relativeError)
@@ -1029,16 +823,12 @@ class ScarletDeblendTask(pipeBase.Task):
             if self.config.version == "lite":
                 blendData = scl.io.ScarletBlendData.from_blend(blend, blend.psfCenter)
             else:
-                blendData = io.oldScarletToData(blend, blend.psfCenter, bbox.getMin())
+                # We keep this here in case other versions are introduced
+                raise NotImplementedError("Only the 'lite' version of scarlet is currently supported")
             dataModel.blends[parent.getId()] = blendData
 
             # Log a message if it has been a while since the last log.
             periodicLog.log("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
-
-            # Clear the cached values in scarlet to clear out memory
-            if self.config.version == "old_lite":
-                import scarlet
-                scarlet.cache.Cache._cache = {}
 
         # Update the mExposure mask with the footprint of skipped parents
         if self.config.notDeblendedMask:
