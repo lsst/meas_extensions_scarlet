@@ -21,21 +21,22 @@
 
 import unittest
 
-import numpy as np
-from numpy.testing import assert_almost_equal
-
-from lsst.geom import Point2I, Point2D
-import lsst.utils.tests
 import lsst.afw.image as afwImage
-from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
-from lsst.meas.extensions.scarlet.utils import bboxToScarletBox, scarletBoxToBBox
-from lsst.meas.extensions.scarlet.io import monochromaticDataToScarlet, updateCatalogFootprints
 import lsst.scarlet.lite as scl
-from lsst.afw.table import SourceCatalog
+import lsst.utils.tests
+import numpy as np
 from lsst.afw.detection import Footprint
 from lsst.afw.geom import SpanSet, Stencil
-
+from lsst.afw.table import SourceCatalog
+from lsst.geom import Point2D, Point2I
+from lsst.meas.algorithms import SourceDetectionTask
+from lsst.meas.extensions.scarlet.io import (
+    monochromaticDataToScarlet,
+    updateCatalogFootprints,
+)
+from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
+from lsst.meas.extensions.scarlet.utils import bboxToScarletBox, scarletBoxToBBox
+from numpy.testing import assert_almost_equal
 from utils import initData
 
 
@@ -46,13 +47,17 @@ class TestDeblend(lsst.utils.tests.TestCase):
         shape = (5, 100, 115)
         coords = [
             # blend
-            (15, 25), (10, 30), (17, 38),
+            (15, 25),
+            (10, 30),
+            (17, 38),
             # isolated source
             (85, 90),
         ]
         amplitudes = [
             # blend
-            80, 60, 90,
+            80,
+            60,
+            90,
             # isolated source
             20,
         ]
@@ -62,17 +67,16 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         # Add some noise, otherwise the task will blow up due to
         # zero variance
-        noise = 10*(np.random.rand(*images.shape).astype(np.float32)-.5)
+        noise = 10 * (np.random.rand(*images.shape).astype(np.float32) - 0.5)
         images += noise
 
         self.bands = "grizy"
         _images = afwImage.MultibandMaskedImage.fromArrays(
-            self.bands,
-            images.astype(np.float32),
-            None,
-            noise**2
+            self.bands, images.astype(np.float32), None, noise**2
         )
-        coadds = [afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images]
+        coadds = [
+            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images
+        ]
         self.coadds = afwImage.MultibandExposure.fromExposures(self.bands, coadds)
         for b, coadd in enumerate(self.coadds):
             coadd.setPsf(psfs[b])
@@ -91,7 +95,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Add the zero flux source
         dtype = np.float32
         center = (70, 30)
-        origin = (center[0]-5, center[1]-5)
+        origin = (center[0] - 5, center[1] - 5)
         psf = list(modelData.blends.values())[0].psf
         src = catalog.addNew()
         src.setParent(parent.getId())
@@ -102,26 +106,30 @@ class TestDeblend(lsst.utils.tests.TestCase):
         sources = {
             src.getId(): {
                 "components": [],
-                "factorized": [{
-                    "origin": origin,
-                    "peak": center,
-                    "spectrum": np.zeros((len(self.bands),), dtype=dtype),
-                    "morph": np.zeros((11, 11), dtype=dtype),
-                    "shape": (11, 11),
-                }],
+                "factorized": [
+                    {
+                        "origin": origin,
+                        "peak": center,
+                        "spectrum": np.zeros((len(self.bands),), dtype=dtype),
+                        "morph": np.zeros((11, 11), dtype=dtype),
+                        "shape": (11, 11),
+                    }
+                ],
                 "peak_id": peak.getId(),
             }
         }
 
-        blendData = scl.io.ScarletBlendData.from_dict({
-            "origin": origin,
-            "shape": (11, 11),
-            "psf_center": center,
-            "psf_shape": psf.shape,
-            "psf": psf.flatten(),
-            "sources": sources,
-            "bands": self.bands,
-        })
+        blendData = scl.io.ScarletBlendData.from_dict(
+            {
+                "origin": origin,
+                "shape": (11, 11),
+                "psf_center": center,
+                "psf_shape": psf.shape,
+                "psf": psf.flatten(),
+                "sources": sources,
+                "bands": self.bands,
+            }
+        )
         pid = parent.getId()
         modelData.blends[pid] = blendData
         return pid, src.getId()
@@ -155,8 +163,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src = catalog.addNew()
         ss = SpanSet.fromShape(10, Stencil.BOX, offset=(75, 20))
         denseFoot = Footprint(ss)
-        for n in range(config.maxNumberOfPeaks+1):
-            denseFoot.addPeak(70+2*n, 15+2*n, 10*n)
+        for n in range(config.maxNumberOfPeaks + 1):
+            denseFoot.addPeak(70 + 2 * n, 15 + 2 * n, 10 * n)
         src.setFootprint(denseFoot)
 
         # Run the deblender
@@ -192,11 +200,15 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
                 # Check that the number of deblended children is consistent
                 parents = catalog[catalog["parent"] == 0]
-                self.assertEqual(np.sum(catalog["deblend_nChild"]), len(catalog)-len(parents))
+                self.assertEqual(
+                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents)
+                )
 
                 # Check that the models have not been cleared
                 # from the modelData
-                self.assertEqual(len(modelData.blends), np.sum(~parents["deblend_skipped"]))
+                self.assertEqual(
+                    len(modelData.blends), np.sum(~parents["deblend_skipped"])
+                )
 
                 for parent in parents:
                     children = catalog[catalog["parent"] == parent.get("id")]
@@ -207,7 +219,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     if parent.getId() == bad_blend_id:
                         continue
                     for parentCol, childCol in config.columnInheritance.items():
-                        np.testing.assert_array_equal(parent.get(parentCol), children[childCol])
+                        np.testing.assert_array_equal(
+                            parent.get(parentCol), children[childCol]
+                        )
 
                 children = catalog[catalog["parent"] != 0]
                 for child in children:
@@ -234,10 +248,15 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     # We need to set an observation in order to convolve
                     # the model.
                     position = Point2D(*blendData.psf_center[::-1])
-                    _psfs = self.coadds[band].getPsf().computeKernelImage(position).array[None, :, :]
+                    _psfs = (
+                        self.coadds[band]
+                        .getPsf()
+                        .computeKernelImage(position)
+                        .array[None, :, :]
+                    )
                     modelBox = scl.Box(blendData.shape, origin=blendData.origin)
                     observation = scl.Observation.empty(
-                        bands=("dummy", ),
+                        bands=("dummy",),
                         psfs=_psfs,
                         model_psf=modelData.psf[None, :, :],
                         bbox=modelBox,
@@ -249,10 +268,12 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         observation=observation,
                     )
                     # The stored PSF should be the same as the calculated one
-                    assert_almost_equal(blendData.psf[bandIndex:bandIndex+1], _psfs)
+                    assert_almost_equal(blendData.psf[bandIndex:bandIndex + 1], _psfs)
 
                     # Get the scarlet model for the source
-                    source = [src for src in blend.sources if src.record_id == child.getId()][0]
+                    source = [
+                        src for src in blend.sources if src.record_id == child.getId()
+                    ][0]
                     self.assertEqual(source.center[1], px)
                     self.assertEqual(source.center[0], py)
 
@@ -262,17 +283,21 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         # The HeavyFootprint needs to be projected onto
                         # the image of the flux-redistributed model,
                         # since the HeavyFootprint may trim rows or columns.
-                        parentFootprint = catalog[catalog["id"] == child["parent"]][0].getFootprint()
-                        _images = imageForRedistribution[parentFootprint.getBBox()].image.array
+                        parentFootprint = catalog[catalog["id"] == child["parent"]][
+                            0
+                        ].getFootprint()
+                        _images = imageForRedistribution[
+                            parentFootprint.getBBox()
+                        ].image.array
                         blend.observation.images = scl.Image(
                             _images[None, :, :],
                             yx0=blendData.origin,
-                            bands=("dummy", ),
+                            bands=("dummy",),
                         )
                         blend.observation.weights = scl.Image(
                             parentFootprint.spans.asArray()[None, :, :],
                             yx0=blendData.origin,
-                            bands=("dummy", ),
+                            bands=("dummy",),
                         )
                         blend.conserve_flux()
                         model = source.flux_weighted_image.data[0]
