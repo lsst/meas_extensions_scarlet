@@ -34,7 +34,7 @@ import lsst.scarlet.lite as scl
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation
+from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation, InvalidPsfSizeError
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -141,6 +141,7 @@ def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, 
         badPixelMasks=config.badMask,
         useWeights=config.useWeights,
         convolutionType=config.convolutionType,
+        maxPsfSize=config.maxPsfSize,
     )
 
     # Convert the peaks into an array
@@ -391,6 +392,13 @@ class ScarletDeblendConfig(pexConfig.Config):
              "a high density of sources from running out of memory. "
              "If `maxSpectrumCutoff == -1` then there is no cutoff.")
     )
+    maxPsfSize = pexConfig.Field(
+        dtype=int,
+        default=25,
+        doc="Maximum PSF size. "
+            "This is used to prevent unexpected behavior "
+            "when the PSF is too large due to an upstream bug."
+    )
     # Failure modes
     fallback = pexConfig.Field(
         dtype=bool, default=True,
@@ -544,6 +552,8 @@ class ScarletDeblendTask(pipeBase.Task):
                                                  doc='True when a blend has at least one band '
                                                      'that could not generate a PSF and was '
                                                      'not included in the model.')
+        self.psfTooLargeKey = schema.addField('deblend_psfTooLarge', type='Flag',
+                                              doc='PSF was too large to be used')
         # Deblended source fields
         self.peakCenter = afwTable.Point2IKey.addFields(schema, name="deblend_peak_center",
                                                         doc="Center used to apply constraints in scarlet",
@@ -767,6 +777,10 @@ class ScarletDeblendTask(pipeBase.Task):
                 blendError = type(e).__name__
                 if isinstance(e, ScarletGradientError):
                     parent.set(self.iterKey, e.iterations)
+                elif isinstance(e, InvalidPsfSizeError):
+                    parent.set(self.psfTooLargeKey, True)
+                    centroid = parent.getFootprint().getCentroid()
+                    self.log.warn(f"PSF too large for parent {parent.getId()} at {centroid}")
                 else:
                     blendError = "UnknownError"
                     if self.config.catchFailures:
