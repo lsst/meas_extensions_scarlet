@@ -16,7 +16,6 @@ from lsst.afw.image import (
 from lsst.afw.table import SourceCatalog
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
-from lsst.utils.logging import LsstLogAdapter
 
 defaultBadPixelMasks = ["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
