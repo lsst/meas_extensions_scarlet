@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 
 from lsst.afw.detection import Footprint as afwFootprint
@@ -16,8 +17,9 @@ from lsst.afw.table import SourceCatalog
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
 
-
 defaultBadPixelMasks = ["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
+
+logger = logging.getLogger(__name__)
 
 
 def footprintsToNumpy(
@@ -103,14 +105,27 @@ def bboxToScarletBox(bbox: geom.Box2I, xy0: geom.Point2I = geom.Point2I()) -> sc
     return scl.Box((bbox.getHeight(), bbox.getWidth()), origin)
 
 
-def computePsfKernelImage(mExposure, psfCenter):
+class InvalidPsfSizeError(Exception):
+    """Exception raised when the PSF size is invalid."""
+    pass
+
+
+def computePsfKernelImage(
+    mExposure: MultibandExposure,
+    psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
+    maxPsfSize: int = 101
+):
     """Compute the PSF kernel image and update the multiband exposure
     if not all of the PSF images could be computed.
 
     Parameters
     ----------
-    psfCenter : `tuple` or `Point2I` or `Point2D`
+    mExposure :
+        The multi-band exposure that the model represents.
+    psfCenter :
         The location `(x, y)` used as the center of the PSF.
+    maxSize :
+        The maximum size of the PSF in any dimension.
 
     Returns
     -------
@@ -122,9 +137,13 @@ def computePsfKernelImage(mExposure, psfCenter):
     """
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-
     try:
         psfModels = mExposure.computePsfKernelImage(psfCenter)
+        shape = psfModels.array.shape
+        if np.any(np.array(shape) > maxPsfSize):
+            msg = (f"PSF size {shape} is too large at {psfCenter}, "
+                   f"maximum size of any dimension is {maxPsfSize}.")
+            raise InvalidPsfSizeError(msg)
     except IncompleteDataError as e:
         psfModels = e.partialPsf
         # Use only the bands that successfully generated a PSF image.
@@ -146,6 +165,7 @@ def buildObservation(
     footprint: afwFootprint = None,
     useWeights: bool = True,
     convolutionType: str = "real",
+    maxPsfSize: int = 101,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
 
@@ -178,16 +198,23 @@ def buildObservation(
         The type of convolution to use (either "real" or "fft").
         When reconstructing an image it is advised to use "real" to avoid
         polluting the footprint with artifacts from the fft.
+    maxPsfSize:
+        The maximum size of the PSF in any dimension.
 
     Returns
     -------
     observation:
         The observation constructed from the input parameters.
+
+    Raises
+    ------
+    InvalidPsfSizeError:
+        If the PSF size is larger than `maxPsfSize` in any dimension.
     """
     # Initialize the observed PSFs
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
+    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter, maxPsfSize)
 
     # Use the inverse variance as the weights
     if useWeights:
