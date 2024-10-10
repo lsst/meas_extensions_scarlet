@@ -168,12 +168,12 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
         idFactory: IdFactory,
         peaks: PeakCatalog | None = None,
     ) -> pipeBase.Struct:
-        if self.config.doDetectPeaks and peaks is not None:
+        if (not self.config.doDetectPeaks) and (peaks is None):
             raise ValueError("'peaks' must be provided if doDetectPeaks is False")
         # Create a MulitbandExposure from the list of coadds
         mCoadd = afwImage.MultibandExposure.fromExposures(bands, coadds)
         xmin, ymin = mCoadd.getBBox().getMin()
-        # Detect peaks in the detection image
+        # Detect footprints in the detection image
         footprints = scl.detect.detect_footprints(
             images=mCoadd.image.array,
             variance=mCoadd.variance.array,
