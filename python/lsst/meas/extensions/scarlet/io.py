@@ -20,21 +20,29 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from __future__ import annotations
+
 import logging
 
-import numpy as np
-
-from lsst.afw.table import SourceCatalog
-from lsst.afw.image import MaskedImage, Exposure
-from lsst.afw.detection import Footprint as afwFootprint, HeavyFootprintF
-from lsst.afw.geom import SpanSet, Span
-from lsst.geom import Box2I, Extent2I, Point2I
 import lsst.scarlet.lite as scl
-from lsst.scarlet.lite import Blend, Source, Box, Component, FixedParameter, FactorizedComponent, Image
+import numpy as np
+from lsst.afw.detection import Footprint as afwFootprint
+from lsst.afw.detection import HeavyFootprintF
+from lsst.afw.geom import Span, SpanSet
+from lsst.afw.image import Exposure, MaskedImage
+from lsst.afw.table import SourceCatalog
+from lsst.geom import Box2I, Extent2I, Point2I
+from lsst.scarlet.lite import (
+    Blend,
+    Box,
+    Component,
+    FactorizedComponent,
+    FixedParameter,
+    Image,
+    Source,
+)
 
 from .metrics import setDeblenderMetrics
 from .utils import scarletModelToHeavy
-
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +71,16 @@ def monochromaticDataToScarlet(
     sources = []
     # Use a dummy band, since we are only extracting a monochromatic model
     # that will be turned into a HeavyFootprint.
-    bands = ("dummy", )
+    bands = ("dummy",)
     for sourceId, sourceData in blendData.sources.items():
         components: list[Component] = []
         # There is no need to distinguish factorized components from regular
         # components, since there is only one band being used.
         for componentData in sourceData.components:
             bbox = Box(componentData.shape, origin=componentData.origin)
-            model = scl.io.Image(componentData.model[bandIndex][None, :, :], yx0=bbox.origin, bands=bands)
+            model = scl.io.Image(
+                componentData.model[bandIndex][None, :, :], yx0=bbox.origin, bands=bands
+            )
             component = scl.io.ComponentCube(
                 bands=bands,
                 model=model,
@@ -87,7 +97,7 @@ def monochromaticDataToScarlet(
             totalBands = len(spectrum.x)
             morph = FixedParameter(factorizedData.morph)
             factorized = FactorizedComponent(
-                bands=("dummy", ) * totalBands,
+                bands=("dummy",) * totalBands,
                 spectrum=spectrum,
                 morph=morph,
                 peak=tuple(int(np.round(p)) for p in factorizedData.peak),  # type: ignore
@@ -118,7 +128,7 @@ def updateCatalogFootprints(
     band: str,
     imageForRedistribution: MaskedImage | Exposure | None = None,
     removeScarletData: bool = True,
-    updateFluxColumns: bool = True
+    updateFluxColumns: bool = True,
 ):
     """Use the scarlet models to set HeavyFootprints for modeled sources
 
@@ -158,8 +168,7 @@ def updateCatalogFootprints(
         if updateFluxColumns and imageForRedistribution is not None:
             # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
             parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
-                parent.getFootprint(),
-                imageForRedistribution.mask
+                parent.getFootprint(), imageForRedistribution.mask
             )
 
         if band not in blendModel.bands:
@@ -209,7 +218,7 @@ def calculateFootprintCoverage(footprint, maskImage):
         The fraction of pixels in `footprint` where the ``NO_DATA`` bit is set.
     """
     # Store the value of "NO_DATA" from the mask plane.
-    noDataInt = 2**maskImage.getMaskPlaneDict()["NO_DATA"]
+    noDataInt = 2 ** maskImage.getMaskPlaneDict()["NO_DATA"]
 
     # Calculate the coverage in the footprint
     bbox = footprint.getBBox()
@@ -220,7 +229,7 @@ def calculateFootprintCoverage(footprint, maskImage):
     totalArea = footprint.getArea()
     mask = maskImage[bbox].array & noDataInt
     noData = (mask * spans) > 0
-    coverage = 1 - np.sum(noData)/totalArea
+    coverage = 1 - np.sum(noData) / totalArea
     return coverage
 
 
@@ -354,7 +363,9 @@ def updateBlendRecords(
 
             if useFlux:
                 # Set the fraction of pixels with valid data.
-                coverage = calculateFootprintCoverage(heavy, imageForRedistribution.mask)
+                coverage = calculateFootprintCoverage(
+                    heavy, imageForRedistribution.mask
+                )
                 sourceRecord.set("deblend_dataCoverage", coverage)
 
             # Set the flux of the scarlet model
@@ -368,14 +379,16 @@ def updateBlendRecords(
 
             img = heavy.extractImage(fill=0.0)
             try:
-                sourceRecord.set("deblend_peak_instFlux", img[Point2I(peak["i_x"], peak["i_y"])])
+                sourceRecord.set(
+                    "deblend_peak_instFlux", img[Point2I(peak["i_x"], peak["i_y"])]
+                )
             except Exception:
                 srcId = sourceRecord.getId()
                 x = peak["i_x"]
                 y = peak["i_y"]
                 logger.warning(
                     f"Source {srcId} at {x},{y} could not set the peak flux with error:",
-                    exc_info=1
+                    exc_info=1,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
 
@@ -384,7 +397,9 @@ def updateBlendRecords(
             # in a separate task.
             sourceRecord.set("deblend_maxOverlap", source.metrics.maxOverlap[0])
             sourceRecord.set("deblend_fluxOverlap", source.metrics.fluxOverlap[0])
-            sourceRecord.set("deblend_fluxOverlapFraction", source.metrics.fluxOverlapFraction[0])
+            sourceRecord.set(
+                "deblend_fluxOverlapFraction", source.metrics.fluxOverlapFraction[0]
+            )
             sourceRecord.set("deblend_blendedness", source.metrics.blendedness[0])
         else:
             sourceRecord.setFootprint(heavy)
@@ -414,6 +429,7 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
         The data model for a single blend.
     """
     from scarlet import lite
+
     yx0 = (xy0.y, xy0.x)
 
     sources = {}
@@ -421,7 +437,7 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
         components = []
         factorizedComponents = []
         for component in source.components:
-            origin = tuple(component.bbox.origin[i+1] + yx0[i] for i in range(2))
+            origin = tuple(component.bbox.origin[i + 1] + yx0[i] for i in range(2))
             peak = tuple(component.center[i] + yx0[i] for i in range(2))
 
             if isinstance(component, lite.LiteFactorizedComponent):
