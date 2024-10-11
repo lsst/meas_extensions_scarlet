@@ -120,7 +120,7 @@ class MultiBandPeakDetectionTask(pipeBase.PipelineTask):
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
-        inputs["filters"] = [dRef.dataId["band"] for dRef in inputRefs.coadds]
+        inputs["bands"] = [dRef.dataId["band"] for dRef in inputRefs.coadds]
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
 
