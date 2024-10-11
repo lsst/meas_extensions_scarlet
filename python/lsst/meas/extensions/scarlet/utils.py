@@ -1,21 +1,21 @@
-import numpy as np
+from typing import Sequence
 
-from lsst.afw.detection import Footprint as afwFootprint
-from lsst.afw.detection import HeavyFootprintF, makeHeavyFootprint, PeakCatalog
-from lsst.afw.detection.multiband import MultibandFootprint
-from lsst.afw.geom import SpanSet
-from lsst.afw.image import (
-    Mask,
-    MaskedImage,
-    Image as afwImage,
-    IncompleteDataError,
-    MultibandExposure,
-    MultibandImage
-)
-from lsst.afw.table import SourceCatalog
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
-
+import numpy as np
+from lsst.afw.detection import Footprint as afwFootprint
+from lsst.afw.detection import HeavyFootprintF, PeakCatalog, makeHeavyFootprint
+from lsst.afw.detection.multiband import MultibandFootprint
+from lsst.afw.geom import SpanSet
+from lsst.afw.image import Image as afwImage
+from lsst.afw.image import (
+    IncompleteDataError,
+    Mask,
+    MaskedImage,
+    MultibandExposure,
+    MultibandImage,
+)
+from lsst.afw.table import SourceCatalog
 
 defaultBadPixelMasks = ["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
@@ -191,7 +191,7 @@ def buildObservation(
 
     # Use the inverse variance as the weights
     if useWeights:
-        weights = 1/mExposure.variance.array
+        weights = 1 / mExposure.variance.array
     else:
         weights = np.ones_like(mExposure.image.array)
 
@@ -219,7 +219,9 @@ def buildObservation(
 
 
 def scarletModelToHeavy(
-    source: scl.Source, blend: scl.Blend, useFlux=False,
+    source: scl.Source,
+    blend: scl.Blend,
+    useFlux=False,
 ) -> HeavyFootprintF | MultibandFootprint:
     """Convert a scarlet_lite model to a `HeavyFootprintF`
     or `MultibandFootprint`.
@@ -282,9 +284,7 @@ def scarletModelToHeavy(
     foot.setPeakCatalog(peakCat)
     if model.n_bands == 1:
         image = afwImage(
-            array=model.data[0],
-            xy0=valid.getBBox().getMin(),
-            dtype=model.dtype
+            array=model.data[0], xy0=valid.getBBox().getMin(), dtype=model.dtype
         )
         maskedImage = MaskedImage(image, dtype=model.dtype)
         heavy = makeHeavyFootprint(foot, maskedImage)
@@ -292,3 +292,30 @@ def scarletModelToHeavy(
         model = MultibandImage(blend.bands, model.data, valid.getBBox())
         heavy = MultibandFootprint.fromImages(blend.bands, model, footprint=foot)
     return heavy
+
+
+def scarletFootprintsToPeakCatalog(
+    footprints: Sequence[scl.detect.Footprint],
+) -> PeakCatalog:
+    """Create a PeakCatalog from a list of scarlet footprints.
+
+    This creates a dummy Footprint to add the peaks to,
+    then extracts the peaks from the Footprint.
+    It seems like there should be a better way to do this but
+    I couldn't find one.
+
+    Parameters
+    ----------
+    footprints:
+        A list of scarlet footprints.
+
+    Returns
+    -------
+    peaks:
+        A PeakCatalog containing all of the peaks in the footprints.
+    """
+    tempFootprint = afwFootprint()
+    for footprint in footprints:
+        for peak in footprint.peaks:
+            tempFootprint.addPeak(peak.x, peak.y, peak.flux)
+    return tempFootprint.peaks
