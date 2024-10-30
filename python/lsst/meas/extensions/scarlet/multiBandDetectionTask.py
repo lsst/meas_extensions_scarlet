@@ -226,7 +226,7 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
             List of footprints already detected in the image.
         """
         # Build the noise weighted detection image.
-        sigma = np.median(np.sqrt(mCoadd.variance.array), axis=(1, 2)) / 2
+        sigma = np.median(np.sqrt(mCoadd.variance.array), axis=(1, 2))
         detection = np.sum(mCoadd.image.array / sigma[:, None, None], axis=0)
         # Build a mask from the footprints to remove noise
         bbox = utils.bboxToScarletBox(mCoadd.getBBox())
