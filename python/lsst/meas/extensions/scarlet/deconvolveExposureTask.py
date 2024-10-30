@@ -20,6 +20,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
+import sys
 
 import lsst.afw.image as afwImage
 import lsst.pex.config as pexConfig
@@ -42,7 +43,7 @@ __all__ = [
 
 class DeconvolveExposureConnections(
     pipeBase.PipelineTaskConnections,
-    dimensions=("tract", "patch", "skymap"),
+    dimensions=("tract", "patch", "skymap", "band"),
     defaultTemplates={"inputCoaddName": "deep"},
 ):
     """Connections for DeconvolveExposureTask"""
@@ -59,6 +60,7 @@ class DeconvolveExposureConnections(
         name="{inputCoaddName}_coadd_multiband_peaks",
         storageClass="PeakCatalog",
         dimensions=("tract", "patch", "skymap"),
+        deferLoad=True,
     )
 
     deconvolved = cT.Output(
@@ -68,6 +70,11 @@ class DeconvolveExposureConnections(
         dimensions=("tract", "patch", "band", "skymap"),
     )
 
+    def __init__(self, *, config=None):
+        if not config.usePeaks:
+            # Deconvolution does not use input catalog
+            self.inputs.remove("peaks")
+
 
 class DeconvolveExposureConfig(
     pipeBase.PipelineTaskConfig,
@@ -75,56 +82,47 @@ class DeconvolveExposureConfig(
 ):
     """Configuration for DeconvolveExposureTask"""
 
-    maxIter = pexConfig.Field(
-        dtype=int,
+    maxIter = pexConfig.Field[int](
         doc="Maximum number of iterations",
         default=100,
     )
-    minIter = pexConfig.Field(
-        dtype=int,
+    minIter = pexConfig.Field[int](
         doc="Minimum number of iterations",
         default=10,
     )
-    eRel = pexConfig.Field(
-        dtype=float,
+    eRel = pexConfig.Field[float](
         doc="Relative error threshold",
         default=1e-3,
     )
-    usePeaks = pexConfig.Field(
-        dtype=bool,
+    usePeaks = pexConfig.Field[bool](
         doc="Require pixels to be connected to peaks",
         default=False,
     )
-    useWavelets = pexConfig.Field(
-        dtype=bool,
+    useWavelets = pexConfig.Field[bool](
         doc="Deconvolve using wavelets to supress high frequency noise",
         default=True,
     )
-    waveletGeneration = pexConfig.Field(
-        dtype=int,
+    waveletGeneration = pexConfig.ChoiceField[int](
         default=2,
-        doc="Generation of the starlet wavelet used for peak detection (should be 1 or 2). "
+        doc="Generation of the starlet wavelet used for peak detection. "
         "Only used if useWavelets is True",
+        allowed={1: "First generation wavelets", 2: "Second generation wavelets"},
     )
-    waveletScales = pexConfig.Field(
-        dtype=int,
+    waveletScales = pexConfig.Field[int](
         default=1,
         doc="Number of wavelet scales used for peak detection. Only used if useWavelets is True",
     )
-    backgroundThreshold = pexConfig.Field(
-        dtype=float,
+    backgroundThreshold = pexConfig.Field[float](
         default=0,
         doc="Threshold for background subtraction. "
         "Pixels in the fit below this threshold will be set to zero",
     )
-    minFootprintArea = pexConfig.Field(
-        dtype=int,
+    minFootprintArea = pexConfig.Field[int](
         default=0,
         doc="Minimum area of a footprint to be considered detectable. "
         "Regions with fewer than minFootprintArea connected pixels will be set to zero.",
     )
-    modelStepSize = pexConfig.Field(
-        dtype=float,
+    modelStepSize = pexConfig.Field[float](
         default=0.5,
         doc="Step size for the FISTA algorithm.",
     )
@@ -154,6 +152,17 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         peaks: PeakCatalog | None = None,
         **kwargs
     ) -> pipeBase.Struct:
+        """Deconvolve an Exposure
+
+        Parameters
+        ----------
+        coadd :
+            Coadd image to deconvolve
+        band :
+            Band of the coadd image
+        peaks :
+            Catalog of detected peak positions
+        """
         # Load the scarlet lite Observation
         observation = self._buildObservation(coadd, band)
         # Initialize the model
@@ -228,6 +237,8 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         # Remove the high frequency wavelets from the PSF.
         # This is necesary for the image and PSF to have the
         # same frequency content.
+        # See the document attached to DM-41840 for a more detailed
+        # explanation.
         psf_wavelets = scl.wavelet.multiband_starlet_transform(
             psf[None, :, :],
             scales=self.config.waveletScales,
@@ -241,7 +252,15 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         return image, psf
 
     def _buildObservation(self, coadd: afwImage.Exposure, band: str):
-        """Build a scarlet lite Observation from an Exposure."""
+        """Build a scarlet lite Observation from an Exposure.
+
+        Parameters
+        ----------
+        coadd :
+            Coadd image to deconvolve.
+        band :
+            Band of the coadd image.
+        """
         bands = (band,)
         model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 

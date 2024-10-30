@@ -67,34 +67,28 @@ class MultiBandPeakDetectionConfig(
 ):
     """Configuration for MultiBandPeakDetectionTask"""
 
-    waveletGeneration = pexConfig.Field(
-        dtype=int,
+    waveletGeneration = pexConfig.Field[int](
         default=2,
         doc="Generation of the starlet wavelet used for peak detection (should be 1 or 2)",
     )
-    waveletScales = pexConfig.Field(
-        dtype=int,
+    waveletScales = pexConfig.Field[int](
         default=1,
         doc="Number of wavelet scales used for peak detection",
     )
-    minFootprintArea = pexConfig.Field(
-        dtype=int,
+    minFootprintArea = pexConfig.Field[int](
         default=4,
         doc="Minimum area of a footprint to be considered detectable",
     )
-    minPeakDistance = pexConfig.Field(
-        dtype=int,
+    minPeakDistance = pexConfig.Field[int](
         default=4,
         doc="Minimum distance between peaks. "
         "Peaks closer than this distance to an existing peak will not be included",
     )
-    minPeakSNR = pexConfig.Field(
-        dtype=float,
+    minPeakSNR = pexConfig.Field[float](
         default=5,
         doc="Minimum signal-to-noise ratio for a peak to be considered detectable",
     )
-    minFootprintSNR = pexConfig.Field(
-        dtype=float,
+    minFootprintSNR = pexConfig.Field[float](
         default=5,
         doc="Minimum signal-to-noise ratio for a pixel to be considered part of a footprint",
     )

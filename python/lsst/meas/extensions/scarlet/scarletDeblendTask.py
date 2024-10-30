@@ -238,18 +238,15 @@ class ScarletDeblendConfig(pexConfig.Config):
     """
 
     # Stopping Criteria
-    minIter = pexConfig.Field(
-        dtype=int,
+    minIter = pexConfig.Field[int](
         default=15,
         doc="Minimum number of iterations before the optimizer is allowed to stop.",
     )
-    maxIter = pexConfig.Field(
-        dtype=int,
+    maxIter = pexConfig.Field[int](
         default=300,
         doc=("Maximum number of iterations to deblend a single parent"),
     )
-    relativeError = pexConfig.Field(
-        dtype=float,
+    relativeError = pexConfig.Field[float](
         default=1e-2,
         doc=(
             "Change in the loss function between iterations to exit fitter. "
@@ -260,24 +257,21 @@ class ScarletDeblendConfig(pexConfig.Config):
     )
 
     # Constraints
-    morphThresh = pexConfig.Field(
-        dtype=float,
+    morphThresh = pexConfig.Field[float](
         default=1,
         doc="Fraction of background RMS a pixel must have"
         "to be included in the initial morphology",
     )
     # Lite Parameters
     # All of these parameters (except version) are only valid if version='lite'
-    version = pexConfig.ChoiceField(
-        dtype=str,
+    version = pexConfig.ChoiceField[str](
         default="lite",
         allowed={
             "lite": "LSST optimized version of scarlet for survey data from a single instrument",
         },
         doc="The version of scarlet to use.",
     )
-    optimizer = pexConfig.ChoiceField(
-        dtype=str,
+    optimizer = pexConfig.ChoiceField[str](
         default="adaprox",
         allowed={
             "adaprox": "Proximal ADAM optimization",
@@ -285,8 +279,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         },
         doc="The optimizer to use for fitting parameters and is only used when version='lite'",
     )
-    morphImage = pexConfig.ChoiceField(
-        dtype=str,
+    morphImage = pexConfig.ChoiceField[str](
         default="chi2",
         allowed={
             "chi2": "Initialize sources on a chi^2 image made from all available bands",
@@ -295,67 +288,59 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="The type of image to use for initializing the morphology. "
         "Must be either 'chi2' or 'wavelet'. ",
     )
-    backgroundThresh = pexConfig.Field(
-        dtype=float,
+    backgroundThresh = pexConfig.Field[float](
         default=0.25,
         doc="Fraction of background to use for a sparsity threshold. "
         "This prevents sources from growing unrealistically outside "
         "the parent footprint while still modeling flux correctly "
         "for bright sources.",
     )
-    maxProxIter = pexConfig.Field(
-        dtype=int,
+    maxProxIter = pexConfig.Field[int](
         default=1,
         doc="Maximum number of proximal operator iterations inside of each "
         "iteration of the optimizer. "
         "This config field is only used if version='lite' and optimizer='adaprox'.",
     )
-    waveletScales = pexConfig.Field(
-        dtype=int,
+    waveletScales = pexConfig.Field[int](
         default=5,
         doc="Number of wavelet scales to use for wavelet initialization. "
         "This field is only used when `version`='lite' and `morphImage`='wavelet'.",
     )
 
     # Other scarlet paremeters
-    useWeights = pexConfig.Field(
-        dtype=bool,
+    useWeights = pexConfig.Field[bool](
         default=True,
         doc=(
             "Whether or not use use inverse variance weighting."
             "If `useWeights` is `False` then flat weights are used"
         ),
     )
-    modelPsfSize = pexConfig.Field(
-        dtype=int, default=11, doc="Model PSF side length in pixels"
+    modelPsfSize = pexConfig.Field[int](
+        default=11, doc="Model PSF side length in pixels"
     )
-    modelPsfSigma = pexConfig.Field(
-        dtype=float, default=0.8, doc="Define sigma for the model frame PSF"
+    modelPsfSigma = pexConfig.Field[float](
+        default=0.8, doc="Define sigma for the model frame PSF"
     )
-    minSNR = pexConfig.Field(
-        dtype=float,
+    minSNR = pexConfig.Field[float](
         default=50,
         doc="Minimum Signal to noise to accept the source."
         "Sources with lower flux will be initialized with the PSF but updated "
         "like an ordinary ExtendedSource (known in scarlet as a `CompactSource`).",
     )
-    saveTemplates = pexConfig.Field(
-        dtype=bool, default=True, doc="Whether or not to save the SEDs and templates"
+    saveTemplates = pexConfig.Field[bool](
+        default=True, doc="Whether or not to save the SEDs and templates"
     )
-    processSingles = pexConfig.Field(
-        dtype=bool,
+    processSingles = pexConfig.Field[bool](
         default=True,
         doc="Whether or not to process isolated sources in the deblender",
     )
-    convolutionType = pexConfig.Field(
-        dtype=str,
+    convolutionType = pexConfig.Field[str](
         default="fft",
         doc="Type of convolution to render the model to the observations.\n"
         "- 'fft': perform convolutions in Fourier space\n"
         "- 'real': peform convolutions in real space.",
     )
-    sourceModel = pexConfig.Field(
-        dtype=str,
+    sourceModel = pexConfig.Field[str](
         default="double",
         doc=(
             "How to determine which model to use for sources, from\n"
@@ -368,8 +353,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         ),
         deprecated="This field will be deprecated when the default for `version` is changed to `lite`.",
     )
-    setSpectra = pexConfig.Field(
-        dtype=bool,
+    setSpectra = pexConfig.Field[bool](
         default=True,
         doc="Whether or not to solve for the best-fit spectra during initialization. "
         "This makes initialization slightly longer, as it requires a convolution "
@@ -380,18 +364,15 @@ class ScarletDeblendConfig(pexConfig.Config):
     )
 
     # Mask-plane restrictions
-    badMask = pexConfig.ListField(
-        dtype=str,
+    badMask = pexConfig.ListField[str](
         default=defaultBadPixelMasks,
         doc="Whether or not to process isolated sources in the deblender",
     )
-    statsMask = pexConfig.ListField(
-        dtype=str,
+    statsMask = pexConfig.ListField[str](
         default=["SAT", "INTRP", "NO_DATA"],
         doc="Mask planes to ignore when performing statistics",
     )
-    maskLimits = pexConfig.DictField(
-        keytype=str,
+    maskLimits = pexConfig.DictField[str](
         itemtype=float,
         default={},
         doc=(
@@ -402,24 +383,21 @@ class ScarletDeblendConfig(pexConfig.Config):
     )
 
     # Size restrictions
-    maxNumberOfPeaks = pexConfig.Field(
-        dtype=int,
+    maxNumberOfPeaks = pexConfig.Field[int](
         default=200,
         doc=(
             "Only deblend the brightest maxNumberOfPeaks peaks in the parent"
             " (<= 0: unlimited)"
         ),
     )
-    maxFootprintArea = pexConfig.Field(
-        dtype=int,
+    maxFootprintArea = pexConfig.Field[int](
         default=100_000,
         doc=(
             "Maximum area for footprints before they are ignored as large; "
             "non-positive means no threshold applied"
         ),
     )
-    maxAreaTimesPeaks = pexConfig.Field(
-        dtype=int,
+    maxAreaTimesPeaks = pexConfig.Field[int](
         default=10_000_000,
         doc=(
             "Maximum rectangular footprint area * nPeaks in the footprint. "
@@ -429,24 +407,21 @@ class ScarletDeblendConfig(pexConfig.Config):
             "(<= 0: unlimited)"
         ),
     )
-    maxFootprintSize = pexConfig.Field(
-        dtype=int,
+    maxFootprintSize = pexConfig.Field[int](
         default=0,
         doc=(
             "Maximum linear dimension for footprints before they are ignored "
             "as large; non-positive means no threshold applied"
         ),
     )
-    minFootprintAxisRatio = pexConfig.Field(
-        dtype=float,
+    minFootprintAxisRatio = pexConfig.Field[float](
         default=0.0,
         doc=(
             "Minimum axis ratio for footprints before they are ignored "
             "as large; non-positive means no threshold applied"
         ),
     )
-    maxSpectrumCutoff = pexConfig.Field(
-        dtype=int,
+    maxSpectrumCutoff = pexConfig.Field[int](
         default=1_000_000,
         doc=(
             "Maximum number of pixels * number of sources in a blend. "
@@ -459,19 +434,16 @@ class ScarletDeblendConfig(pexConfig.Config):
         ),
     )
     # Failure modes
-    fallback = pexConfig.Field(
-        dtype=bool,
+    fallback = pexConfig.Field[bool](
         default=True,
         doc="Whether or not to fallback to a smaller number of components if a source does not initialize",
     )
-    notDeblendedMask = pexConfig.Field(
-        dtype=str,
+    notDeblendedMask = pexConfig.Field[str](
         default="NOT_DEBLENDED",
         optional=True,
         doc="Mask name for footprints not deblended, or None",
     )
-    catchFailures = pexConfig.Field(
-        dtype=bool,
+    catchFailures = pexConfig.Field[bool](
         default=True,
         doc=(
             "If True, catch exceptions thrown by the deblender, log them, "
@@ -493,8 +465,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         "The key is the name of the column for the parent record, "
         "the value is the name of the column to use for the child.",
     )
-    pseudoColumns = pexConfig.ListField(
-        dtype=str,
+    pseudoColumns = pexConfig.ListField[str](
         default=["merge_peak_sky", "sky_source"],
         doc="Names of flags which should never be deblended.",
     )
@@ -506,19 +477,16 @@ class ScarletDeblendConfig(pexConfig.Config):
     # to only run on a small subset of the data that is large enough to
     # test the desired pipeline features but not so long that the deblender
     # is the tall pole in terms of execution times.
-    useCiLimits = pexConfig.Field(
-        dtype=bool,
+    useCiLimits = pexConfig.Field[bool](
         default=False,
         doc="Limit the number of sources deblended for CI to prevent long build times",
     )
-    ciDeblendChildRange = pexConfig.ListField(
-        dtype=int,
+    ciDeblendChildRange = pexConfig.ListField[int](
         default=[5, 10],
         doc="Only deblend parent Footprints with a number of peaks in the (inclusive) range indicated."
         "If `useCiLimits==False` then this parameter is ignored.",
     )
-    ciNumParentsToDeblend = pexConfig.Field(
-        dtype=int,
+    ciNumParentsToDeblend = pexConfig.Field[int](
         default=10,
         doc="Only use the first `ciNumParentsToDeblend` parent footprints with a total peak count "
         "within `ciDebledChildRange`. "

@@ -69,11 +69,16 @@ class MultiBandDetectionConnections(
         dimensions=("tract", "patch", "skymap"),
     )
 
-    footprints = cT.Output(
+    sources = cT.Output(
         doc="Output catalog of detected footprints",
         name="deconvolved_{inputCoaddName}_coadd_footprints",
-        storageClass="FootprintCatalog",
+        storageClass="SourceCatalog",
     )
+
+    def __init__(self, *, config=None):
+        if config.doDetectPeaks:
+            # Deconvolution does not use input catalog
+            self.inputs.remove("peaks")
 
 
 class MultiBandDetectionConfig(
@@ -82,40 +87,33 @@ class MultiBandDetectionConfig(
 ):
     """Configuration for MultiBandDetectionTask"""
 
-    doDetectPeaks = pexConfig.Field(
-        dtype=bool,
+    doDetectPeaks = pexConfig.Field[bool](
         doc="Detect peaks in the input images. "
         "If False then the multi-band peak catalog is used.",
         default=False,
     )
-    minFootprintArea = pexConfig.Field(
-        dtype=int,
+    minFootprintArea = pexConfig.Field[int](
         default=4,
         doc="Minimum area of a footprint to be considered detectable",
     )
-    minPeakDistance = pexConfig.Field(
-        dtype=int,
+    minPeakDistance = pexConfig.Field[int](
         default=4,
         doc="Minimum distance between peaks. "
         "Peaks closer than this distance to an existing peak will not be included",
     )
-    minPeakSNR = pexConfig.Field(
-        dtype=float,
+    minPeakSNR = pexConfig.Field[float](
         default=5,
         doc="Minimum signal-to-noise ratio for a peak to be considered detectable",
     )
-    minFootprintSNR = pexConfig.Field(
-        dtype=float,
+    minFootprintSNR = pexConfig.Field[float](
         default=5,
         doc="Minimum signal-to-noise ratio for a pixel to be considered part of a footprint",
     )
-    minPixelDetect = pexConfig.Field(
-        dtype=int,
+    minPixelDetect = pexConfig.Field[int](
         default=2,
         doc="Minimum number of bands that a pixel must be detected in to be included in a footprint",
     )
-    modelPsfSigma = pexConfig.Field(
-        dtype=float,
+    modelPsfSigma = pexConfig.Field[float](
         default=1.5,
         doc="Sigma of the circular Gaussian PSF used to detect peaks in the detection image. "
         "This is only used if doDetectPeaks is True",
@@ -140,21 +138,12 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
         if initInputs is None:
             initInputs = {}
         super().__init__(initInputs=initInputs, **kwargs)
-        schema = initInputs["inputSchema"].schema
-        self._addSchemaKeys(schema)
-        self.schema = schema
+        self.schema = SourceTable.makeMinimalSchema()
 
-    def _addSchemaKeys(self, schema: Schema):
-        """Add schema keys to the input schema
-
-        Currently there are no keys added, but that could change in the future
-        so we'll keep this method around.
-        """
-        pass
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
-        inputs["filters"] = [dRef.dataId["band"] for dRef in inputRefs.coadds]
+        inputs["bands"] = [dRef.dataId["band"] for dRef in inputRefs.coadds]
         inputs["idFactory"] = self.config.idGenerator.apply(
             butlerQC.quantum.dataId
         ).make_table_id_factory()
@@ -168,6 +157,20 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
         idFactory: IdFactory,
         peaks: PeakCatalog | None = None,
     ) -> pipeBase.Struct:
+        """Run the detection task
+
+        Parameters
+        ----------
+        coadds :
+            List of coadds to detect footprints on.
+        bands :
+            List of band names corresponding to the coadds.
+        idFactory :
+            IdFactory to create source ids.
+        peaks :
+            Catalog of peaks to attach to the footprints.
+            This is only necessary if config.doDetectPeaks is False.
+        """
         if (not self.config.doDetectPeaks) and (peaks is None):
             raise ValueError("'peaks' must be provided if doDetectPeaks is False")
         # Create a MulitbandExposure from the list of coadds
@@ -214,7 +217,15 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
         mCoadd: afwImage.MultibandExposure,
         footprints: Sequence[scl.detect.Footprint],
     ):
-        """Detect peaks in the detection image"""
+        """Detect peaks in the detection image
+
+        Parameters
+        ----------
+        mCoadd :
+            Multiband exposure to detect peaks on.
+        footprints :
+            List of footprints already detected in the image.
+        """
         # Build the noise weighted detection image.
         sigma = np.median(np.sqrt(mCoadd.variance.array), axis=(1, 2)) / 2
         detection = np.sum(mCoadd.image.array / sigma[:, None, None], axis=0)
@@ -242,7 +253,7 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
             min_pixel_detect=1,
         )
         peaks = utils.scarletFootprintsToPeakCatalog(wide_footprints)
-        log.debug("Total number of peaks detected:", len(peaks))
+        log.info("Total number of peaks detected:", len(peaks))
         return peaks
 
     def _attachExternalPeaks(
@@ -252,7 +263,19 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
         sources: SourceCatalog,
         bbox: Box2I,
     ):
-        """Attach peaks to the footprints in the source catalog"""
+        """Attach peaks to the footprints in the source catalog
+
+        Parameters
+        ----------
+        peaks :
+            Catalog of peaks to attach to the footprints.
+        footprints :
+            List of footprints already detected in the image.
+        sources :
+            Source catalog to attach the peaks to.
+        bbox :
+            Bounding box of the entire image.
+        """
         scarletBox = utils.bboxToScarletBox(bbox)
         xmin, ymin = bbox.getMin()
         footprint_image = scl.detect.footprints_to_image(footprints, scarletBox).data
