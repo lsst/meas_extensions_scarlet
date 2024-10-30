@@ -31,7 +31,7 @@ import numpy as np
 from lsst.afw.detection import Footprint as AfwFootprint
 from lsst.afw.detection import PeakCatalog
 from lsst.afw.detection.multiband import getSpanSetFromImages
-from lsst.afw.table import IdFactory, Schema, SourceCatalog, SourceTable
+from lsst.afw.table import IdFactory, SourceCatalog, SourceTable
 from lsst.geom import Box2I, Point2I
 from lsst.meas.base import SkyMapIdGeneratorConfig
 from scipy.signal import convolve as scipy_convolve
@@ -139,7 +139,6 @@ class MultiBandDetectionTask(pipeBase.PipelineTask):
             initInputs = {}
         super().__init__(initInputs=initInputs, **kwargs)
         self.schema = SourceTable.makeMinimalSchema()
-
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)

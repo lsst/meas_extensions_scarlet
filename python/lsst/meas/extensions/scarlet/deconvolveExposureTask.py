@@ -20,7 +20,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
-import sys
 
 import lsst.afw.image as afwImage
 import lsst.pex.config as pexConfig
