@@ -372,7 +372,8 @@ class ScarletDeblendConfig(pexConfig.Config):
         default=["SAT", "INTRP", "NO_DATA"],
         doc="Mask planes to ignore when performing statistics",
     )
-    maskLimits = pexConfig.DictField[str](
+    maskLimits = pexConfig.DictField(
+        keytype=str,
         itemtype=float,
         default={},
         doc=(
