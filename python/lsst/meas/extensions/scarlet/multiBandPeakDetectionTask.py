@@ -21,6 +21,8 @@
 
 import logging
 
+import numpy as np
+
 import lsst.afw.image as afwImage
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
@@ -89,7 +91,7 @@ class MultiBandPeakDetectionConfig(
         doc="Minimum signal-to-noise ratio for a peak to be considered detectable",
     )
     minFootprintSNR = pexConfig.Field[float](
-        default=5,
+        default=0,
         doc="Minimum signal-to-noise ratio for a pixel to be considered part of a footprint",
     )
 
@@ -123,19 +125,19 @@ class MultiBandPeakDetectionTask(pipeBase.PipelineTask):
         mCoadd = afwImage.MultibandExposure.fromExposures(bands, coadds)
         xmin, ymin = mCoadd.getBBox().getMin()
         # Detect peaks
-        footprints = scl.detect.detect_footprints(
-            images=mCoadd.image.array,
-            variance=mCoadd.variance.array,
-            scales=self.config.waveletScales,
-            generation=self.config.waveletGeneration,
-            origin=(ymin, xmin),
-            min_separation=self.config.minPeakDistance,
-            min_area=self.config.minFootprintArea,
-            peak_thresh=self.config.minPeakSNR,
-            footprint_thresh=self.config.minFootprintSNR,
-            find_peaks=True,
-            remove_high_freq=True,
-            min_pixel_detect=1,
+        sigma = np.median(np.sqrt(mCoadd.variance.array), axis=(1, 2))
+        detect_image = utils.removeHighFrequencySignal(mCoadd.image.array)
+        detect_image = np.sum(detect_image / sigma[:, None, None], axis=0)
+        footprints = scl.detect.get_footprints(
+            detect_image,
+            self.config.minPeakDistance,
+            self.config.minFootprintArea,
+            self.config.minPeakSNR,
+            self.config.minFootprintSNR,
+            True,
+            ymin,
+            xmin,
         )
+
         peaks = utils.scarletFootprintsToPeakCatalog(footprints)
         return pipeBase.Struct(peaks=peaks)

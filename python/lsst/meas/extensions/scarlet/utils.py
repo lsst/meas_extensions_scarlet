@@ -138,6 +138,38 @@ def computePsfKernelImage(mExposure, psfCenter):
     return psfModels.array, mExposure
 
 
+def removeHighFrequencySignal(
+    image: np.ndarray,
+    waveletGeneration: int = 2,
+) -> np.ndarray:
+    """Remove high frequency signal from an image using a starlet transform.
+
+    Parameters
+    ----------
+    image:
+        The image to remove high frequency signal from.
+    waveletScales:
+        The number of wavelet scales to use.
+    waveletGeneration:
+        The generation of the starlet transform to use.
+
+    Returns
+    -------
+    lowFreqImage:
+        The image with high frequency signal removed.
+    """
+    wavelets = scl.wavelet.multiband_starlet_transform(
+        image,
+        scales=1,
+        generation=waveletGeneration,
+    )
+    wavelets[0] = 0
+    return scl.wavelet.multiband_starlet_reconstruction(
+        wavelets,
+        generation=waveletGeneration,
+    )
+
+
 def buildObservation(
     modelPsf: np.ndarray,
     psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
@@ -146,6 +178,8 @@ def buildObservation(
     footprint: afwFootprint = None,
     useWeights: bool = True,
     convolutionType: str = "real",
+    useWavelets: bool = True,
+    waveletGeneration: int = 2,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
 
@@ -178,6 +212,10 @@ def buildObservation(
         The type of convolution to use (either "real" or "fft").
         When reconstructing an image it is advised to use "real" to avoid
         polluting the footprint with artifacts from the fft.
+    useWavelets:
+        Whether or to remove high frequency signal from the image.
+    waveletGeneration:
+        The generation of the starlet transform to use.
 
     Returns
     -------
@@ -206,8 +244,16 @@ def buildObservation(
         # Mask out the pixels outside the footprint
         weights *= footprint.spans.asArray()
 
+    if useWavelets:
+        # Remove high frequency signal from the image
+        # (this is sometimes used for detection)
+        images = removeHighFrequencySignal(mExposure.image.array, waveletGeneration)
+        psfModels = removeHighFrequencySignal(psfModels, waveletGeneration)
+    else:
+        images = mExposure.image.array
+
     return scl.Observation(
-        images=mExposure.image.array,
+        images=images,
         variance=mExposure.variance.array,
         weights=weights,
         psfs=psfModels,
