@@ -178,7 +178,7 @@ def buildObservation(
     footprint: afwFootprint = None,
     useWeights: bool = True,
     convolutionType: str = "real",
-    useWavelets: bool = True,
+    useWavelets: bool = False,
     waveletGeneration: int = 2,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
