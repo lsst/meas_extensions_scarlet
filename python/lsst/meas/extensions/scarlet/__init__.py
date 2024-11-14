@@ -23,7 +23,5 @@ from . import utils
 from .deconvolveExposureTask import *
 from .io import *
 from .metrics import *
-from .multiBandDetectionTask import *
-from .multiBandPeakDetectionTask import *
 from .scarletDeblendTask import *
 from .version import *
