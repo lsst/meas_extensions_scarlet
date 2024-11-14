@@ -27,7 +27,6 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import lsst.scarlet.lite as scl
 import numpy as np
-from lsst.afw.detection import PeakCatalog
 
 from . import utils
 
@@ -54,25 +53,12 @@ class DeconvolveExposureConnections(
         dimensions=("tract", "patch", "band", "skymap"),
     )
 
-    peaks = cT.Input(
-        doc="Catalog of detected peak positions",
-        name="{inputCoaddName}_coadd_multiband_peaks",
-        storageClass="PeakCatalog",
-        dimensions=("tract", "patch", "skymap"),
-        deferLoad=True,
-    )
-
     deconvolved = cT.Output(
         doc="Deconvolved exposure",
         name="deconvolved_{inputCoaddName}_coadd",
         storageClass="ExposureF",
         dimensions=("tract", "patch", "band", "skymap"),
     )
-
-    def __init__(self, *, config=None):
-        if not config.usePeaks:
-            # Deconvolution does not use input catalog
-            self.inputs.remove("peaks")
 
 
 class DeconvolveExposureConfig(
@@ -93,37 +79,10 @@ class DeconvolveExposureConfig(
         doc="Relative error threshold",
         default=1e-3,
     )
-    usePeaks = pexConfig.Field[bool](
-        doc="Require pixels to be connected to peaks",
-        default=False,
-    )
-    useWavelets = pexConfig.Field[bool](
-        doc="Deconvolve using wavelets to supress high frequency noise",
-        default=True,
-    )
-    waveletGeneration = pexConfig.ChoiceField[int](
-        default=2,
-        doc="Generation of the starlet wavelet used for peak detection. "
-        "Only used if useWavelets is True",
-        allowed={1: "First generation wavelets", 2: "Second generation wavelets"},
-    )
-    waveletScales = pexConfig.Field[int](
-        default=1,
-        doc="Number of wavelet scales used for peak detection. Only used if useWavelets is True",
-    )
     backgroundThreshold = pexConfig.Field[float](
         default=0,
         doc="Threshold for background subtraction. "
         "Pixels in the fit below this threshold will be set to zero",
-    )
-    minFootprintArea = pexConfig.Field[int](
-        default=0,
-        doc="Minimum area of a footprint to be considered detectable. "
-        "Regions with fewer than minFootprintArea connected pixels will be set to zero.",
-    )
-    modelStepSize = pexConfig.Field[float](
-        default=0.5,
-        doc="Step size for the FISTA algorithm.",
     )
 
 
@@ -140,42 +99,97 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
-        inputs["band"] = inputRefs.coadd.dataId["band"]
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
 
-    def run(
-        self,
-        coadd: afwImage.Exposure,
-        band: str,
-        peaks: PeakCatalog | None = None,
-        **kwargs
-    ) -> pipeBase.Struct:
+    def run(self, coadd: afwImage.Exposure) -> pipeBase.Struct:
         """Deconvolve an Exposure
 
         Parameters
         ----------
         coadd :
             Coadd image to deconvolve
-        band :
-            Band of the coadd image
-        peaks :
-            Catalog of detected peak positions
+
+        Returns
+        -------
+        deconvolved : `pipeBase.Struct`
+            Deconvolved exposure
         """
         # Load the scarlet lite Observation
-        observation = self._buildObservation(coadd, band)
-        # Initialize the model
-        scarletModel = self._initializeModel(observation, peaks)
+        observation = self._buildObservation(coadd)
 
-        # Iteratively deconvolve the image
-        scarletModel.fit(
-            max_iter=self.config.maxIter,
-            e_rel=self.config.eRel,
-            min_iter=self.config.minIter,
-        )
+        # Deconvolve.
+        # Store the loss history for debugging purposes.
+        model, self.loss = self._deconvolve(observation)
 
         # Store the model in an Exposure
-        model = scarletModel.get_model().data[0]
+        exposure = self._modelToExposure(model.data[0], coadd)
+        return pipeBase.Struct(deconvolved=exposure)
+
+    def _buildObservation(self, coadd: afwImage.Exposure) -> scl.Observation:
+        """Build a scarlet lite Observation from an Exposure.
+
+        We don't actually use scarlet, but the optimized convolutions
+        using scarlet data products are still useful.
+
+        Parameters
+        ----------
+        coadd :
+            Coadd image to deconvolve.
+        """
+        bands = ("dummy",)
+        model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
+
+        image = coadd.image.array
+        psf = coadd.getPsf().computeKernelImage(coadd.getBBox().getCenter()).array
+        weights = np.ones_like(coadd.image.array)
+        badPixelMasks = utils.defaultBadPixelMasks
+        badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
+        mask = coadd.mask.array & badPixels
+        weights[mask > 0] = 0
+
+        observation = scl.Observation(
+            images=image.copy()[None],
+            variance=coadd.variance.array.copy()[None],
+            weights=weights[None],
+            psfs=psf[None],
+            model_psf=model_psf[None],
+            convolution_mode="fft",
+            bands=bands,
+            bbox=utils.bboxToScarletBox(coadd.getBBox()),
+        )
+        return observation
+
+    def _deconvolve(self, observation: scl.Observation) -> tuple[scl.Image, list[float]]:
+        """Deconvolve the observed image.
+
+        Parameters
+        ----------
+        observation :
+            Scarlet lite Observation.
+        """
+        model = observation.images.copy()
+        loss = []
+        for n in range(self.config.maxIter):
+            residual = observation.images - observation.convolve(model)
+            loss.append(-0.5 * np.sum(residual.data**2))
+            update = observation.convolve(residual, grad=True)
+            model += update
+            model.data[model.data < 0] = 0
+
+            if n > self.config.minIter and np.abs(loss[-1] - loss[-2]) < self.config.eRel * np.abs(loss[-1]):
+                break
+
+        return model, loss
+
+    def _modelToExposure(self, model: np.ndarray, coadd: afwImage.Exposure) -> afwImage.Exposure:
+        """Convert a scarlet lite Image to an Exposure.
+
+        Parameters
+        ----------
+        image :
+            Scarlet lite Image.
+        """
         image = afwImage.Image(
             array=model,
             xy0=coadd.getBBox().getMin(),
@@ -193,127 +207,4 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             exposureInfo=coadd.getInfo(),
             dtype=coadd.image.array.dtype,
         )
-        return pipeBase.Struct(deconvolved=exposure)
-
-    def _removeHighFrequencySignal(
-        self, coadd: afwImage.Exposure
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Remove high frequency signal from the image and PSF.
-
-        This is done by performing a wavelet decomposition of the image
-        and PSF, setting the high frequency wavelets to zero, and
-        reconstructing the image and PSF from the remaining wavelets.
-
-        Parameters
-        ----------
-        coadd : `afwImage.Exposure`
-            Coadd image to deconvolve
-
-        Returns
-        -------
-        image : `np.ndarray`
-            Low frequency image
-        psf : `np.ndarray`
-            Low frequency PSF
-        """
-        psf = coadd.getPsf().computeKernelImage(coadd.getBBox().getCenter()).array
-        # Build the wavelet coefficients
-        wavelets = scl.detect.get_wavelets(
-            coadd.image.array[None, :, :],
-            coadd.variance.array[None, :, :],
-            scales=self.config.waveletScales,
-            generation=self.config.waveletGeneration,
-        )
-        # Remove the high frequency wavelets.
-        # This has the effect of preventing high frequency noise
-        # from interfering with the detection of peak positions.
-        wavelets[0] = 0
-        # Reconstruct the image from the remaining wavelet coefficients
-        image = scl.wavelet.starlet_reconstruction(
-            wavelets[:, 0],
-            generation=self.config.waveletGeneration,
-        )
-        # Remove the high frequency wavelets from the PSF.
-        # This is necesary for the image and PSF to have the
-        # same frequency content.
-        # See the document attached to DM-41840 for a more detailed
-        # explanation.
-        psf_wavelets = scl.wavelet.multiband_starlet_transform(
-            psf[None, :, :],
-            scales=self.config.waveletScales,
-            generation=self.config.waveletGeneration,
-        )
-        psf_wavelets[0] = 0
-        psf = scl.wavelet.starlet_reconstruction(
-            psf_wavelets[:, 0],
-            generation=self.config.waveletGeneration,
-        )
-        return image, psf
-
-    def _buildObservation(self, coadd: afwImage.Exposure, band: str):
-        """Build a scarlet lite Observation from an Exposure.
-
-        Parameters
-        ----------
-        coadd :
-            Coadd image to deconvolve.
-        band :
-            Band of the coadd image.
-        """
-        bands = (band,)
-        model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
-
-        if self.config.useWavelets:
-            image, psf = self._removeHighFrequencySignal(coadd)
-        else:
-            image = coadd.image.array
-            psf = coadd.getPsf().computeKernelImage(coadd.getBBox().getCenter()).array
-        weights = np.ones_like(coadd.image.array)
-        badPixelMasks = ["SAT", "INTRP", "NO_DATA"]
-        badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
-        mask = coadd.mask.array & badPixels
-        weights[mask > 0] = 0
-
-        observation = scl.Observation(
-            images=np.array([image.copy()]),
-            variance=np.array([coadd.variance.array.copy()]),
-            weights=np.array([weights]),
-            psfs=np.array([psf]),
-            model_psf=model_psf[None, :, :],
-            convolution_mode="fft",
-            bands=bands,
-            bbox=utils.bboxToScarletBox(coadd.getBBox()),
-        )
-        return observation
-
-    def _initializeModel(
-        self, observation: scl.Observation, peaks: PeakCatalog | None = None
-    ):
-        """Initialize the model for the deconvolution."""
-        if peaks is None:
-            component_peaks = None
-        else:
-            component_peaks = [(peak["i_y"], peak["i_x"]) for peak in peaks]
-
-        # Initialize the model as a single source with a single component:
-        # the entire image.
-        component = scl.models.free_form.FreeFormComponent(
-            bands=observation.bands,
-            model=observation.images.data.copy(),
-            model_bbox=observation.bbox,
-            bg_thresh=self.config.backgroundThreshold,
-            bg_rms=observation.noise_rms,
-            peaks=component_peaks,
-            min_area=0,
-        )
-        source = scl.Source([component])
-        blend = scl.Blend([source], observation)
-
-        # Initialize the FISTA optimizer
-        def _parameterization(component):
-            component._model = scl.parameters.FistaParameter(
-                component.model, step=self.config.modelStepSize
-            )
-
-        blend.parameterize(_parameterization)
-        return blend
+        return exposure
