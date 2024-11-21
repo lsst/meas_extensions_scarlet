@@ -19,22 +19,22 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from functools import partial
 import logging
-import numpy as np
+from functools import partial
 
-import lsst.pex.config as pexConfig
-import lsst.pipe.base as pipeBase
-import lsst.geom as geom
+import lsst.afw.detection as afwDet
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
-import lsst.afw.detection as afwDet
 import lsst.afw.table as afwTable
+import lsst.geom as geom
+import lsst.pex.config as pexConfig
+import lsst.pipe.base as pipeBase
 import lsst.scarlet.lite as scl
+import numpy as np
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from .utils import bboxToScarletBox, defaultBadPixelMasks, buildObservation
+from .utils import bboxToScarletBox, buildObservation, defaultBadPixelMasks
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -56,11 +56,14 @@ class ScarletGradientError(Exception):
     This error occurs when the optimizer encounters
     a NaN value while calculating the gradient.
     """
+
     def __init__(self, iterations, sources):
         self.iterations = iterations
         self.sources = sources
-        msg = ("ScalarGradientError in iteration {0}. "
-               "NaN values introduced in sources {1}")
+        msg = (
+            "ScalarGradientError in iteration {0}. "
+            "NaN values introduced in sources {1}"
+        )
         self.message = msg.format(iterations, sources)
 
     def __str__(self):
@@ -68,8 +71,7 @@ class ScarletGradientError(Exception):
 
 
 def _checkBlendConvergence(blend, f_rel):
-    """Check whether or not a blend has converged
-    """
+    """Check whether or not a blend has converged"""
     deltaLoss = np.abs(blend.loss[-2] - blend.loss[-1])
     convergence = f_rel * np.abs(blend.loss[-1])
     return deltaLoss < convergence
@@ -99,7 +101,9 @@ def isPseudoSource(source, pseudoColumns):
     return isPseudo
 
 
-def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, wavelets=None):
+def deblend(
+    mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, wavelets=None
+):
     """Deblend a parent footprint
 
     Parameters
@@ -183,10 +187,12 @@ def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, 
 
     # Set the optimizer
     if config.optimizer == "adaprox":
-        blend.parameterize(partial(
-            scl.component.default_adaprox_parameterization,
-            noise_rms=observation.noise_rms/10,
-        ))
+        blend.parameterize(
+            partial(
+                scl.component.default_adaprox_parameterization,
+                noise_rms=observation.noise_rms / 10,
+            )
+        )
     elif config.optimizer == "fista":
         blend.parameterize(scl.component.default_fista_parameterization)
     else:
@@ -202,7 +208,9 @@ def deblend(mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, 
     for k, center in enumerate(peaks):
         # This is just to make sure that there isn't a coding bug
         if len(sources[k].components) > 0 and np.any(sources[k].center != center):
-            raise ValueError(f"Misaligned center, expected {center} but got {sources[k].center}")
+            raise ValueError(
+                f"Misaligned center, expected {center} but got {sources[k].center}"
+            )
         # Store the record for the peak with the appropriate source
         sources[k].detectedPeak = footprint.peaks[k]
 
@@ -228,33 +236,42 @@ class ScarletDeblendConfig(pexConfig.Config):
     - Constraints: Used to apply constraints to the peaks and their components
     - Other: Parameters that don't fit into the above categories
     """
+
     # Stopping Criteria
-    minIter = pexConfig.Field(dtype=int, default=15,
-                              doc="Minimum number of iterations before the optimizer is allowed to stop.")
-    maxIter = pexConfig.Field(dtype=int, default=300,
-                              doc=("Maximum number of iterations to deblend a single parent"))
-    relativeError = pexConfig.Field(dtype=float, default=1e-2,
-                                    doc=("Change in the loss function between iterations to exit fitter. "
-                                         "Typically this is `1e-2` if measurements will be made on the "
-                                         "flux re-distributed models and `1e-4` when making measurements "
-                                         "on the models themselves."))
+    minIter = pexConfig.Field[int](
+        default=15,
+        doc="Minimum number of iterations before the optimizer is allowed to stop.",
+    )
+    maxIter = pexConfig.Field[int](
+        default=300,
+        doc=("Maximum number of iterations to deblend a single parent"),
+    )
+    relativeError = pexConfig.Field[float](
+        default=1e-2,
+        doc=(
+            "Change in the loss function between iterations to exit fitter. "
+            "Typically this is `1e-2` if measurements will be made on the "
+            "flux re-distributed models and `1e-4` when making measurements "
+            "on the models themselves."
+        ),
+    )
 
     # Constraints
-    morphThresh = pexConfig.Field(dtype=float, default=1,
-                                  doc="Fraction of background RMS a pixel must have"
-                                      "to be included in the initial morphology")
+    morphThresh = pexConfig.Field[float](
+        default=1,
+        doc="Fraction of background RMS a pixel must have"
+        "to be included in the initial morphology",
+    )
     # Lite Parameters
     # All of these parameters (except version) are only valid if version='lite'
-    version = pexConfig.ChoiceField(
-        dtype=str,
+    version = pexConfig.ChoiceField[str](
         default="lite",
         allowed={
             "lite": "LSST optimized version of scarlet for survey data from a single instrument",
         },
         doc="The version of scarlet to use.",
     )
-    optimizer = pexConfig.ChoiceField(
-        dtype=str,
+    optimizer = pexConfig.ChoiceField[str](
         default="adaprox",
         allowed={
             "adaprox": "Proximal ADAM optimization",
@@ -262,163 +279,196 @@ class ScarletDeblendConfig(pexConfig.Config):
         },
         doc="The optimizer to use for fitting parameters and is only used when version='lite'",
     )
-    morphImage = pexConfig.ChoiceField(
-        dtype=str,
+    morphImage = pexConfig.ChoiceField[str](
         default="chi2",
         allowed={
             "chi2": "Initialize sources on a chi^2 image made from all available bands",
             "wavelet": "Initialize sources using a wavelet decomposition of the chi^2 image",
         },
         doc="The type of image to use for initializing the morphology. "
-            "Must be either 'chi2' or 'wavelet'. "
+        "Must be either 'chi2' or 'wavelet'. ",
     )
-    backgroundThresh = pexConfig.Field(
-        dtype=float,
+    backgroundThresh = pexConfig.Field[float](
         default=0.25,
         doc="Fraction of background to use for a sparsity threshold. "
-            "This prevents sources from growing unrealistically outside "
-            "the parent footprint while still modeling flux correctly "
-            "for bright sources."
+        "This prevents sources from growing unrealistically outside "
+        "the parent footprint while still modeling flux correctly "
+        "for bright sources.",
     )
-    maxProxIter = pexConfig.Field(
-        dtype=int,
+    maxProxIter = pexConfig.Field[int](
         default=1,
         doc="Maximum number of proximal operator iterations inside of each "
-            "iteration of the optimizer. "
-            "This config field is only used if version='lite' and optimizer='adaprox'."
+        "iteration of the optimizer. "
+        "This config field is only used if version='lite' and optimizer='adaprox'.",
     )
-    waveletScales = pexConfig.Field(
-        dtype=int,
+    waveletScales = pexConfig.Field[int](
         default=5,
         doc="Number of wavelet scales to use for wavelet initialization. "
-            "This field is only used when `version`='lite' and `morphImage`='wavelet'."
+        "This field is only used when `version`='lite' and `morphImage`='wavelet'.",
     )
 
     # Other scarlet paremeters
-    useWeights = pexConfig.Field(
-        dtype=bool, default=True,
-        doc=("Whether or not use use inverse variance weighting."
-             "If `useWeights` is `False` then flat weights are used"))
-    modelPsfSize = pexConfig.Field(
-        dtype=int, default=11,
-        doc="Model PSF side length in pixels")
-    modelPsfSigma = pexConfig.Field(
-        dtype=float, default=0.8,
-        doc="Define sigma for the model frame PSF")
-    minSNR = pexConfig.Field(
-        dtype=float, default=50,
+    useWeights = pexConfig.Field[bool](
+        default=True,
+        doc=(
+            "Whether or not use use inverse variance weighting."
+            "If `useWeights` is `False` then flat weights are used"
+        ),
+    )
+    modelPsfSize = pexConfig.Field[int](
+        default=11, doc="Model PSF side length in pixels"
+    )
+    modelPsfSigma = pexConfig.Field[float](
+        default=0.8, doc="Define sigma for the model frame PSF"
+    )
+    minSNR = pexConfig.Field[float](
+        default=50,
         doc="Minimum Signal to noise to accept the source."
-            "Sources with lower flux will be initialized with the PSF but updated "
-            "like an ordinary ExtendedSource (known in scarlet as a `CompactSource`).")
-    saveTemplates = pexConfig.Field(
-        dtype=bool, default=True,
-        doc="Whether or not to save the SEDs and templates")
-    processSingles = pexConfig.Field(
-        dtype=bool, default=True,
-        doc="Whether or not to process isolated sources in the deblender")
-    convolutionType = pexConfig.Field(
-        dtype=str, default="fft",
+        "Sources with lower flux will be initialized with the PSF but updated "
+        "like an ordinary ExtendedSource (known in scarlet as a `CompactSource`).",
+    )
+    saveTemplates = pexConfig.Field[bool](
+        default=True, doc="Whether or not to save the SEDs and templates"
+    )
+    processSingles = pexConfig.Field[bool](
+        default=True,
+        doc="Whether or not to process isolated sources in the deblender",
+    )
+    convolutionType = pexConfig.Field[str](
+        default="fft",
         doc="Type of convolution to render the model to the observations.\n"
-            "- 'fft': perform convolutions in Fourier space\n"
-            "- 'real': peform convolutions in real space.")
-    sourceModel = pexConfig.Field(
-        dtype=str, default="double",
-        doc=("How to determine which model to use for sources, from\n"
-             "- 'single': use a single component for all sources\n"
-             "- 'double': use a bulge disk model for all sources\n"
-             "- 'compact': use a single component model, initialzed with a point source morphology, "
-             " for all sources\n"
-             "- 'point': use a point-source model for all sources\n"
-             "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)"),
+        "- 'fft': perform convolutions in Fourier space\n"
+        "- 'real': peform convolutions in real space.",
+    )
+    sourceModel = pexConfig.Field[str](
+        default="double",
+        doc=(
+            "How to determine which model to use for sources, from\n"
+            "- 'single': use a single component for all sources\n"
+            "- 'double': use a bulge disk model for all sources\n"
+            "- 'compact': use a single component model, initialzed with a point source morphology, "
+            " for all sources\n"
+            "- 'point': use a point-source model for all sources\n"
+            "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)"
+        ),
         deprecated="This field will be deprecated when the default for `version` is changed to `lite`.",
     )
-    setSpectra = pexConfig.Field(
-        dtype=bool, default=True,
+    setSpectra = pexConfig.Field[bool](
+        default=True,
         doc="Whether or not to solve for the best-fit spectra during initialization. "
-            "This makes initialization slightly longer, as it requires a convolution "
-            "to set the optimal spectra, but results in a much better initial log-likelihood "
-            "and reduced total runtime, with convergence in fewer iterations."
-            "This option is only used when "
-            "peaks*area < `maxSpectrumCutoff` will use the improved initialization.")
+        "This makes initialization slightly longer, as it requires a convolution "
+        "to set the optimal spectra, but results in a much better initial log-likelihood "
+        "and reduced total runtime, with convergence in fewer iterations."
+        "This option is only used when "
+        "peaks*area < `maxSpectrumCutoff` will use the improved initialization.",
+    )
 
     # Mask-plane restrictions
-    badMask = pexConfig.ListField(
-        dtype=str, default=defaultBadPixelMasks,
-        doc="Whether or not to process isolated sources in the deblender")
-    statsMask = pexConfig.ListField(dtype=str, default=["SAT", "INTRP", "NO_DATA"],
-                                    doc="Mask planes to ignore when performing statistics")
+    badMask = pexConfig.ListField[str](
+        default=defaultBadPixelMasks,
+        doc="Whether or not to process isolated sources in the deblender",
+    )
+    statsMask = pexConfig.ListField[str](
+        default=["SAT", "INTRP", "NO_DATA"],
+        doc="Mask planes to ignore when performing statistics",
+    )
     maskLimits = pexConfig.DictField(
         keytype=str,
         itemtype=float,
         default={},
-        doc=("Mask planes with the corresponding limit on the fraction of masked pixels. "
-             "Sources violating this limit will not be deblended. "
-             "If the fraction is `0` then the limit is a single pixel."),
+        doc=(
+            "Mask planes with the corresponding limit on the fraction of masked pixels. "
+            "Sources violating this limit will not be deblended. "
+            "If the fraction is `0` then the limit is a single pixel."
+        ),
     )
 
     # Size restrictions
-    maxNumberOfPeaks = pexConfig.Field(
-        dtype=int, default=200,
-        doc=("Only deblend the brightest maxNumberOfPeaks peaks in the parent"
-             " (<= 0: unlimited)"))
-    maxFootprintArea = pexConfig.Field(
-        dtype=int, default=100_000,
-        doc=("Maximum area for footprints before they are ignored as large; "
-             "non-positive means no threshold applied"))
-    maxAreaTimesPeaks = pexConfig.Field(
-        dtype=int, default=10_000_000,
-        doc=("Maximum rectangular footprint area * nPeaks in the footprint. "
-             "This was introduced in DM-33690 to prevent fields that are crowded or have a "
-             "LSB galaxy that causes memory intensive initialization in scarlet from dominating "
-             "the overall runtime and/or causing the task to run out of memory. "
-             "(<= 0: unlimited)")
+    maxNumberOfPeaks = pexConfig.Field[int](
+        default=200,
+        doc=(
+            "Only deblend the brightest maxNumberOfPeaks peaks in the parent"
+            " (<= 0: unlimited)"
+        ),
     )
-    maxFootprintSize = pexConfig.Field(
-        dtype=int, default=0,
-        doc=("Maximum linear dimension for footprints before they are ignored "
-             "as large; non-positive means no threshold applied"))
-    minFootprintAxisRatio = pexConfig.Field(
-        dtype=float, default=0.0,
-        doc=("Minimum axis ratio for footprints before they are ignored "
-             "as large; non-positive means no threshold applied"))
-    maxSpectrumCutoff = pexConfig.Field(
-        dtype=int, default=1_000_000,
-        doc=("Maximum number of pixels * number of sources in a blend. "
-             "This is different than `maxFootprintArea` because this isn't "
-             "the footprint area but the area of the bounding box that "
-             "contains the footprint, and is also multiplied by the number of"
-             "sources in the footprint. This prevents large skinny blends with "
-             "a high density of sources from running out of memory. "
-             "If `maxSpectrumCutoff == -1` then there is no cutoff.")
+    maxFootprintArea = pexConfig.Field[int](
+        default=100_000,
+        doc=(
+            "Maximum area for footprints before they are ignored as large; "
+            "non-positive means no threshold applied"
+        ),
+    )
+    maxAreaTimesPeaks = pexConfig.Field[int](
+        default=10_000_000,
+        doc=(
+            "Maximum rectangular footprint area * nPeaks in the footprint. "
+            "This was introduced in DM-33690 to prevent fields that are crowded or have a "
+            "LSB galaxy that causes memory intensive initialization in scarlet from dominating "
+            "the overall runtime and/or causing the task to run out of memory. "
+            "(<= 0: unlimited)"
+        ),
+    )
+    maxFootprintSize = pexConfig.Field[int](
+        default=0,
+        doc=(
+            "Maximum linear dimension for footprints before they are ignored "
+            "as large; non-positive means no threshold applied"
+        ),
+    )
+    minFootprintAxisRatio = pexConfig.Field[float](
+        default=0.0,
+        doc=(
+            "Minimum axis ratio for footprints before they are ignored "
+            "as large; non-positive means no threshold applied"
+        ),
+    )
+    maxSpectrumCutoff = pexConfig.Field[int](
+        default=1_000_000,
+        doc=(
+            "Maximum number of pixels * number of sources in a blend. "
+            "This is different than `maxFootprintArea` because this isn't "
+            "the footprint area but the area of the bounding box that "
+            "contains the footprint, and is also multiplied by the number of"
+            "sources in the footprint. This prevents large skinny blends with "
+            "a high density of sources from running out of memory. "
+            "If `maxSpectrumCutoff == -1` then there is no cutoff."
+        ),
     )
     # Failure modes
-    fallback = pexConfig.Field(
-        dtype=bool, default=True,
-        doc="Whether or not to fallback to a smaller number of components if a source does not initialize"
+    fallback = pexConfig.Field[bool](
+        default=True,
+        doc="Whether or not to fallback to a smaller number of components if a source does not initialize",
     )
-    notDeblendedMask = pexConfig.Field(
-        dtype=str, default="NOT_DEBLENDED", optional=True,
-        doc="Mask name for footprints not deblended, or None")
-    catchFailures = pexConfig.Field(
-        dtype=bool, default=True,
-        doc=("If True, catch exceptions thrown by the deblender, log them, "
-             "and set a flag on the parent, instead of letting them propagate up"))
+    notDeblendedMask = pexConfig.Field[str](
+        default="NOT_DEBLENDED",
+        optional=True,
+        doc="Mask name for footprints not deblended, or None",
+    )
+    catchFailures = pexConfig.Field[bool](
+        default=True,
+        doc=(
+            "If True, catch exceptions thrown by the deblender, log them, "
+            "and set a flag on the parent, instead of letting them propagate up"
+        ),
+    )
 
     # Other options
     columnInheritance = pexConfig.DictField(
-        keytype=str, itemtype=str, default={
+        keytype=str,
+        itemtype=str,
+        default={
             "deblend_nChild": "deblend_parentNChild",
             "deblend_nPeaks": "deblend_parentNPeaks",
             "deblend_spectrumInitFlag": "deblend_spectrumInitFlag",
             "deblend_blendConvergenceFailedFlag": "deblend_blendConvergenceFailedFlag",
         },
         doc="Columns to pass from the parent to the child. "
-            "The key is the name of the column for the parent record, "
-            "the value is the name of the column to use for the child."
+        "The key is the name of the column for the parent record, "
+        "the value is the name of the column to use for the child.",
     )
-    pseudoColumns = pexConfig.ListField(
-        dtype=str, default=['merge_peak_sky', 'sky_source'],
-        doc="Names of flags which should never be deblended."
+    pseudoColumns = pexConfig.ListField[str](
+        default=["merge_peak_sky", "sky_source"],
+        doc="Names of flags which should never be deblended.",
     )
 
     # Testing options
@@ -428,18 +478,21 @@ class ScarletDeblendConfig(pexConfig.Config):
     # to only run on a small subset of the data that is large enough to
     # test the desired pipeline features but not so long that the deblender
     # is the tall pole in terms of execution times.
-    useCiLimits = pexConfig.Field(
-        dtype=bool, default=False,
-        doc="Limit the number of sources deblended for CI to prevent long build times")
-    ciDeblendChildRange = pexConfig.ListField(
-        dtype=int, default=[5, 10],
+    useCiLimits = pexConfig.Field[bool](
+        default=False,
+        doc="Limit the number of sources deblended for CI to prevent long build times",
+    )
+    ciDeblendChildRange = pexConfig.ListField[int](
+        default=[5, 10],
         doc="Only deblend parent Footprints with a number of peaks in the (inclusive) range indicated."
-            "If `useCiLimits==False` then this parameter is ignored.")
-    ciNumParentsToDeblend = pexConfig.Field(
-        dtype=int, default=10,
+        "If `useCiLimits==False` then this parameter is ignored.",
+    )
+    ciNumParentsToDeblend = pexConfig.Field[int](
+        default=10,
         doc="Only use the first `ciNumParentsToDeblend` parent footprints with a total peak count "
-            "within `ciDebledChildRange`. "
-            "If `useCiLimits==False` then this parameter is ignored.")
+        "within `ciDebledChildRange`. "
+        "If `useCiLimits==False` then this parameter is ignored.",
+    )
 
 
 class ScarletDeblendTask(pipeBase.Task):
@@ -449,6 +502,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
     This task has no return value; it only modifies the SourceCatalog in-place.
     """
+
     ConfigClass = ScarletDeblendConfig
     _DefaultName = "scarletDeblend"
 
@@ -490,119 +544,212 @@ class ScarletDeblendTask(pipeBase.Task):
                     # peakSchemaMapper.getOutputSchema() manually, by adding
                     # the same fields to both.
                     schema.addField(item.field)
-            assert schema == self.peakSchemaMapper.getOutputSchema(), "Logic bug mapping schemas"
+            assert (
+                schema == self.peakSchemaMapper.getOutputSchema()
+            ), "Logic bug mapping schemas"
         self._addSchemaKeys(schema)
         self.schema = schema
-        self.toCopyFromParent = [item.key for item in self.schema
-                                 if item.field.getName().startswith("merge_footprint")]
+        self.toCopyFromParent = [
+            item.key
+            for item in self.schema
+            if item.field.getName().startswith("merge_footprint")
+        ]
 
     def _addSchemaKeys(self, schema):
-        """Add deblender specific keys to the schema
-        """
+        """Add deblender specific keys to the schema"""
         # Parent (blend) fields
-        self.runtimeKey = schema.addField('deblend_runtime', type=np.float32, doc='runtime in ms')
-        self.iterKey = schema.addField('deblend_iterations', type=np.int32, doc='iterations to converge')
-        self.nChildKey = schema.addField('deblend_nChild', type=np.int32,
-                                         doc='Number of children this object has (defaults to 0)')
-        self.nPeaksKey = schema.addField("deblend_nPeaks", type=np.int32,
-                                         doc="Number of initial peaks in the blend. "
-                                             "This includes peaks that may have been culled "
-                                             "during deblending or failed to deblend")
+        self.runtimeKey = schema.addField(
+            "deblend_runtime", type=np.float32, doc="runtime in ms"
+        )
+        self.iterKey = schema.addField(
+            "deblend_iterations", type=np.int32, doc="iterations to converge"
+        )
+        self.nChildKey = schema.addField(
+            "deblend_nChild",
+            type=np.int32,
+            doc="Number of children this object has (defaults to 0)",
+        )
+        self.nPeaksKey = schema.addField(
+            "deblend_nPeaks",
+            type=np.int32,
+            doc="Number of initial peaks in the blend. "
+            "This includes peaks that may have been culled "
+            "during deblending or failed to deblend",
+        )
         # Skipped flags
-        self.deblendSkippedKey = schema.addField('deblend_skipped', type='Flag',
-                                                 doc="Deblender skipped this source")
-        self.isolatedParentKey = schema.addField('deblend_isolatedParent', type='Flag',
-                                                 doc='The source has only a single peak '
-                                                     'and was not deblended')
-        self.pseudoKey = schema.addField('deblend_isPseudo', type='Flag',
-                                         doc='The source is identified as a "pseudo" source and '
-                                             'was not deblended')
-        self.tooManyPeaksKey = schema.addField('deblend_tooManyPeaks', type='Flag',
-                                               doc='Source had too many peaks; '
-                                               'only the brightest were included')
-        self.tooBigKey = schema.addField('deblend_parentTooBig', type='Flag',
-                                         doc='Parent footprint covered too many pixels')
-        self.maskedKey = schema.addField('deblend_masked', type='Flag',
-                                         doc='Parent footprint had too many masked pixels')
+        self.deblendSkippedKey = schema.addField(
+            "deblend_skipped", type="Flag", doc="Deblender skipped this source"
+        )
+        self.isolatedParentKey = schema.addField(
+            "deblend_isolatedParent",
+            type="Flag",
+            doc="The source has only a single peak " "and was not deblended",
+        )
+        self.pseudoKey = schema.addField(
+            "deblend_isPseudo",
+            type="Flag",
+            doc='The source is identified as a "pseudo" source and '
+            "was not deblended",
+        )
+        self.tooManyPeaksKey = schema.addField(
+            "deblend_tooManyPeaks",
+            type="Flag",
+            doc="Source had too many peaks; " "only the brightest were included",
+        )
+        self.tooBigKey = schema.addField(
+            "deblend_parentTooBig",
+            type="Flag",
+            doc="Parent footprint covered too many pixels",
+        )
+        self.maskedKey = schema.addField(
+            "deblend_masked",
+            type="Flag",
+            doc="Parent footprint had too many masked pixels",
+        )
         # Convergence flags
-        self.sedNotConvergedKey = schema.addField('deblend_sedConvergenceFailed', type='Flag',
-                                                  doc='scarlet sed optimization did not converge before'
-                                                      'config.maxIter')
-        self.morphNotConvergedKey = schema.addField('deblend_morphConvergenceFailed', type='Flag',
-                                                    doc='scarlet morph optimization did not converge before'
-                                                        'config.maxIter')
-        self.blendConvergenceFailedFlagKey = schema.addField('deblend_blendConvergenceFailedFlag',
-                                                             type='Flag',
-                                                             doc='at least one source in the blend'
-                                                                 'failed to converge')
+        self.sedNotConvergedKey = schema.addField(
+            "deblend_sedConvergenceFailed",
+            type="Flag",
+            doc="scarlet sed optimization did not converge before" "config.maxIter",
+        )
+        self.morphNotConvergedKey = schema.addField(
+            "deblend_morphConvergenceFailed",
+            type="Flag",
+            doc="scarlet morph optimization did not converge before" "config.maxIter",
+        )
+        self.blendConvergenceFailedFlagKey = schema.addField(
+            "deblend_blendConvergenceFailedFlag",
+            type="Flag",
+            doc="at least one source in the blend" "failed to converge",
+        )
         # Error flags
-        self.deblendFailedKey = schema.addField('deblend_failed', type='Flag',
-                                                doc="Deblending failed on source")
-        self.deblendErrorKey = schema.addField('deblend_error', type="String", size=25,
-                                               doc='Name of error if the blend failed')
-        self.incompleteDataKey = schema.addField('deblend_incompleteData', type='Flag',
-                                                 doc='True when a blend has at least one band '
-                                                     'that could not generate a PSF and was '
-                                                     'not included in the model.')
+        self.deblendFailedKey = schema.addField(
+            "deblend_failed", type="Flag", doc="Deblending failed on source"
+        )
+        self.deblendErrorKey = schema.addField(
+            "deblend_error",
+            type="String",
+            size=25,
+            doc="Name of error if the blend failed",
+        )
+        self.incompleteDataKey = schema.addField(
+            "deblend_incompleteData",
+            type="Flag",
+            doc="True when a blend has at least one band "
+            "that could not generate a PSF and was "
+            "not included in the model.",
+        )
         # Deblended source fields
-        self.peakCenter = afwTable.Point2IKey.addFields(schema, name="deblend_peak_center",
-                                                        doc="Center used to apply constraints in scarlet",
-                                                        unit="pixel")
-        self.peakIdKey = schema.addField("deblend_peakId", type=np.int32,
-                                         doc="ID of the peak in the parent footprint. "
-                                             "This is not unique, but the combination of 'parent'"
-                                             "and 'peakId' should be for all child sources. "
-                                             "Top level blends with no parents have 'peakId=0'")
-        self.modelCenterFlux = schema.addField('deblend_peak_instFlux', type=float, units='count',
-                                               doc="The instFlux at the peak position of deblended mode")
-        self.modelTypeKey = schema.addField("deblend_modelType", type="String", size=25,
-                                            doc="The type of model used, for example "
-                                                "MultiExtendedSource, SingleExtendedSource, PointSource")
-        self.parentNPeaksKey = schema.addField("deblend_parentNPeaks", type=np.int32,
-                                               doc="deblend_nPeaks from this records parent.")
-        self.parentNChildKey = schema.addField("deblend_parentNChild", type=np.int32,
-                                               doc="deblend_nChild from this records parent.")
-        self.scarletFluxKey = schema.addField("deblend_scarletFlux", type=np.float32,
-                                              doc="Flux measurement from scarlet")
-        self.scarletLogLKey = schema.addField("deblend_logL", type=np.float32,
-                                              doc="Final logL, used to identify regressions in scarlet.")
-        self.edgePixelsKey = schema.addField('deblend_edgePixels', type='Flag',
-                                             doc='Source had flux on the edge of the parent footprint')
-        self.scarletSpectrumInitKey = schema.addField("deblend_spectrumInitFlag", type='Flag',
-                                                      doc="True when scarlet initializes sources "
-                                                          "in the blend with a more accurate spectrum. "
-                                                          "The algorithm uses a lot of memory, "
-                                                          "so large dense blends will use "
-                                                          "a less accurate initialization.")
-        self.nComponentsKey = schema.addField("deblend_nComponents", type=np.int32,
-                                              doc="Number of components in a ScarletLiteSource. "
-                                                  "If `config.version != 'lite'`then "
-                                                  "this column is set to zero.")
-        self.psfKey = schema.addField('deblend_deblendedAsPsf', type='Flag',
-                                      doc='Deblender thought this source looked like a PSF')
-        self.coverageKey = schema.addField('deblend_dataCoverage', type=np.float32,
-                                           doc='Fraction of pixels with data. '
-                                               'In other words, 1 - fraction of pixels with NO_DATA set.')
-        self.zeroFluxKey = schema.addField("deblend_zeroFlux", type="Flag",
-                                           doc="Source has zero flux.")
+        self.peakCenter = afwTable.Point2IKey.addFields(
+            schema,
+            name="deblend_peak_center",
+            doc="Center used to apply constraints in scarlet",
+            unit="pixel",
+        )
+        self.peakIdKey = schema.addField(
+            "deblend_peakId",
+            type=np.int32,
+            doc="ID of the peak in the parent footprint. "
+            "This is not unique, but the combination of 'parent'"
+            "and 'peakId' should be for all child sources. "
+            "Top level blends with no parents have 'peakId=0'",
+        )
+        self.modelCenterFlux = schema.addField(
+            "deblend_peak_instFlux",
+            type=float,
+            units="count",
+            doc="The instFlux at the peak position of deblended mode",
+        )
+        self.modelTypeKey = schema.addField(
+            "deblend_modelType",
+            type="String",
+            size=25,
+            doc="The type of model used, for example "
+            "MultiExtendedSource, SingleExtendedSource, PointSource",
+        )
+        self.parentNPeaksKey = schema.addField(
+            "deblend_parentNPeaks",
+            type=np.int32,
+            doc="deblend_nPeaks from this records parent.",
+        )
+        self.parentNChildKey = schema.addField(
+            "deblend_parentNChild",
+            type=np.int32,
+            doc="deblend_nChild from this records parent.",
+        )
+        self.scarletFluxKey = schema.addField(
+            "deblend_scarletFlux", type=np.float32, doc="Flux measurement from scarlet"
+        )
+        self.scarletLogLKey = schema.addField(
+            "deblend_logL",
+            type=np.float32,
+            doc="Final logL, used to identify regressions in scarlet.",
+        )
+        self.edgePixelsKey = schema.addField(
+            "deblend_edgePixels",
+            type="Flag",
+            doc="Source had flux on the edge of the parent footprint",
+        )
+        self.scarletSpectrumInitKey = schema.addField(
+            "deblend_spectrumInitFlag",
+            type="Flag",
+            doc="True when scarlet initializes sources "
+            "in the blend with a more accurate spectrum. "
+            "The algorithm uses a lot of memory, "
+            "so large dense blends will use "
+            "a less accurate initialization.",
+        )
+        self.nComponentsKey = schema.addField(
+            "deblend_nComponents",
+            type=np.int32,
+            doc="Number of components in a ScarletLiteSource. "
+            "If `config.version != 'lite'`then "
+            "this column is set to zero.",
+        )
+        self.psfKey = schema.addField(
+            "deblend_deblendedAsPsf",
+            type="Flag",
+            doc="Deblender thought this source looked like a PSF",
+        )
+        self.coverageKey = schema.addField(
+            "deblend_dataCoverage",
+            type=np.float32,
+            doc="Fraction of pixels with data. "
+            "In other words, 1 - fraction of pixels with NO_DATA set.",
+        )
+        self.zeroFluxKey = schema.addField(
+            "deblend_zeroFlux", type="Flag", doc="Source has zero flux."
+        )
         # Blendedness/classification metrics
-        self.maxOverlapKey = schema.addField("deblend_maxOverlap", type=np.float32,
-                                             doc="Maximum overlap with all of the other neighbors flux "
-                                                 "combined."
-                                                 "This is useful as a metric for determining how blended a "
-                                                 "source is because if it only overlaps with other sources "
-                                                 "at or below the noise level, it is likely to be a mostly "
-                                                 "isolated source in the deconvolved model frame.")
-        self.fluxOverlapKey = schema.addField("deblend_fluxOverlap", type=np.float32,
-                                              doc="This is the total flux from neighboring objects that "
-                                                  "overlaps with this source.")
-        self.fluxOverlapFractionKey = schema.addField("deblend_fluxOverlapFraction", type=np.float32,
-                                                      doc="This is the fraction of "
-                                                          "`flux from neighbors/source flux` "
-                                                          "for a given source within the source's"
-                                                          "footprint.")
-        self.blendednessKey = schema.addField("deblend_blendedness", type=np.float32,
-                                              doc="The Bosch et al. 2018 metric for 'blendedness.' ")
+        self.maxOverlapKey = schema.addField(
+            "deblend_maxOverlap",
+            type=np.float32,
+            doc="Maximum overlap with all of the other neighbors flux "
+            "combined."
+            "This is useful as a metric for determining how blended a "
+            "source is because if it only overlaps with other sources "
+            "at or below the noise level, it is likely to be a mostly "
+            "isolated source in the deconvolved model frame.",
+        )
+        self.fluxOverlapKey = schema.addField(
+            "deblend_fluxOverlap",
+            type=np.float32,
+            doc="This is the total flux from neighboring objects that "
+            "overlaps with this source.",
+        )
+        self.fluxOverlapFractionKey = schema.addField(
+            "deblend_fluxOverlapFraction",
+            type=np.float32,
+            doc="This is the fraction of "
+            "`flux from neighbors/source flux` "
+            "for a given source within the source's"
+            "footprint.",
+        )
+        self.blendednessKey = schema.addField(
+            "deblend_blendedness",
+            type=np.float32,
+            doc="The Bosch et al. 2018 metric for 'blendedness.' ",
+        )
 
     @timeMethod
     def run(self, mExposure, mergedSources):
@@ -653,22 +800,28 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Cull footprints if required by ci
         if self.config.useCiLimits:
-            self.log.info("Using CI catalog limits, the original number of sources to deblend was %d.",
-                          len(catalog))
+            self.log.info(
+                "Using CI catalog limits, the original number of sources to deblend was %d.",
+                len(catalog),
+            )
             # Select parents with a number of children in the range
             # config.ciDeblendChildRange
             minChildren, maxChildren = self.config.ciDeblendChildRange
             nPeaks = np.array([len(src.getFootprint().peaks) for src in catalog])
-            childrenInRange = np.where((nPeaks >= minChildren) & (nPeaks <= maxChildren))[0]
+            childrenInRange = np.where(
+                (nPeaks >= minChildren) & (nPeaks <= maxChildren)
+            )[0]
             if len(childrenInRange) < self.config.ciNumParentsToDeblend:
-                raise ValueError("Fewer than ciNumParentsToDeblend children were contained in the range "
-                                 "indicated by ciDeblendChildRange. Adjust this range to include more "
-                                 "parents.")
+                raise ValueError(
+                    "Fewer than ciNumParentsToDeblend children were contained in the range "
+                    "indicated by ciDeblendChildRange. Adjust this range to include more "
+                    "parents."
+                )
             # Keep all of the isolated parents and the first
             # `ciNumParentsToDeblend` children
             parents = nPeaks == 1
             children = np.zeros((len(catalog),), dtype=bool)
-            children[childrenInRange[:self.config.ciNumParentsToDeblend]] = True
+            children[childrenInRange[: self.config.ciNumParentsToDeblend]] = True
             catalog = catalog[parents | children]
             # We need to update the IdFactory, otherwise the the source ids
             # will not be sequential
@@ -676,14 +829,18 @@ class ScarletDeblendTask(pipeBase.Task):
             maxId = np.max(catalog["id"])
             idFactory.notify(maxId)
 
-        self.log.info("Deblending %d sources in %d exposure bands", len(catalog), len(mExposure))
+        self.log.info(
+            "Deblending %d sources in %d exposure bands", len(catalog), len(mExposure)
+        )
         periodicLog = PeriodicLogger(self.log)
 
         # Create a set of wavelet coefficients if using wavelet initialization
         if self.config.morphImage == "wavelet":
             images = mExposure.image.array
             variance = mExposure.variance.array
-            wavelets = scl.detect.get_detect_wavelets(images, variance, scales=self.config.waveletScales)
+            wavelets = scl.detect.get_detect_wavelets(
+                images, variance, scales=self.config.waveletScales
+            )
         else:
             wavelets = None
 
@@ -693,7 +850,9 @@ class ScarletDeblendTask(pipeBase.Task):
                 mask.addMaskPlane(self.config.notDeblendedMask)
 
         # Initialize the persistable data model
-        modelPsf = scl.utils.integrated_circular_gaussian(sigma=self.config.modelPsfSigma)
+        modelPsf = scl.utils.integrated_circular_gaussian(
+            sigma=self.config.modelPsfSigma
+        )
         dataModel = scl.io.ScarletModelData(modelPsf)
 
         # Initialize the monotonicity operator with a size of 101 x 101 pixels.
@@ -735,7 +894,9 @@ class ScarletDeblendTask(pipeBase.Task):
                 if self.config.maxSpectrumCutoff <= 0:
                     spectrumInit = True
                 else:
-                    spectrumInit = len(foot.peaks) * bbox.getArea() < self.config.maxSpectrumCutoff
+                    spectrumInit = (
+                        len(foot.peaks) * bbox.getArea() < self.config.maxSpectrumCutoff
+                    )
             else:
                 spectrumInit = False
 
@@ -756,7 +917,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     msg = f"The only currently support version is 'lite', got {self.config.version}"
                     raise NotImplementedError(msg)
                 tf = time.monotonic()
-                runtime = (tf-t0)*1000
+                runtime = (tf - t0) * 1000
                 converged = _checkBlendConvergence(blend, self.config.relativeError)
                 # Store the number of components in the blend
                 nComponents = len(blend.components)
@@ -773,6 +934,7 @@ class ScarletDeblendTask(pipeBase.Task):
                         # Make it easy to find UnknownErrors in the log file
                         self.log.warn("UnknownError")
                         import traceback
+
                         traceback.print_exc()
                     else:
                         raise
@@ -803,7 +965,9 @@ class ScarletDeblendTask(pipeBase.Task):
             for k, scarletSource in enumerate(blend.sources):
                 # Skip any sources with no flux or that scarlet skipped because
                 # it could not initialize
-                if k in skippedSources or (self.config.version == "lite" and scarletSource.is_null):
+                if k in skippedSources or (
+                    self.config.version == "lite" and scarletSource.is_null
+                ):
                     # No need to propagate anything
                     continue
                 parent.set(self.deblendSkippedKey, False)
@@ -824,22 +988,33 @@ class ScarletDeblendTask(pipeBase.Task):
                 blendData = scl.io.ScarletBlendData.from_blend(blend, blend.psfCenter)
             else:
                 # We keep this here in case other versions are introduced
-                raise NotImplementedError("Only the 'lite' version of scarlet is currently supported")
+                raise NotImplementedError(
+                    "Only the 'lite' version of scarlet is currently supported"
+                )
             dataModel.blends[parent.getId()] = blendData
 
             # Log a message if it has been a while since the last log.
-            periodicLog.log("Deblended %d parent sources out of %d", parentIndex + 1, nParents)
+            periodicLog.log(
+                "Deblended %d parent sources out of %d", parentIndex + 1, nParents
+            )
 
         # Update the mExposure mask with the footprint of skipped parents
         if self.config.notDeblendedMask:
             for mask in mExposure.mask:
                 for parentIndex in skippedParents:
                     fp = catalog[parentIndex].getFootprint()
-                    fp.spans.setMask(mask, mask.getPlaneBitMask(self.config.notDeblendedMask))
+                    fp.spans.setMask(
+                        mask, mask.getPlaneBitMask(self.config.notDeblendedMask)
+                    )
 
-        self.log.info("Deblender results: of %d parent sources, %d were deblended, "
-                      "creating %d children, for a total of %d sources",
-                      nParents, nDeblendedParents, len(catalog)-nParents, len(catalog))
+        self.log.info(
+            "Deblender results: of %d parent sources, %d were deblended, "
+            "creating %d children, for a total of %d sources",
+            nParents,
+            nDeblendedParents,
+            len(catalog) - nParents,
+            len(catalog),
+        )
         return catalog, dataModel
 
     def _isLargeFootprint(self, footprint):
@@ -851,7 +1026,10 @@ class ScarletDeblendTask(pipeBase.Task):
         These may be disabled independently by configuring them to be
         non-positive.
         """
-        if self.config.maxFootprintArea > 0 and footprint.getArea() > self.config.maxFootprintArea:
+        if (
+            self.config.maxFootprintArea > 0
+            and footprint.getArea() > self.config.maxFootprintArea
+        ):
             return True
         if self.config.maxFootprintSize > 0:
             bbox = footprint.getBBox()
@@ -859,10 +1037,13 @@ class ScarletDeblendTask(pipeBase.Task):
                 return True
         if self.config.minFootprintAxisRatio > 0:
             axes = afwEll.Axes(footprint.getShape())
-            if axes.getB() < self.config.minFootprintAxisRatio*axes.getA():
+            if axes.getB() < self.config.minFootprintAxisRatio * axes.getA():
                 return True
         if self.config.maxAreaTimesPeaks > 0:
-            if footprint.getBBox().getArea() * len(footprint.peaks) > self.config.maxAreaTimesPeaks:
+            if (
+                footprint.getBBox().getArea() * len(footprint.peaks)
+                > self.config.maxAreaTimesPeaks
+            ):
                 return True
         return False
 
@@ -891,7 +1072,7 @@ class ScarletDeblendTask(pipeBase.Task):
             _mask = afwImage.MaskX(mask & maskVal, xy0=bbox.getMin())
             # spanset of masked pixels
             maskedSpan = footprint.spans.intersect(_mask, maskVal)
-            if (maskedSpan.getArea())/size > limit:
+            if (maskedSpan.getArea()) / size > limit:
                 return True
         return False
 
@@ -973,7 +1154,10 @@ class ScarletDeblendTask(pipeBase.Task):
             # The footprint exceeds the maximum number of masked pixels
             skipKey = self.maskedKey
             skipMessage = f"Parent {parent.getId()}: skipping masked footprint"
-        elif self.config.maxNumberOfPeaks > 0 and len(footprint.peaks) > self.config.maxNumberOfPeaks:
+        elif (
+            self.config.maxNumberOfPeaks > 0
+            and len(footprint.peaks) > self.config.maxNumberOfPeaks
+        ):
             # Unlike meas_deblender, in scarlet we skip the entire blend
             # if the number of peaks exceeds max peaks, since neglecting
             # to model any peaks often results in catastrophic failure
@@ -1006,8 +1190,18 @@ class ScarletDeblendTask(pipeBase.Task):
             if skipArgs := self._checkSkipped(src, mExposure) is not None:
                 self._skipParent(src, *skipArgs)
 
-    def _updateParentRecord(self, parent, nPeaks, nChild, nComponents,
-                            runtime, iterations, logL, spectrumInit, converged):
+    def _updateParentRecord(
+        self,
+        parent,
+        nPeaks,
+        nChild,
+        nComponents,
+        runtime,
+        iterations,
+        logL,
+        spectrumInit,
+        converged,
+    ):
         """Update a parent record in all of the single band catalogs.
 
         Ensure that all locations that update a parent record,

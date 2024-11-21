@@ -68,6 +68,7 @@ class DeblenderMetrics:
         Bosch et al. 2018 metric for "blendedness." Note that some
         surveys use the term "purity," which is `1-blendedness`.
     """
+
     maxOverlap: np.array
     fluxOverlap: np.array
     fluxOverlapFraction: np.array
@@ -94,12 +95,16 @@ def setDeblenderMetrics(blend: Blend):
         footprint = np.bitwise_or.reduce(model > 0, axis=0)
         # Calculate the metrics.
         # See `DeblenderMetrics` for a description of each metric.
-        neighborOverlap = (blendModel-model) * footprint[None, :, :]
+        neighborOverlap = (blendModel - model) * footprint[None, :, :]
         maxOverlap = np.max(neighborOverlap, axis=(1, 2))
         fluxOverlap = np.sum(neighborOverlap, axis=(1, 2))
         fluxModel = np.sum(model, axis=(1, 2))
-        fluxOverlapFraction = np.zeros((len(model), ), dtype=float)
+        fluxOverlapFraction = np.zeros((len(model),), dtype=float)
         isFinite = fluxModel > 0
-        fluxOverlapFraction[isFinite] = fluxOverlap[isFinite]/fluxModel[isFinite]
-        blendedness = 1 - np.sum(model*model, axis=(1, 2))/np.sum(blendModel*model, axis=(1, 2))
-        src.metrics = DeblenderMetrics(maxOverlap, fluxOverlap, fluxOverlapFraction, blendedness)
+        fluxOverlapFraction[isFinite] = fluxOverlap[isFinite] / fluxModel[isFinite]
+        blendedness = 1 - np.sum(model * model, axis=(1, 2)) / np.sum(
+            blendModel * model, axis=(1, 2)
+        )
+        src.metrics = DeblenderMetrics(
+            maxOverlap, fluxOverlap, fluxOverlapFraction, blendedness
+        )

@@ -19,9 +19,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from .version import *
-
-from .scarletDeblendTask import *
+from . import utils
+from .deconvolveExposureTask import *
 from .io import *
 from .metrics import *
-from . import utils
+from .scarletDeblendTask import *
+from .version import *
