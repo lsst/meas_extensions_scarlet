@@ -1,8 +1,10 @@
+from contextlib import contextmanager
 from typing import Sequence
 
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
 import numpy as np
+from scipy.signal import convolve
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF, PeakCatalog, makeHeavyFootprint
 from lsst.afw.detection.multiband import MultibandFootprint
@@ -16,8 +18,9 @@ from lsst.afw.image import (
     MultibandImage,
 )
 from lsst.afw.table import SourceCatalog
+from lsst.scarlet.lite.detect_pybind11 import Peak
 
-defaultBadPixelMasks = ["BAD", "CR", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
+defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
 
 def footprintsToNumpy(
@@ -101,6 +104,126 @@ def bboxToScarletBox(bbox: geom.Box2I, xy0: geom.Point2I = geom.Point2I()) -> sc
     """
     origin = (bbox.getMinY() - xy0.y, bbox.getMinX() - xy0.x)
     return scl.Box((bbox.getHeight(), bbox.getWidth()), origin)
+
+
+def afwFootprintToScarlet(footprint: afwFootprint, copyPeaks: bool = True):
+    """Convert an afw Footprint into a scarlet lite Footprint.
+
+    Parameters
+    ----------
+    footprint:
+        The afw Footprint to convert.
+    copyPeaks:
+        Whether or not to copy the peaks from the afw Footprint.
+
+    Returns
+    -------
+    scarletFootprint:
+        The converted scarlet Footprint.
+    """
+    data = footprint.spans.asArray()
+    afwBox = footprint.getBBox()
+    bbox = bboxToScarletBox(afwBox)
+    peaks = []
+    if copyPeaks:
+        for peak in footprint.peaks:
+            newPeak = Peak(peak.getIy(), peak.getIx(), peak.getPeakValue())
+            peaks.append(newPeak)
+    bounds = scl.detect.bbox_to_bounds(bbox)
+    return scl.detect.Footprint(data, peaks, bounds)
+
+
+def scarletFootprintToAfw(footprint: scl.detect.Footprint, copyPeaks: bool = True) -> afwFootprint:
+    """Convert a scarlet lite Footprint into an afw Footprint.
+
+    Parameters
+    ----------
+    footprint:
+        The scarlet Footprint to convert.
+    copyPeaks:
+        Whether or not to copy the peaks from the scarlet Footprint.
+
+    Returns
+    -------
+    newFootprint:
+        The converted afw Footprint.
+    """
+    xy0 = geom.Point2I(footprint.bbox.origin[1], footprint.bbox.origin[0])
+    data = Mask(footprint.data.astype(np.int32), xy0=xy0)
+    spans = SpanSet.fromMask(data)
+    newFootprint = afwFootprint(spans)
+
+    if copyPeaks:
+        for peak in footprint.peaks:
+            newFootprint.addPeak(peak.x, peak.y, peak.flux)
+    return newFootprint
+
+
+def getFootprintIntersection(
+    footprint1: afwFootprint,
+    footprint2: afwFootprint,
+    copyMethod: str | None = 'left'
+) -> afwFootprint:
+    """Calculate the intersection of two Footprints.
+
+    Parameters
+    ----------
+    footprint1:
+        The first afw Footprint.
+    footprint2:
+        The second afw Footprint.
+    copyMethod:
+        The method to use when copying peaks into the new Footprint
+        that are contained in the intersection.
+        If ``None`` then no peaks are copied, 'left' copies the
+        peaks from `footprint`, and 'right' copies the peaks from
+        `footprint2`.
+
+    Returns
+    -------
+    result:
+        The Footprint containing the intersection of the two footprints.
+    """
+    if copyMethod is not None and copyMethod not in ['left', 'right']:
+        raise ValueError(f'copyMethod should be "left", "right", or None, got {copyMethod}')
+
+    # Create the intersecting footprint
+    spans = footprint1.spans.intersect(footprint2.spans)
+    result = afwFootprint(spans)
+
+    peaks = []
+    if copyMethod is not None:
+        # Copy peaks into the new Footprint
+        if copyMethod == 'left':
+            peaks = footprint1.peaks
+        else:
+            peaks = footprint2.peaks
+
+        for peak in peaks:
+            if spans.contains(geom.Point2I(peak.getIx(), peak.getIy())):
+                result.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
+    return result
+
+
+def multiband_convolve(images: np.ndarray, psfs: np.ndarray) -> np.ndarray:
+    """Convolve a multi-band images with the PSF in each band.
+
+    Parameters
+    ----------
+    images :
+        The multi-band images to convolve.
+    psfs :
+        The PSF for each band.
+
+    Returns
+    -------
+    result :
+        The convolved images.
+    """
+    result = np.zeros(images.shape, dtype=images.dtype)
+    for bidx, image in enumerate(images):
+        result[bidx] = convolve(image, psfs[bidx], mode="same")
+    return result
 
 
 def computePsfKernelImage(mExposure, psfCenter):
