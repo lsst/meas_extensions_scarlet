@@ -392,7 +392,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         ),
     )
     maxFootprintArea = pexConfig.Field[int](
-        default=100_000,
+        default=1_000_000,
         doc=(
             "Maximum area for footprints before they are ignored as large; "
             "non-positive means no threshold applied"
