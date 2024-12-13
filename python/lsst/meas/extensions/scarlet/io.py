@@ -29,7 +29,7 @@ from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
 from lsst.afw.image import Exposure, MaskedImage
-from lsst.afw.table import SourceCatalog
+from lsst.afw.table import SourceCatalog, SourceRecord
 from lsst.geom import Box2I, Extent2I, Point2I
 from lsst.scarlet.lite import (
     Blend,
@@ -119,7 +119,8 @@ def monochromaticDataToScarlet(
         source.peak_id = sourceData.peak_id
         sources.append(source)
 
-    return Blend(sources=sources, observation=observation)
+    blend = Blend(sources=sources, observation=observation)
+    return blend
 
 
 def updateCatalogFootprints(
@@ -157,51 +158,60 @@ def updateCatalogFootprints(
     for parentRecord in parents:
         parentId = parentRecord.getId()
 
-        try:
-            blendModel = modelData.blends[parentId]
-        except KeyError:
-            # The parent was skipped in the deblender, so there are
-            # no models for its sources.
-            continue
-
-        parent = catalog.find(parentId)
         if updateFluxColumns and imageForRedistribution is not None:
             # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
             parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
-                parent.getFootprint(), imageForRedistribution.mask
+                parentRecord.getFootprint(), imageForRedistribution.mask
             )
 
-        if band not in blendModel.bands:
-            peaks = parent.getFootprint().peaks
-            # Set the footprint and coverage of the sources in this blend
-            # to zero
-            for sourceId, sourceData in blendModel.sources.items():
-                sourceRecord = catalog.find(sourceId)
-                footprint = afwFootprint()
-                peakIdx = np.where(peaks["id"] == sourceData.peak_id)[0][0]
-                peak = peaks[peakIdx]
-                footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
-                sourceRecord.setFootprint(footprint)
-                if updateFluxColumns:
-                    sourceRecord["deblend_dataCoverage"] = 0
-            continue
+        subParents = catalog[catalog["parent"] == parentId]
 
-        # Get the index of the model for the given band
-        bandIndex = blendModel.bands.index(band)
+        for subParentRecord in subParents:
+            subParentId = subParentRecord.getId()
+            try:
+                blendModel = modelData.blends[subParentId]
+            except KeyError:
+                # The parent was skipped in the deblender, so there are
+                # no models for its sources.
+                continue
 
-        updateBlendRecords(
-            blendData=blendModel,
-            catalog=catalog,
-            modelPsf=modelData.psf,
-            imageForRedistribution=imageForRedistribution,
-            bandIndex=bandIndex,
-            parentFootprint=parentRecord.getFootprint(),
-            updateFluxColumns=updateFluxColumns,
-        )
+            if updateFluxColumns and imageForRedistribution is not None:
+                # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
+                subParentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
+                    subParentRecord.getFootprint(), imageForRedistribution.mask
+                )
 
-        # Save memory by removing the data for the blend
-        if removeScarletData:
-            del modelData.blends[parentId]
+            if band not in blendModel.bands:
+                peaks = subParentRecord.getFootprint().peaks
+                # Set the footprint and coverage of the sources in this blend
+                # to zero
+                for sourceId, sourceData in blendModel.sources.items():
+                    sourceRecord = catalog.find(sourceId)
+                    footprint = afwFootprint()
+                    peakIdx = np.where(peaks["id"] == sourceData.peak_id)[0][0]
+                    peak = peaks[peakIdx]
+                    footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
+                    sourceRecord.setFootprint(footprint)
+                    if updateFluxColumns:
+                        sourceRecord["deblend_dataCoverage"] = 0
+                continue
+
+            # Get the index of the model for the given band
+            bandIndex = blendModel.bands.index(band)
+
+            updateBlendRecords(
+                blendData=blendModel,
+                catalog=catalog,
+                modelPsf=modelData.psf,
+                imageForRedistribution=imageForRedistribution,
+                bandIndex=bandIndex,
+                parentFootprint=subParentRecord.getFootprint(),
+                updateFluxColumns=updateFluxColumns,
+            )
+
+            # Save memory by removing the data for the blend
+            if removeScarletData:
+                del modelData.blends[subParentId]
 
 
 def calculateFootprintCoverage(footprint, maskImage):
@@ -391,84 +401,5 @@ def updateBlendRecords(
                     exc_info=1,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
-
-            # Set the metrics columns.
-            # TODO: remove this once DM-34558 runs all deblender metrics
-            # in a separate task.
-            sourceRecord.set("deblend_maxOverlap", source.metrics.maxOverlap[0])
-            sourceRecord.set("deblend_fluxOverlap", source.metrics.fluxOverlap[0])
-            sourceRecord.set(
-                "deblend_fluxOverlapFraction", source.metrics.fluxOverlapFraction[0]
-            )
-            sourceRecord.set("deblend_blendedness", source.metrics.blendedness[0])
         else:
             sourceRecord.setFootprint(heavy)
-
-
-def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
-    """Convert a scarlet.lite blend into a persistable data object
-
-    Note: This converts a blend from the old version of scarlet.lite,
-    which is deprecated, to the persistable data format used in the
-    new scarlet lite package.
-    This is kept to compare the two scarlet versions,
-    and can be removed once the new lsst.scarlet.lite package is
-    used in production.
-
-    Parameters
-    ----------
-    blend:
-        The blend that is being persisted.
-    psfCenter:
-        The center of the PSF.
-    xy0:
-        The lower coordinate of the entire blend.
-    Returns
-    -------
-    blendData : `ScarletBlendDataModel`
-        The data model for a single blend.
-    """
-    from scarlet import lite
-
-    yx0 = (xy0.y, xy0.x)
-
-    sources = {}
-    for source in blend.sources:
-        components = []
-        factorizedComponents = []
-        for component in source.components:
-            origin = tuple(component.bbox.origin[i + 1] + yx0[i] for i in range(2))
-            peak = tuple(component.center[i] + yx0[i] for i in range(2))
-
-            if isinstance(component, lite.LiteFactorizedComponent):
-                componentData = scl.io.ScarletFactorizedComponentData(
-                    origin=origin,
-                    peak=peak,
-                    spectrum=component.sed,
-                    morph=component.morph,
-                )
-                factorizedComponents.append(componentData)
-            else:
-                componentData = scl.io.ScarletComponentData(
-                    origin=origin,
-                    peak=peak,
-                    model=component.get_model(),
-                )
-                components.append(componentData)
-        sourceData = scl.io.ScarletSourceData(
-            components=components,
-            factorized_components=factorizedComponents,
-            peak_id=source.peak_id,
-        )
-        sources[source.record_id] = sourceData
-
-    blendData = scl.io.ScarletBlendData(
-        origin=(xy0.y, xy0.x),
-        shape=blend.observation.bbox.shape[-2:],
-        sources=sources,
-        psf_center=psfCenter,
-        psf=blend.observation.psfs,
-        bands=blend.observation.bands,
-    )
-
-    return blendData

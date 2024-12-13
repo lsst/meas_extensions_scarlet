@@ -19,7 +19,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+from __future__ import annotations
+
 import logging
+from dataclasses import dataclass
 from functools import partial
 
 import lsst.afw.detection as afwDet
@@ -31,10 +34,12 @@ import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.scarlet.lite as scl
 import numpy as np
+from lsst.scarlet.lite.detect_pybind11 import get_footprints
+from scipy import ndimage
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from .utils import bboxToScarletBox, buildObservation, defaultBadPixelMasks
+from . import utils
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -45,39 +50,19 @@ scarletLogger.setLevel(logging.ERROR)
 proxminLogger = logging.getLogger("proxmin")
 proxminLogger.setLevel(logging.ERROR)
 
-__all__ = ["deblend", "ScarletDeblendConfig", "ScarletDeblendTask"]
+__all__ = ["deblend", "ScarletDeblendContext", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = logging.getLogger(__name__)
 
 
-class ScarletGradientError(Exception):
-    """An error occurred during optimization
-
-    This error occurs when the optimizer encounters
-    a NaN value while calculating the gradient.
-    """
-
-    def __init__(self, iterations, sources):
-        self.iterations = iterations
-        self.sources = sources
-        msg = (
-            "ScalarGradientError in iteration {0}. "
-            "NaN values introduced in sources {1}"
-        )
-        self.message = msg.format(iterations, sources)
-
-    def __str__(self):
-        return self.message
-
-
-def _checkBlendConvergence(blend, f_rel):
+def _checkBlendConvergence(blend: scl.Blend, f_rel: float) -> bool:
     """Check whether or not a blend has converged"""
     deltaLoss = np.abs(blend.loss[-2] - blend.loss[-1])
     convergence = f_rel * np.abs(blend.loss[-1])
     return deltaLoss < convergence
 
 
-def isPseudoSource(source, pseudoColumns):
+def isPseudoSource(source: afwTable.source.SourceRecord, pseudoColumns: list[str]) -> bool:
     """Check if a source is a pseudo source.
 
     This is mostly for skipping sky objects,
@@ -87,9 +72,9 @@ def isPseudoSource(source, pseudoColumns):
 
     Parameters
     ----------
-    source : `lsst.afw.table.source.source.SourceRecord`
+    source :
         The source to check for the pseudo bit.
-    pseudoColumns : `list` of `str`
+    pseudoColumns :
         A list of columns to check for pseudo sources.
     """
     isPseudo = False
@@ -101,26 +86,248 @@ def isPseudoSource(source, pseudoColumns):
     return isPseudo
 
 
+def _getDeconvolvedFootprints(
+    mDeconvolved: afwImage.MultibandExposure,
+    sources: afwTable.SourceCatalog,
+    config: ScarletDeblendConfig,
+) -> tuple[list[scl.detect.Footprint], scl.Image]:
+    """Detect footprints in the deconvolved image
+
+    Parameters
+    ----------
+    mDeconvolved :
+        The deconvolved multiband exposure to detect footprints in.
+    modelPsf :
+        The PSF of the model.
+
+    Returns
+    -------
+    footprints :
+        The detected footprints in the deconvolved image.
+    footprintImage :
+        An indexed image of the scarlet footprints so that the value
+        of a pixel gives the index + 1 of the footprints that
+        contain that pixel.
+    """
+    bbox = mDeconvolved.getBBox()
+    xmin, ymin = bbox.getMin()
+    sigma = np.median(np.sqrt(mDeconvolved.variance.array), axis=(1, 2))
+    detect = np.sum(mDeconvolved.image.array/sigma[:, None, None], axis=0)
+
+    # We don't use the variance here because testing has shown that we get
+    # better results without it (we're detecting footprints without peaks
+    # in the deconvolved, noise reduced image).
+    footprints = scl.detect.detect_footprints(
+        images=np.array([detect]),
+        variance = np.ones((1, detect.shape[0], detect.shape[1]), dtype=detect.dtype),
+        scales=1,
+        min_area=9,
+        footprint_thresh=config.footprintSNRThresh,
+        find_peaks=False,
+        origin=(ymin, xmin)
+    )
+
+    # Create an indexed image of the footprints so that the value of a pixel
+    # gives the index + 1 of the footprints that contain that pixel.
+    scarletBox = utils.bboxToScarletBox(bbox)
+    footprintImage = scl.detect.footprints_to_image(footprints, scarletBox)
+
+    # Ensure that there is a minimal footprint for all peaks
+    # in the detection catalog.
+    footprintArray = footprintImage.data > 0
+    for source in sources:
+        for peak in source.getFootprint().peaks:
+            x, y = peak.getI()
+            footprintArray[y - ymin, x - xmin] = True
+
+    # Grow the footprints
+    psfMinimalSize = config.growSize * 2 + 1
+    detectionArray = ndimage.binary_dilation(
+        footprintArray,
+        scl.utils.get_circle_mask(psfMinimalSize, bool)
+    )
+
+    # Ensure that all of the deconvolved footprints are contained within
+    # a single footprint from the input catalog.
+    # This should be unecessary, however creating entries in the output
+    # catalog will produce unexpected results if a deconvolved footprint
+    # is in more than one footprint from the source catalog or has
+    # flux outside of its parent footprint.
+    sourceImage = utils.footprintsToNumpy(sources, detect.shape, (ymin, xmin))
+    detectionArray = detectionArray * sourceImage
+
+    footprints = get_footprints(
+        image=detectionArray.astype(np.float32),
+        min_separation=0,
+        min_area=1,
+        peak_thresh=0,
+        footprint_thresh=0,
+        find_peaks=False,
+        y0=ymin,
+        x0=xmin,
+    )
+
+    footprintImage = scl.detect.footprints_to_image(footprints, scarletBox)
+
+    return footprints, footprintImage
+
+
+def _getIntersectingFootprints(
+    afwFootprint: afwDet.Footprint,
+    sclFootprints: list[scl.detect.Footprint],
+    footprintImage: scl.Image,
+) -> list[afwDet.Footprint]:
+    """Get the intersection of two footprints
+
+    Parameters
+    ----------
+    afwFootprint :
+        The afw footprint
+    sclFootprint :
+        The scarlet footprint
+    footprintImage :
+        An indexed image of the scarlet footprints so that the value
+        of a pixel gives the index + 1 of the footprints that
+        contain that pixel.
+
+    Returns
+    -------
+    intersection :
+        The intersection of the two footprints
+    """
+    footprintIndices = set()
+    ymin, xmin = footprintImage.bbox.origin
+
+    for peak in afwFootprint.peaks:
+        x = peak["i_x"] - xmin
+        y = peak["i_y"] - ymin
+        try:
+            footprintIndex = footprintImage.data[y, x] - 1
+        except:
+            continue
+        if footprintIndex >= 0:
+            footprintIndices.add(footprintIndex)
+        else:
+            raise RuntimeError(f"no footprint at ({y}, {x})")
+
+    footprints = []
+    for index in footprintIndices:
+        _sclFootprint = utils.scarletFootprintToAfw(sclFootprints[index])
+        intersection = utils.getFootprintIntersection(afwFootprint, _sclFootprint, copyMethod='left')
+        if len(intersection.peaks) > 0:
+            footprints.append(intersection)
+
+    return footprints
+
+
+@dataclass(kw_only=True)
+class ScarletDeblendContext:
+    """Context with parameters and config options for deblending
+
+    Attributes
+    ----------
+    monotonicity :
+        The monotonicity operator.
+    observation :
+        The observation for the entire coadd.
+    deconvolved :
+        The deconvolved image.
+    residual :
+        The residual image
+        (observation - deconvolved mode convolved with difference image).
+    footprints :
+        The footprints in the deconvolved image.
+    footprintImage :
+        An indexed image of the scarlet footprints so that the value
+        of a pixel gives the index + 1 of the footprints that
+        contain that pixel.
+    config :
+        The configuration for the deblender.
+    """
+    monotonicity: scl.operators.Monotonicity
+    observation: scl.Observation
+    deconvolved: scl.Image
+    footprints: list[scl.Footprint]
+    footprintImage: scl.Image
+    config: ScarletDeblendConfig
+
+    @staticmethod
+    def build(
+        mExposure: afwImage.MultibandExposure,
+        mDeconvolved: afwImage.MultibandExposure,
+        catalog: afwTable.SourceCatalog,
+        config: ScarletDeblendConfig,
+    ) -> ScarletDeblendContext:
+        """Build the context from a minimal set of inputs
+
+        Parameters
+        ----------
+        mExposure :
+            The multiband exposure for the entire coadd.
+        mDeconvolved :
+            The deconvolved multiband exposure for the entire coadd.
+        sources :
+            The source catalog for the entire coadd.
+        config :
+            The configuration for the deblender.
+        """
+        # The PSF of the model in the deconvolved space
+        modelPsf = scl.utils.integrated_circular_gaussian(
+            sigma=config.modelPsfSigma
+        )
+        # Initialize the monotonicity operator with a size of 101 x 101 pixels.
+        # Note: If a component is > 101x101 in either axis then the
+        # monotonicity operator will resize itself.
+        monotonicity = scl.operators.Monotonicity((101, 101))
+        # Build the observation for the entire coadd
+        observation = utils.buildObservation(
+            modelPsf=modelPsf,
+            psfCenter=mExposure.getBBox().getCenter(),
+            mExposure=mExposure,
+            badPixelMasks=config.badMask,
+            useWeights=config.useWeights,
+            convolutionType=config.convolutionType,
+        )
+
+        # Create the deconvolved image
+        yx0 = observation.images.yx0
+        deconvolved = scl.Image(mDeconvolved.image.array, bands=observation.images.bands, yx0=yx0)
+
+        # Detect footprints in the deconvolved image
+        footprints, footprintImage = _getDeconvolvedFootprints(
+            mDeconvolved=mDeconvolved,
+            sources=catalog,
+            config=config,
+        )
+
+        return ScarletDeblendContext(
+            monotonicity=monotonicity,
+            observation=observation,
+            deconvolved=deconvolved,
+            footprints=footprints,
+            footprintImage=footprintImage,
+            config=config,
+        )
+
+
 def deblend(
-    mExposure, modelPsf, footprint, config, spectrumInit, monotonicity, wavelets=None
-):
+    context: ScarletDeblendContext,
+    footprint: afwDet.Footprint,
+    config: ScarletDeblendConfig,
+    spectrumInit: bool = True,
+) -> scl.Blend:
     """Deblend a parent footprint
 
     Parameters
     ----------
-    mExposure : `lsst.image.MultibandExposure`
-        - The multiband exposure containing the image,
-          mask, and variance data
-    footprint : `lsst.detection.Footprint`
-        - The footprint of the parent to deblend
-    config : `ScarletDeblendConfig`
-        - Configuration of the deblending task
-    spectrumInit : `bool`
-        Whether or not to initialize the model using the spectrum.
-    monotonicity: `lsst.scarlet.lite.operators.Monotonicity`
-        The monotonicity operator.
-    wavelets : `numpy.ndarray`
-        Pre-generated wavelets to use if using wavelet initialization.
+    context :
+        Context with parameters and config options for deblending
+    footprint :
+        The parent footprint to deblend
+    config :
+        The configuration for the deblender
+    spectrumInit :
+        Whether or not to initialize the sources with their best-fit spectra
 
     Returns
     -------
@@ -133,19 +340,17 @@ def deblend(
     skippedBands : `list[str]`
         Bands that were skipped because a PSF could not be generated for them.
     """
-    # Extract coordinates from each MultiColorPeak
-    bbox = footprint.getBBox()
-    psfCenter = footprint.getCentroid()
+    # Define the bounding boxes in lsst.geom.Box2I and lsst.scarlet.lite.Box
+    footBox = footprint.getBBox()
+    bbox = utils.bboxToScarletBox(footBox)
 
-    observation = buildObservation(
-        modelPsf=modelPsf,
-        psfCenter=psfCenter,
-        mExposure=mExposure[:, bbox],
-        footprint=footprint,
-        badPixelMasks=config.badMask,
-        useWeights=config.useWeights,
-        convolutionType=config.convolutionType,
-    )
+    # Extract the observation that covers the footprint and make
+    # a copy so that the changes don't affect the original observation.
+    observation = context.observation[:, bbox].copy()
+    footprintData = footprint.spans.asArray()
+
+    # Mask the pixels outside of the footprint
+    observation.weights.data[:] *= footprintData
 
     # Convert the peaks into an array
     peaks = [
@@ -155,29 +360,14 @@ def deblend(
     ]
 
     # Initialize the sources
-    if config.morphImage == "chi2":
-        sources = scl.initialization.FactorizedChi2Initialization(
-            observation=observation,
-            centers=peaks,
-            min_snr=config.minSNR,
-            monotonicity=monotonicity,
-            thresh=config.backgroundThresh,
-        ).sources
-    elif config.morphImage == "wavelet":
-        _bbox = bboxToScarletBox(len(mExposure.filters), bbox, bbox.getMin())
-        _wavelets = wavelets[(slice(None), *_bbox[1:].slices)]
-
-        sources = scl.initialization.FactorizedWaveletInitialization(
-            observation=observation,
-            centers=peaks,
-            use_psf=False,
-            wavelets=_wavelets,
-            monotonicity=monotonicity,
-            min_snr=config.minSNR,
-            thresh=config.backgroundThresh,
-        ).sources
-    else:
-        raise ValueError("morphImage must be either 'chi2' or 'wavelet'.")
+    sources = scl.initialization.FactorizedInitialization(
+        observation=observation,
+        centers=peaks,
+        min_snr=config.minSNR,
+        monotonicity=context.monotonicity,
+        bg_thresh=config.backgroundThresh,
+        initial_bg_thresh=config.initialBackgroundThresh,
+    ).sources
 
     blend = scl.Blend(sources, observation)
 
@@ -202,6 +392,7 @@ def deblend(
         max_iter=config.maxIter,
         e_rel=config.relativeError,
         min_iter=config.minIter,
+        resize=config.resizeFrequency,
     )
 
     # Attach the peak to all of the initialized sources
@@ -214,16 +405,7 @@ def deblend(
         # Store the record for the peak with the appropriate source
         sources[k].detectedPeak = footprint.peaks[k]
 
-    # Set the sources that could not be initialized and were skipped
-    skippedSources = [src for src in sources if src.is_null]
-
-    # Store the location of the PSF center for storage
-    blend.psfCenter = (psfCenter.x, psfCenter.y)
-
-    # Calculate the bands that were skipped
-    skippedBands = [band for band in mExposure.filters if band not in observation.bands]
-
-    return blend, skippedSources, skippedBands
+    return blend
 
 
 class ScarletDeblendConfig(pexConfig.Config):
@@ -239,7 +421,7 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Stopping Criteria
     minIter = pexConfig.Field[int](
-        default=15,
+        default=5,
         doc="Minimum number of iterations before the optimizer is allowed to stop.",
     )
     maxIter = pexConfig.Field[int](
@@ -247,13 +429,17 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc=("Maximum number of iterations to deblend a single parent"),
     )
     relativeError = pexConfig.Field[float](
-        default=1e-2,
+        default=1e-3,
         doc=(
             "Change in the loss function between iterations to exit fitter. "
             "Typically this is `1e-2` if measurements will be made on the "
             "flux re-distributed models and `1e-4` when making measurements "
             "on the models themselves."
         ),
+    )
+    resizeFrequency = pexConfig.Field[int](
+        default=3,
+        doc="Number of iterations between resizing sources.",
     )
 
     # Constraints
@@ -270,6 +456,8 @@ class ScarletDeblendConfig(pexConfig.Config):
             "lite": "LSST optimized version of scarlet for survey data from a single instrument",
         },
         doc="The version of scarlet to use.",
+        deprecated="This field is deprecated since the ony available `version` is `lite` "
+                   "and will be removed in v29.0",
     )
     optimizer = pexConfig.ChoiceField[str](
         default="adaprox",
@@ -277,23 +465,29 @@ class ScarletDeblendConfig(pexConfig.Config):
             "adaprox": "Proximal ADAM optimization",
             "fista": "Accelerated proximal gradient method",
         },
-        doc="The optimizer to use for fitting parameters and is only used when version='lite'",
+        doc="The optimizer to use for fitting parameters.",
     )
     morphImage = pexConfig.ChoiceField[str](
         default="chi2",
         allowed={
             "chi2": "Initialize sources on a chi^2 image made from all available bands",
-            "wavelet": "Initialize sources using a wavelet decomposition of the chi^2 image",
         },
         doc="The type of image to use for initializing the morphology. "
-        "Must be either 'chi2' or 'wavelet'. ",
+            "Must be either 'chi2' or 'wavelet'. ",
+        deprecated="This field is deprecated since testing has shown that only 'chi2' should be used "
+                   "and 'wavelet' has been broken since v27.0. "
+                   "This field will be removed in v29.0",
     )
     backgroundThresh = pexConfig.Field[float](
-        default=0.25,
+        default=1.0,
         doc="Fraction of background to use for a sparsity threshold. "
         "This prevents sources from growing unrealistically outside "
         "the parent footprint while still modeling flux correctly "
         "for bright sources.",
+    )
+    initialBackgroundThresh = pexConfig.Field[float](
+        default=1.0,
+        doc="Same as `backgroundThresh` but used only for source initialization.",
     )
     maxProxIter = pexConfig.Field[int](
         default=1,
@@ -305,6 +499,7 @@ class ScarletDeblendConfig(pexConfig.Config):
         default=5,
         doc="Number of wavelet scales to use for wavelet initialization. "
         "This field is only used when `version`='lite' and `morphImage`='wavelet'.",
+        deprecated="This field is deprecated along with `morphImage` and will be removed in v29.0.",
     )
 
     # Other scarlet paremeters
@@ -362,10 +557,18 @@ class ScarletDeblendConfig(pexConfig.Config):
         "This option is only used when "
         "peaks*area < `maxSpectrumCutoff` will use the improved initialization.",
     )
+    footprintSNRThresh = pexConfig.Field[float](
+        default=5.0,
+        doc="Minimum SNR for a pixel to be detected in a footprint.",
+    )
+    growSize = pexConfig.Field[int](
+        default=2,
+        doc="Number of pixels to grow the deconvolved footprints before final detection.",
+    )
 
     # Mask-plane restrictions
     badMask = pexConfig.ListField[str](
-        default=defaultBadPixelMasks,
+        default=utils.defaultBadPixelMasks,
         doc="Whether or not to process isolated sources in the deblender",
     )
     statsMask = pexConfig.ListField[str](
@@ -506,21 +709,23 @@ class ScarletDeblendTask(pipeBase.Task):
     ConfigClass = ScarletDeblendConfig
     _DefaultName = "scarletDeblend"
 
-    def __init__(self, schema, peakSchema=None, **kwargs):
+    def __init__(
+        self,
+        schema : afwTable.Schema,
+        peakSchema : afwTable.Schema = None,
+        **kwargs
+    ):
         """Create the task, adding necessary fields to the given schema.
 
         Parameters
         ----------
-        schema : `lsst.afw.table.schema.schema.Schema`
+        schema :
             Schema object for measurement fields; will be modified in-place.
-        peakSchema : `lsst.afw.table.schema.schema.Schema`
+        peakSchema :
             Schema of Footprint Peaks that will be passed to the deblender.
             Any fields beyond the PeakTable minimal schema will be transferred
             to the main source Schema.  If None, no fields will be transferred
             from the Peaks.
-        filters : list of str
-            Names of the filters used for the eposures. This is needed to store
-            the SED as a field
         **kwargs
             Passed to Task.__init__.
         """
@@ -555,7 +760,7 @@ class ScarletDeblendTask(pipeBase.Task):
             if item.field.getName().startswith("merge_footprint")
         ]
 
-    def _addSchemaKeys(self, schema):
+    def _addSchemaKeys(self, schema: afwTable.Schema):
         """Add deblender specific keys to the schema"""
         # Parent (blend) fields
         self.runtimeKey = schema.addField(
@@ -607,16 +812,6 @@ class ScarletDeblendTask(pipeBase.Task):
             doc="Parent footprint had too many masked pixels",
         )
         # Convergence flags
-        self.sedNotConvergedKey = schema.addField(
-            "deblend_sedConvergenceFailed",
-            type="Flag",
-            doc="scarlet sed optimization did not converge before" "config.maxIter",
-        )
-        self.morphNotConvergedKey = schema.addField(
-            "deblend_morphConvergenceFailed",
-            type="Flag",
-            doc="scarlet morph optimization did not converge before" "config.maxIter",
-        )
         self.blendConvergenceFailedFlagKey = schema.addField(
             "deblend_blendConvergenceFailedFlag",
             type="Flag",
@@ -631,13 +826,6 @@ class ScarletDeblendTask(pipeBase.Task):
             type="String",
             size=25,
             doc="Name of error if the blend failed",
-        )
-        self.incompleteDataKey = schema.addField(
-            "deblend_incompleteData",
-            type="Flag",
-            doc="True when a blend has at least one band "
-            "that could not generate a PSF and was "
-            "not included in the model.",
         )
         # Deblended source fields
         self.peakCenter = afwTable.Point2IKey.addFields(
@@ -685,6 +873,11 @@ class ScarletDeblendTask(pipeBase.Task):
             type=np.float32,
             doc="Final logL, used to identify regressions in scarlet.",
         )
+        self.scarletChi2Key = schema.addField(
+            "deblend_chi2",
+            type=np.float32,
+            doc="Final reduced chi2 (per pixel), used to identify goodness of fit.",
+        )
         self.edgePixelsKey = schema.addField(
             "deblend_edgePixels",
             type="Flag",
@@ -720,47 +913,24 @@ class ScarletDeblendTask(pipeBase.Task):
         self.zeroFluxKey = schema.addField(
             "deblend_zeroFlux", type="Flag", doc="Source has zero flux."
         )
-        # Blendedness/classification metrics
-        self.maxOverlapKey = schema.addField(
-            "deblend_maxOverlap",
-            type=np.float32,
-            doc="Maximum overlap with all of the other neighbors flux "
-            "combined."
-            "This is useful as a metric for determining how blended a "
-            "source is because if it only overlaps with other sources "
-            "at or below the noise level, it is likely to be a mostly "
-            "isolated source in the deconvolved model frame.",
-        )
-        self.fluxOverlapKey = schema.addField(
-            "deblend_fluxOverlap",
-            type=np.float32,
-            doc="This is the total flux from neighboring objects that "
-            "overlaps with this source.",
-        )
-        self.fluxOverlapFractionKey = schema.addField(
-            "deblend_fluxOverlapFraction",
-            type=np.float32,
-            doc="This is the fraction of "
-            "`flux from neighbors/source flux` "
-            "for a given source within the source's"
-            "footprint.",
-        )
-        self.blendednessKey = schema.addField(
-            "deblend_blendedness",
-            type=np.float32,
-            doc="The Bosch et al. 2018 metric for 'blendedness.' ",
-        )
 
     @timeMethod
-    def run(self, mExposure, mergedSources):
+    def run(
+        self,
+        mExposure: afwImage.MultibandExposure,
+        mDeconvolved : afwImage.MultibandExposure,
+        mergedSources : afwTable.SourceCatalog,
+    ) -> tuple[afwTable.SourceCatalog, scl.io.ScarletModelData]:
         """Get the psf from each exposure and then run deblend().
 
         Parameters
         ----------
-        mExposure : `MultibandExposure`
+        mExposure :
             The exposures should be co-added images of the same
             shape and region of the sky.
-        mergedSources : `SourceCatalog`
+        mDeconvolved :
+            The deconvolved images of the same shape and region of the sky.
+        mergedSources :
             The merged `SourceCatalog` that contains parent footprints
             to (potentially) deblend.
 
@@ -772,29 +942,35 @@ class ScarletDeblendTask(pipeBase.Task):
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
         """
-        return self.deblend(mExposure, mergedSources)
+        return self.deblend(mExposure, mDeconvolved, mergedSources)
 
     @timeMethod
-    def deblend(self, mExposure, catalog):
+    def deblend(
+        self,
+        mExposure: afwImage.MultibandExposure,
+        mDeconvolved: afwImage.MultibandExposure,
+        catalog: afwTable.SourceCatalog,
+    ) -> tuple[afwTable.SourceCatalog, scl.io.ScarletModelData]:
         """Deblend a data cube of multiband images
 
         Parameters
         ----------
-        mExposure : `MultibandExposure`
+        mExposure :
             The exposures should be co-added images of the same
             shape and region of the sky.
-        catalog : `SourceCatalog`
+        mDeconvolved :
+            The deconvolved images of the same shape and region of the sky.
+        catalog :
             The merged `SourceCatalog` that contains parent footprints
             to (potentially) deblend. The new deblended sources are
             appended to this catalog in place.
 
         Returns
         -------
-        catalogs : `dict` or `None`
-            Keys are the names of the filters and the values are
-            `lsst.afw.table.source.source.SourceCatalog`'s.
-            These are catalogs with heavy footprints that are the templates
-            created by the multiband templates.
+        catalog :
+            The ``deblendedCatalog`` with parents and child sources.
+        dataModel :
+            The persistable data model for the deblender.
         """
         import time
 
@@ -834,102 +1010,120 @@ class ScarletDeblendTask(pipeBase.Task):
         )
         periodicLog = PeriodicLogger(self.log)
 
-        # Create a set of wavelet coefficients if using wavelet initialization
-        if self.config.morphImage == "wavelet":
-            images = mExposure.image.array
-            variance = mExposure.variance.array
-            wavelets = scl.detect.get_detect_wavelets(
-                images, variance, scales=self.config.waveletScales
-            )
-        else:
-            wavelets = None
-
         # Add the NOT_DEBLENDED mask to the mask plane in each band
         if self.config.notDeblendedMask:
             for mask in mExposure.mask:
                 mask.addMaskPlane(self.config.notDeblendedMask)
 
-        # Initialize the persistable data model
-        modelPsf = scl.utils.integrated_circular_gaussian(
-            sigma=self.config.modelPsfSigma
+        # Create the context for the entire coadd
+        context = ScarletDeblendContext.build(
+            mExposure=mExposure,
+            mDeconvolved=mDeconvolved,
+            config=self.config,
+            catalog=catalog,
         )
-        dataModel = scl.io.ScarletModelData(modelPsf)
 
-        # Initialize the monotonicity operator with a size of 101 x 101 pixels.
-        # Note: If a component is > 101x101 in either axis then the
-        # monotonicity operator will resize itself.
-        monotonicity = scl.operators.Monotonicity((101, 101))
+        # TODO: remove temporary line
+        self.context = context
+
+        # Initialize the persistable data model
+        dataModel = scl.io.ScarletModelData(context.observation.model_psf[0])
 
         nParents = len(catalog)
+        nSubParents = 0
         nDeblendedParents = 0
+        totalDeblendedSubParents = 0
         skippedParents = []
+        nBands = len(context.observation.bands)
+
         for parentIndex in range(nParents):
             parent = catalog[parentIndex]
-            foot = parent.getFootprint()
-            bbox = foot.getBBox()
-            peaks = foot.getPeaks()
+            parent.set(self.scarletChi2Key, 0.0)
+            parentFoot = parent.getFootprint()
+            subFootprints = _getIntersectingFootprints(
+                parentFoot,
+                context.footprints,
+                context.footprintImage
+            )
+            subParents = self._addSubParents(parent, catalog, subFootprints)
+            nSubParents += len(subFootprints)
+            self.log.trace(f"Split parent {parent.getId()} into {len(subParents)} subParents")
 
             # Since we use the first peak for the parent object, we should
             # propagate its flags to the parent source.
-            parent.assign(peaks[0], self.peakSchemaMapper)
+            parent.assign(subParents[0].getFootprint().peaks[0], self.peakSchemaMapper)
 
-            # Block of conditions for skipping a parent with multiple children
-            if (skipArgs := self._checkSkipped(parent, mExposure)) is not None:
-                self._skipParent(parent, *skipArgs)
-                skippedParents.append(parentIndex)
-                continue
+            # Create an image to keep track of the cumulative model
+            # for all sub blends in the parent footprint.
+            bbox = parentFoot.getBBox()
+            parentWidth, parentHeight = bbox.getDimensions()
+            px0, py0 = bbox.getMin()
+            parentModelArray = np.zeros(
+                (nBands, parentHeight, parentWidth),
+                dtype=mExposure.image.array.dtype,
+            )
+            parentModel = scl.Image(
+                parentModelArray,
+                bands=context.observation.images.bands,
+                yx0=(py0, px0),
+            )
 
-            nDeblendedParents += 1
-            self.log.trace("Parent %d: deblending %d peaks", parent.getId(), len(peaks))
-            # Run the deblender
-            blendError = None
+            # Keep track of the number of subParents that were
+            # successfully deblended.
+            deblendedSubParents = 0
+            for subParent in subParents:
+                subParent.set(self.scarletChi2Key, 0.0)
+                foot = subParent.getFootprint()
+                bbox = foot.getBBox()
+                peaks = foot.getPeaks()
 
-            # Choose whether or not to use improved spectral initialization.
-            # This significantly cuts down on the number of iterations
-            # that the optimizer needs and usually results in a better
-            # fit.
-            # But using least squares on a very large blend causes memory
-            # issues, so it is not done for large blends
-            if self.config.setSpectra:
-                if self.config.maxSpectrumCutoff <= 0:
-                    spectrumInit = True
+                # Since we use the first peak for the parent object, we should
+                # propagate its flags to the parent source.
+                subParent.assign(peaks[0], self.peakSchemaMapper)
+
+                # Block of conditions for skipping a parent with multiple children
+                if (skipArgs := self._checkSkipped(subParent, mExposure)) is not None:
+                    self._skipParent(subParent, *skipArgs)
+                    skippedParents.append(parentIndex)
+                    continue
+
+                self.log.trace(f"Parent {subParent.getId()}: deblending {len(peaks)} peaks")
+                # Run the deblender
+                blendError = None
+
+                # Choose whether or not to use improved spectral initialization.
+                # This significantly cuts down on the number of iterations
+                # that the optimizer needs and usually results in a better
+                # fit.
+                # But using least squares on a very large blend causes memory
+                # issues, so it is not done for large blends
+                if self.config.setSpectra:
+                    if self.config.maxSpectrumCutoff <= 0:
+                        spectrumInit = True
+                    else:
+                        spectrumInit = (
+                            len(foot.peaks) * bbox.getArea() < self.config.maxSpectrumCutoff
+                        )
                 else:
-                    spectrumInit = (
-                        len(foot.peaks) * bbox.getArea() < self.config.maxSpectrumCutoff
-                    )
-            else:
-                spectrumInit = False
+                    spectrumInit = False
 
-            try:
-                t0 = time.monotonic()
-                # Build the parameter lists with the same ordering
-                if self.config.version == "lite":
-                    blend, skippedSources, skippedBands = deblend(
-                        mExposure=mExposure,
-                        modelPsf=modelPsf,
-                        footprint=foot,
-                        config=self.config,
-                        spectrumInit=spectrumInit,
-                        wavelets=wavelets,
-                        monotonicity=monotonicity,
-                    )
-                else:
-                    msg = f"The only currently support version is 'lite', got {self.config.version}"
-                    raise NotImplementedError(msg)
-                tf = time.monotonic()
-                runtime = (tf - t0) * 1000
-                converged = _checkBlendConvergence(blend, self.config.relativeError)
-                # Store the number of components in the blend
-                nComponents = len(blend.components)
-                nChild = len(blend.sources)
-                parent.set(self.incompleteDataKey, len(skippedBands) > 0)
-            # Catch all errors and filter out the ones that we know about
-            except Exception as e:
-                blendError = type(e).__name__
-                if isinstance(e, ScarletGradientError):
-                    parent.set(self.iterKey, e.iterations)
-                else:
-                    blendError = "UnknownError"
+                try:
+                    t0 = time.monotonic()
+                    # Build the parameter lists with the same ordering
+                    if self.config.version == "lite":
+                        blend = deblend(context, foot, self.config, spectrumInit)
+                    else:
+                        msg = f"The only currently support version is 'lite', got {self.config.version}"
+                        raise NotImplementedError(msg)
+                    tf = time.monotonic()
+                    runtime = (tf - t0) * 1000
+                    converged = _checkBlendConvergence(blend, self.config.relativeError)
+                    # Store the number of components in the blend
+                    nComponents = len(blend.components)
+                    nChild = len(blend.sources)
+                # Catch all errors and filter out the ones that we know about
+                except Exception as e:
+                    blendError = type(e).__name__
                     if self.config.catchFailures:
                         # Make it easy to find UnknownErrors in the log file
                         self.log.warn("UnknownError")
@@ -939,85 +1133,99 @@ class ScarletDeblendTask(pipeBase.Task):
                     else:
                         raise
 
-                self._skipParent(
-                    parent=parent,
-                    skipKey=self.deblendFailedKey,
-                    logMessage=f"Unable to deblend source {parent.getId}: {blendError}",
-                )
-                parent.set(self.deblendErrorKey, blendError)
-                skippedParents.append(parentIndex)
-                continue
-
-            # Update the parent record with the deblending results
-            self._updateParentRecord(
-                parent=parent,
-                nPeaks=len(peaks),
-                nChild=nChild,
-                nComponents=nComponents,
-                runtime=runtime,
-                iterations=len(blend.loss),
-                logL=blend.loss[-1],
-                spectrumInit=spectrumInit,
-                converged=converged,
-            )
-
-            # Add each deblended source to the catalog
-            for k, scarletSource in enumerate(blend.sources):
-                # Skip any sources with no flux or that scarlet skipped because
-                # it could not initialize
-                if k in skippedSources or (
-                    self.config.version == "lite" and scarletSource.is_null
-                ):
-                    # No need to propagate anything
+                    self._skipParent(
+                        parent=subParent,
+                        skipKey=self.deblendFailedKey,
+                        logMessage=f"Unable to deblend source {subParent.getId}: {blendError}",
+                    )
+                    subParent.set(self.deblendErrorKey, blendError)
+                    skippedParents.append(parentIndex)
                     continue
-                parent.set(self.deblendSkippedKey, False)
 
-                # Add all fields except the HeavyFootprint to the
-                # source record
-                sourceRecord = self._addChild(
+                # Keep track of the number of subParents that were
+                # successfully deblended.
+                deblendedSubParents += 1
+                totalDeblendedSubParents += 1
+
+                # Calculate the reduced chi2
+                blendModel = blend.get_model(convolve=False)
+                blendFootprintImage = blendModel.data > 0
+                chi2 = utils.calcChi2(blendModel, context.observation, blendFootprintImage)
+
+                # Update the parent model
+                parentModel.insert(blendModel)
+
+                # Update the parent record with the deblending results
+                self._updateSubParentRecord(
                     parent=parent,
-                    peak=scarletSource.detectedPeak,
-                    catalog=catalog,
-                    scarletSource=scarletSource,
+                    subParent=subParent,
+                    nPeaks=len(peaks),
+                    nChild=nChild,
+                    nComponents=nComponents,
+                    runtime=runtime,
+                    iterations=len(blend.loss),
+                    logL=blend.loss[-1],
+                    chi2=np.sum(chi2.data)/np.sum(blendFootprintImage),
+                    spectrumInit=spectrumInit,
+                    converged=converged,
                 )
-                scarletSource.record_id = sourceRecord.getId()
-                scarletSource.peak_id = scarletSource.detectedPeak.getId()
 
-            # Store the blend information so that it can be persisted
-            if self.config.version == "lite":
-                blendData = scl.io.ScarletBlendData.from_blend(blend, blend.psfCenter)
-            else:
-                # We keep this here in case other versions are introduced
-                raise NotImplementedError(
-                    "Only the 'lite' version of scarlet is currently supported"
+                # Add each deblended source to the catalog
+                for scarletSource in blend.sources:
+                    # Add all fields except the HeavyFootprint to the
+                    # source record
+                    sourceRecord = self._addChild(
+                        parent=subParent,
+                        peak=scarletSource.detectedPeak,
+                        catalog=catalog,
+                        scarletSource=scarletSource,
+                        chi2=chi2,
+                    )
+                    scarletSource.record_id = sourceRecord.getId()
+                    scarletSource.peak_id = scarletSource.detectedPeak.getId()
+
+                # Store the blend information so that it can be persisted
+                if self.config.version == "lite":
+                    psfCenter = mExposure.getBBox().getCenter()
+                    blendData = scl.io.ScarletBlendData.from_blend(blend, (psfCenter.y, psfCenter.x))
+                else:
+                    # We keep this here in case other versions are introduced
+                    raise NotImplementedError(
+                        "Only the 'lite' version of scarlet is currently supported"
+                    )
+                dataModel.blends[subParent.getId()] = blendData
+
+                # Log a message if it has been a while since the last log.
+                periodicLog.log(
+                    "Deblended %d parent sources out of %d", parentIndex + 1, nParents
                 )
-            dataModel.blends[parent.getId()] = blendData
 
-            # Log a message if it has been a while since the last log.
-            periodicLog.log(
-                "Deblended %d parent sources out of %d", parentIndex + 1, nParents
-            )
+            if deblendedSubParents == len(subParents):
+                nDeblendedParents += 1
 
-        # Update the mExposure mask with the footprint of skipped parents
-        if self.config.notDeblendedMask:
-            for mask in mExposure.mask:
-                for parentIndex in skippedParents:
-                    fp = catalog[parentIndex].getFootprint()
-                    fp.spans.setMask(
-                        mask, mask.getPlaneBitMask(self.config.notDeblendedMask)
+            # Calculate the reduced chi2 for the parent
+            parentFootprintImage = parentModel.data > 0
+            chi2 = utils.calcChi2(parentModel, context.observation, parentFootprintImage)
+            parent.set(self.scarletChi2Key, np.sum(chi2.data) / np.sum(parentFootprintImage))
+
+            # Update the mExposure mask with the footprint of skipped parents
+            if self.config.notDeblendedMask:
+                for mask in mExposure.mask:
+                    for parentIndex in skippedParents:
+                        fp = catalog[parentIndex].getFootprint()
+                        fp.spans.setMask(
+                            mask, mask.getPlaneBitMask(self.config.notDeblendedMask)
                     )
 
         self.log.info(
-            "Deblender results: of %d parent sources, %d were deblended, "
-            "creating %d children, for a total of %d sources",
-            nParents,
-            nDeblendedParents,
-            len(catalog) - nParents,
-            len(catalog),
+            f"Deblender results: {nParents} parent sources, {nDeblendedParents} were deblended "
+            f"and split into {nSubParents} sub-blends, of which {totalDeblendedSubParents} were deblended,"
+            f"creating {len(catalog) - nParents - nSubParents} children, for a total of {len(catalog)} "
+            "sources",
         )
         return catalog, dataModel
 
-    def _isLargeFootprint(self, footprint):
+    def _isLargeFootprint(self, footprint: afwDet.Footprint) -> bool:
         """Returns whether a Footprint is large
 
         'Large' is defined by thresholds on the area, size and axis ratio,
@@ -1047,15 +1255,15 @@ class ScarletDeblendTask(pipeBase.Task):
                 return True
         return False
 
-    def _isMasked(self, footprint, mExposure):
+    def _isMasked(self, footprint: afwDet.Footprint, mExposure: afwImage.MultibandExposure) -> bool:
         """Returns whether the footprint violates the mask limits
 
         Parameters
         ----------
-        footprint : `lsst.afw.detection.Footprint`
+        footprint :
             The footprint to check for masked pixels
-        mMask : `lsst.afw.image.MaskX`
-            The mask plane to check for masked pixels in the `footprint`.
+        mExposure :
+            The multiband exposure to check for masked pixels.
 
         Returns
         -------
@@ -1076,7 +1284,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 return True
         return False
 
-    def _skipParent(self, parent, skipKey, logMessage):
+    def _skipParent(self, parent: afwTable.SourceRecord, skipKey: bool, logMessage: str | None):
         """Update a parent record that is not being deblended.
 
         This is a fairly trivial function but is implemented to ensure
@@ -1086,11 +1294,11 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        parent : `lsst.afw.table.source.source.SourceRecord`
+        parent :
             The parent record to flag as skipped.
-        skipKey : `bool`
+        skipKey :
             The name of the flag to mark the reason for skipping.
-        logMessage : `str`
+        logMessage :
             The message to display in a log.trace when a source
             is skipped.
         """
@@ -1113,7 +1321,7 @@ class ScarletDeblendTask(pipeBase.Task):
         parent.set(self.deblendSkippedKey, True)
         parent.set(skipKey, True)
 
-    def _checkSkipped(self, parent, mExposure):
+    def _checkSkipped(self, parent: afwTable.SourceRecord, mExposure: afwImage.MultibandExposure):
         """Update a parent record that is not being deblended.
 
         This is a fairly trivial function but is implemented to ensure
@@ -1123,11 +1331,12 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        parent : `lsst.afw.table.source.source.SourceRecord`
+        parent :
             The parent record to flag as skipped.
-        mExposure : `MultibandExposure`
+        mExposure :
             The exposures should be co-added images of the same
             shape and region of the sky.
+
         Returns
         -------
         skip: `bool`
@@ -1168,39 +1377,19 @@ class ScarletDeblendTask(pipeBase.Task):
             return (skipKey, skipMessage)
         return None
 
-    def setSkipFlags(self, mExposure, catalog):
-        """Set the skip flags for all of the parent sources
-
-        This is mostly used for testing which parent sources will be deblended
-        and which will be skipped based on the current configuration options.
-        Skipped sources will have the appropriate flags set in place in the
-        catalog.
-
-        Parameters
-        ----------
-        mExposure : `MultibandExposure`
-            The exposures should be co-added images of the same
-            shape and region of the sky.
-        catalog : `SourceCatalog`
-            The merged `SourceCatalog` that contains parent footprints
-            to (potentially) deblend. The new deblended sources are
-            appended to this catalog in place.
-        """
-        for src in catalog:
-            if skipArgs := self._checkSkipped(src, mExposure) is not None:
-                self._skipParent(src, *skipArgs)
-
-    def _updateParentRecord(
+    def _updateSubParentRecord(
         self,
-        parent,
-        nPeaks,
-        nChild,
-        nComponents,
-        runtime,
-        iterations,
-        logL,
-        spectrumInit,
-        converged,
+        parent: afwTable.SourceRecord,
+        subParent: afwTable.SourceRecord,
+        nPeaks: int,
+        nChild: int,
+        nComponents: int,
+        runtime: float,
+        iterations: int,
+        logL: float,
+        chi2: float,
+        spectrumInit: bool,
+        converged: bool,
     ):
         """Update a parent record in all of the single band catalogs.
 
@@ -1210,42 +1399,90 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        parent : `lsst.afw.table.source.source.SourceRecord`
+        parent :
             The parent record to update.
-        nPeaks : `int`
+        subParent :
+            The sub-parent record to update.
+        nPeaks :
             Number of peaks in the parent footprint.
-        nChild : `int`
+        nChild :
             Number of children deblended from the parent.
             This may differ from `nPeaks` if some of the peaks
             were culled and have no deblended model.
-        nComponents : `int`
+        nComponents :
             Total number of components in the parent.
             This is usually different than the number of children,
             since it is common for a single source to have multiple
             components.
-        runtime : `float`
+        runtime :
             Total runtime for deblending.
-        iterations : `int`
+        iterations :
             Total number of iterations in scarlet before convergence.
-        logL : `float`
+        logL :
             Final log likelihood of the blend.
-        spectrumInit : `bool`
+        chi2 :
+            Final reduced chi2 of the blend.
+        spectrumInit :
             True when scarlet used `set_spectra` to initialize all
             sources with better initial intensities.
-        converged : `bool`
+        converged :
             True when the optimizer reached convergence before
             reaching the maximum number of iterations.
         """
-        parent.set(self.nPeaksKey, nPeaks)
-        parent.set(self.nChildKey, nChild)
-        parent.set(self.nComponentsKey, nComponents)
-        parent.set(self.runtimeKey, runtime)
-        parent.set(self.iterKey, iterations)
-        parent.set(self.scarletLogLKey, logL)
-        parent.set(self.scarletSpectrumInitKey, spectrumInit)
-        parent.set(self.blendConvergenceFailedFlagKey, converged)
+        subParent.set(self.nPeaksKey, nPeaks)
+        subParent.set(self.nChildKey, nChild)
+        subParent.set(self.nComponentsKey, nComponents)
+        subParent.set(self.runtimeKey, runtime)
+        subParent.set(self.iterKey, iterations)
+        subParent.set(self.scarletLogLKey, logL)
+        subParent.set(self.scarletSpectrumInitKey, spectrumInit)
+        subParent.set(self.blendConvergenceFailedFlagKey, converged)
+        subParent.set(self.scarletChi2Key, chi2)
 
-    def _addChild(self, parent, peak, catalog, scarletSource):
+        def _updateParentRecord(key, value):
+            parent.set(key, parent.get(key) + value)
+
+        _updateParentRecord(self.nPeaksKey, nPeaks)
+        _updateParentRecord(self.nChildKey, nChild)
+        _updateParentRecord(self.nComponentsKey, nComponents)
+        _updateParentRecord(self.runtimeKey, runtime)
+        _updateParentRecord(self.scarletChi2Key, chi2)
+
+    def _addSubParents(
+        self,
+        parent: afwTable.SourceRecord,
+        catalog: afwTable.SourceCatalog,
+        footprints: afwDet.Footprint,
+    ) -> list[afwTable.SourceRecord]:
+        """Add sub-parents to the catalog
+
+        Each parent may be subdivided into multiple blends that are
+        isolated in deconvolved space but still blended in the image.
+        This function adds the sub-parents to the catalog.
+
+        Parameters
+        ----------
+        parent :
+            The parent of the sub-parents.
+        footprints :
+            The footprints of the sub-parents
+        """
+        subParents = []
+        for footprint in footprints:
+            subParent = catalog.addNew()
+            subParents.append(subParent)
+            subParent.setParent(parent.getId())
+            subParent.setFootprint(footprint)
+        return subParents
+
+    def _addChild(
+        self,
+        parent: afwTable.SourceRecord,
+        peak: afwDet.PeakRecord,
+        catalog: afwTable.SourceCatalog,
+        scarletSource: scl.Source,
+        chi2: scl.Image,
+    ):
         """Add a child to a catalog.
 
         This creates a new child in the source catalog,
@@ -1254,15 +1491,17 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        parent : `lsst.afw.table.source.source.SourceRecord`
+        parent :
             The parent of the new child record.
         peak : `lsst.afw.table.PeakRecord`
             The peak record for the peak from the parent peak catalog.
-        catalog : `lsst.afw.table.source.source.SourceCatalog`
+        catalog :
             The merged `SourceCatalog` that contains parent footprints
             to (potentially) deblend.
-        scarletSource : `scarlet.Component`
+        scarletSource :
             The scarlet model for the new source record.
+        chi2 :
+            The chi2 for each pixel.
         """
         src = catalog.addNew()
         for key in self.toCopyFromParent:
@@ -1295,8 +1534,9 @@ class ScarletDeblendTask(pipeBase.Task):
         # Store the number of components for the source
         src.set(self.nComponentsKey, len(scarletSource.components))
 
-        # Flag sources missing one or more bands
-        src.set(self.incompleteDataKey, parent.get(self.incompleteDataKey))
+        # Calculate the reduced chi2 for the source
+        area = np.sum(scarletSource.get_model().data > 0)
+        src.set(self.scarletChi2Key, np.sum(chi2[:, scarletSource.bbox].data/area))
 
         # Propagate columns from the parent to the child
         for parentColumn, childColumn in self.config.columnInheritance.items():
