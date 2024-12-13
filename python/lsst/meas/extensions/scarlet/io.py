@@ -35,27 +35,32 @@ import lsst.scarlet.lite as scl
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
-from lsst.afw.image import Exposure, MaskedImage
-from lsst.afw.table import SourceCatalog
+from lsst.afw.image import Exposure, MaskedImage, MaskX
+from lsst.afw.table import SourceCatalog, SourceRecord
 import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
 from lsst.daf.butler import FormatterV2
-from lsst.geom import Box2I, Extent2I, Point2I
+from lsst.geom import Point2I
 from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
     Blend,
     Box,
-    Component,
     FactorizedComponent,
     FixedParameter,
-    Image,
-    Source,
 )
 
 from .metrics import setDeblenderMetrics
-from .utils import scarletModelToHeavy
+from . import utils
+from .footprint import scarletModelToHeavy
 
 logger = logging.getLogger(__name__)
+
+
+# The name of the band in an monochome blend.
+# This is used as a placeholder since the band is not used in the
+# monochromatic model.
+monochromaticBand = "dummy"
+monochromaticBands = (monochromaticBand,)
 
 
 def monochromaticDataToScarlet(
@@ -82,9 +87,9 @@ def monochromaticDataToScarlet(
     sources = []
     # Use a dummy band, since we are only extracting a monochromatic model
     # that will be turned into a HeavyFootprint.
-    bands = ("dummy",)
+    bands = monochromaticBands
     for sourceId, sourceData in blendData.sources.items():
-        components: list[Component] = []
+        components: list[scl.Component] = []
         # There is no need to distinguish factorized components from regular
         # components, since there is only one band being used.
         for componentData in sourceData.components:
@@ -125,12 +130,14 @@ def monochromaticDataToScarlet(
                 )
                 components.append(component)
 
-        source = Source(components=components)
+        source = scl.Source(components=components)
         source.record_id = sourceId
         source.peak_id = sourceData.peak_id
         sources.append(source)
 
-    return Blend(sources=sources, observation=observation)
+    bbox = scl.Box(blendData.shape, origin=blendData.origin)
+    blend = scl.Blend(sources=sources, observation=observation[:, bbox])
+    return blend
 
 
 def updateCatalogFootprints(
@@ -140,7 +147,7 @@ def updateCatalogFootprints(
     imageForRedistribution: MaskedImage | Exposure | None = None,
     removeScarletData: bool = True,
     updateFluxColumns: bool = True,
-):
+) -> None:
     """Use the scarlet models to set HeavyFootprints for modeled sources
 
     Parameters
@@ -161,62 +168,128 @@ def updateCatalogFootprints(
         This should only be true when the input catalog schema already
         contains those columns.
     """
-    # Iterate over the blends, since flux re-distribution must be done on
-    # all of the children with the same parent
+    # All of the blends should have the same PSF,
+    # so we extract it from the first blend data.
+    if len(modelData.blends) == 0:
+        raise ValueError("Scarlet model data is empty")
+    refBlend = next(iter(modelData.blends.values()))
+    bands = refBlend.bands
+    bandIndex = bands.index(band)
+    observedPsf = refBlend.psf[bandIndex][None, :, :]
+
+    # Flux re-distribution may mix depth=1 blends, so we iterate over the
+    # completely flux separated parents to ensure that the full models
+    # are used for each source.
     parents = catalog[catalog["parent"] == 0]
 
     for parentRecord in parents:
         parentId = parentRecord.getId()
 
-        try:
-            blendModel = modelData.blends[parentId]
-        except KeyError:
-            # The parent was skipped in the deblender, so there are
-            # no models for its sources.
+        children = catalog.getChildren(parentId)
+
+        if len(children) == 0:
+            # No children, so it is either an isolated source or failed
+            # deblending.
+            # Either way we can skip creating heavy child footprints.
             continue
 
-        parent = catalog.find(parentId)
         if updateFluxColumns and imageForRedistribution is not None:
             # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
             parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
-                parent.getFootprint(), imageForRedistribution.mask
+                parentRecord.getFootprint(), imageForRedistribution.mask
             )
 
-        if band not in blendModel.bands:
-            peaks = parent.getFootprint().peaks
-            # Set the footprint and coverage of the sources in this blend
-            # to zero
-            for sourceId, sourceData in blendModel.sources.items():
-                sourceRecord = catalog.find(sourceId)
-                footprint = afwFootprint()
-                peakIdx = np.where(peaks["id"] == sourceData.peak_id)[0][0]
-                peak = peaks[peakIdx]
-                footprint.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
-                sourceRecord.setFootprint(footprint)
-                if updateFluxColumns:
-                    sourceRecord["deblend_dataCoverage"] = 0
-            continue
-
-        # Get the index of the model for the given band
-        bandIndex = blendModel.bands.index(band)
-
-        updateBlendRecords(
-            blendData=blendModel,
-            catalog=catalog,
+        observation = buildMonochromaticObservation(
             modelPsf=modelData.psf,
+            observedPsf=observedPsf,
+            footprint=parentRecord.getFootprint(),
             imageForRedistribution=imageForRedistribution,
-            bandIndex=bandIndex,
-            parentFootprint=parentRecord.getFootprint(),
-            updateFluxColumns=updateFluxColumns,
         )
 
-        # Save memory by removing the data for the blend
-        if removeScarletData:
-            del modelData.blends[parentId]
+        updateBlendRecords(
+            modelData=modelData,
+            bandIndex=bandIndex,
+            parent=parentRecord,
+            children=children,
+            catalog=catalog,
+            observation=observation,
+            updateFluxColumns=updateFluxColumns,
+            imageForRedistribution=imageForRedistribution,
+            removeScarletData=removeScarletData,
+        )
 
 
-def calculateFootprintCoverage(footprint, maskImage):
+def buildMonochromaticObservation(
+    modelPsf: np.ndarray,
+    observedPsf: np.ndarray,
+    footprint: afwFootprint | None = None,
+    imageForRedistribution: MaskedImage | Exposure | None = None,
+) -> scl.Observation:
+    """Create a single-band observation for the entire image
+
+    Parameters
+    ----------
+    catalog :
+        The catalog that is being updated.
+    modelPsf :
+        The 2D model of the PSF.
+    observedPsf :
+        The observed PSF model for the catalog.
+    imageForRedistribution:
+        The image that is the source for flux re-distribution.
+        If `imageForRedistribution` is `None` then flux re-distribution is
+        not performed.
+    bbox :
+        The bounding box of the image to create the weight image for.
+
+    Returns
+    -------
+    observation : `scarlet.lite.Observation`
+        The observation for the entire image
+    """
+    if footprint is None and imageForRedistribution is None:
+        raise ValueError("Either footprint or imageForRedistribution must be provided")
+
+    if footprint is None:
+        bbox = imageForRedistribution.getBBox()
+    else:
+        bbox = footprint.getBBox()
+
+    scarletBox = utils.bboxToScarletBox(bbox)
+
+    if imageForRedistribution is not None:
+        cutout = imageForRedistribution[bbox]
+
+        # Mask the footprint
+        weights = np.ones(cutout.image.array.shape, dtype=cutout.image.array.dtype)
+
+        if footprint is not None:
+            weights *= footprint.spans.asArray()
+
+        observation = scl.io.Observation(
+            images=cutout.image.array[None, :, :],
+            variance=cutout.variance.array[None, :, :],
+            weights=weights[None, :, :],
+            psfs=observedPsf,
+            model_psf=modelPsf[None, :, :],
+            convolution_mode="real",
+            bands=monochromaticBands,
+            bbox=scarletBox,
+        )
+    else:
+        observation = scl.io.Observation.empty(
+            bands=monochromaticBands,
+            psfs=observedPsf,
+            model_psf=modelPsf[None, :, :],
+            bbox=scarletBox,
+            dtype=modelPsf.dtype,
+        )
+    return observation
+
+
+def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.floating:
     """Calculate the fraction of pixels with no data in a Footprint
+
     Parameters
     ----------
     footprint : `lsst.afw.detection.Footprint`
@@ -245,13 +318,15 @@ def calculateFootprintCoverage(footprint, maskImage):
 
 
 def updateBlendRecords(
-    blendData: scl.io.ScarletBlendData,
-    catalog: SourceCatalog,
-    modelPsf: np.ndarray,
-    imageForRedistribution: MaskedImage | Exposure | None,
+    modelData: scl.io.ScarletModelData,
     bandIndex: int,
-    parentFootprint: afwFootprint,
+    parent: SourceRecord,
+    children: SourceCatalog,
+    catalog: SourceCatalog,
+    observation: scl.Observation,
     updateFluxColumns: bool,
+    imageForRedistribution: MaskedImage | Exposure | None = None,
+    removeScarletData: bool = True,
 ):
     """Create footprints and update band-dependent columns in the catalog
 
@@ -271,8 +346,8 @@ def updateBlendRecords(
         not performed.
     bandIndex:
         The number of the band to extract.
-    parentFootprint:
-        The footprint of the parent, used for masking out the model
+    blendFootprint:
+        The footprint of the blend, used for masking out the model
         when re-distributing flux.
     updateFluxColumns:
         Whether or not to update the `deblend_*` columns in the catalog.
@@ -280,58 +355,35 @@ def updateBlendRecords(
         contains those columns.
     """
     useFlux = imageForRedistribution is not None
-    bands = ("dummy",)
-    # Only use the PSF for the current image
-    psfs = np.array([blendData.psf[bandIndex]])
 
-    if useFlux:
-        # Extract the image array to re-distribute its flux
-        xy0 = Point2I(*blendData.origin[::-1])
-        extent = Extent2I(*blendData.shape[::-1])
-        bbox = Box2I(xy0, extent)
-
-        images = Image(
-            imageForRedistribution[bbox].image.array[None, :, :],
-            yx0=blendData.origin,
-            bands=bands,
-        )
-
-        variance = Image(
-            imageForRedistribution[bbox].variance.array[None, :, :],
-            yx0=blendData.origin,
-            bands=bands,
-        )
-
-        weights = Image(
-            parentFootprint.spans.asArray()[None, :, :],
-            yx0=blendData.origin,
-            bands=bands,
-        )
-
-        observation = scl.io.Observation(
-            images=images,
-            variance=variance,
-            weights=weights,
-            psfs=psfs,
-            model_psf=modelPsf[None, :, :],
-        )
+    # Create a blend with the parent and all of its children.
+    if parent.getId() in modelData.blends:
+        blendData = modelData.blends[parent.getId()]
+        blend = monochromaticDataToScarlet(blendData, bandIndex, observation)
+        sources = blend.sources
     else:
-        observation = scl.io.Observation.empty(
-            bands=bands,
-            psfs=psfs,
-            model_psf=modelPsf[None, :, :],
-            bbox=Box(blendData.shape, blendData.origin),
-            dtype=np.float32,
-        )
+        sources = []
 
-    blend = monochromaticDataToScarlet(
-        blendData=blendData,
-        bandIndex=bandIndex,
+    for child in children:
+        if child.getId() in modelData.blends:
+            # The child is a blend, so we need to update the
+            # parent with the child blend.
+            blendData = modelData.blends[child.getId()]
+            blend = monochromaticDataToScarlet(
+                blendData, bandIndex, observation,
+            )
+            sources.extend(blend.sources)
+
+    if len(sources) == 0:
+        # No sources to update, so we can skip the rest of the function.
+        return
+
+    blend = scl.Blend(
+        sources=sources,
         observation=observation,
     )
 
     if useFlux:
-        # Re-distribute the flux in the images
         blend.conserve_flux()
 
     # Set the metrics for the blend.
@@ -344,7 +396,7 @@ def updateBlendRecords(
     # and update the band-dependent catalog columns.
     for source in blend.sources:
         sourceRecord = catalog.find(source.record_id)
-        parent = catalog.find(sourceRecord["parent"])
+
         peaks = parent.getFootprint().peaks
         peakIdx = np.where(peaks["id"] == source.peak_id)[0][0]
         source.detectedPeak = peaks[peakIdx]
@@ -402,18 +454,15 @@ def updateBlendRecords(
                     exc_info=1,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
-
-            # Set the metrics columns.
-            # TODO: remove this once DM-34558 runs all deblender metrics
-            # in a separate task.
-            sourceRecord.set("deblend_maxOverlap", source.metrics.maxOverlap[0])
-            sourceRecord.set("deblend_fluxOverlap", source.metrics.fluxOverlap[0])
-            sourceRecord.set(
-                "deblend_fluxOverlapFraction", source.metrics.fluxOverlapFraction[0]
-            )
-            sourceRecord.set("deblend_blendedness", source.metrics.blendedness[0])
         else:
             sourceRecord.setFootprint(heavy)
+    if removeScarletData:
+        if parent.getId() in modelData.blends:
+            del modelData.blends[parent.getId()]
+
+        for child in children:
+            if child.getId() in modelData.blends:
+                del modelData.blends[child.getId()]
 
 
 def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
