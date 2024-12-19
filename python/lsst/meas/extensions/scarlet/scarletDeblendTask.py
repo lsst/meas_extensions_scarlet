@@ -385,21 +385,21 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Size restrictions
     maxNumberOfPeaks = pexConfig.Field[int](
-        default=200,
+        default=600,
         doc=(
             "Only deblend the brightest maxNumberOfPeaks peaks in the parent"
             " (<= 0: unlimited)"
         ),
     )
     maxFootprintArea = pexConfig.Field[int](
-        default=1_000_000,
+        default=2_000_000,
         doc=(
             "Maximum area for footprints before they are ignored as large; "
             "non-positive means no threshold applied"
         ),
     )
     maxAreaTimesPeaks = pexConfig.Field[int](
-        default=10_000_000,
+        default=1_000_000_000,
         doc=(
             "Maximum rectangular footprint area * nPeaks in the footprint. "
             "This was introduced in DM-33690 to prevent fields that are crowded or have a "
