@@ -6,7 +6,7 @@ import lsst.scarlet.lite as scl
 import numpy as np
 from scipy.signal import convolve
 from lsst.afw.detection import Footprint as afwFootprint
-from lsst.afw.detection import HeavyFootprintF, PeakCatalog, makeHeavyFootprint
+from lsst.afw.detection import HeavyFootprintF, PeakCatalog, PeakTable, makeHeavyFootprint
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.geom import SpanSet
 from lsst.afw.image import Image as afwImage
@@ -162,7 +162,7 @@ def scarletFootprintToAfw(footprint: scl.detect.Footprint, copyPeaks: bool = Tru
 def getFootprintIntersection(
     footprint1: afwFootprint,
     footprint2: afwFootprint,
-    copyMethod: str | None = 'left'
+    copyMethod: str | None = 'left',
 ) -> afwFootprint:
     """Calculate the intersection of two Footprints.
 
@@ -190,6 +190,7 @@ def getFootprintIntersection(
     # Create the intersecting footprint
     spans = footprint1.spans.intersect(footprint2.spans)
     result = afwFootprint(spans)
+    result.setPeakSchema(footprint1.peaks.getSchema())
 
     peaks = []
     if copyMethod is not None:
@@ -201,9 +202,8 @@ def getFootprintIntersection(
 
         for peak in peaks:
             if spans.contains(geom.Point2I(peak.getIx(), peak.getIy())):
-                newPeak = result.addPeak(peak.getIx(), peak.getIy(), peak.getPeakValue())
                 # Ensure the peak has the same ID as the original peak
-                newPeak.setId(peak.getId())
+                result.peaks.append(peak)
     return result
 
 
