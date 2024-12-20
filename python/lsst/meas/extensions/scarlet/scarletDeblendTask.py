@@ -875,6 +875,36 @@ class ScarletDeblendTask(pipeBase.Task):
         self.zeroFluxKey = schema.addField(
             "deblend_zeroFlux", type="Flag", doc="Source has zero flux."
         )
+        # Blendedness/classification metrics
+        self.maxOverlapKey = schema.addField(
+            "deblend_maxOverlap",
+            type=np.float32,
+            doc="Maximum overlap with all of the other neighbors flux "
+            "combined."
+            "This is useful as a metric for determining how blended a "
+            "source is because if it only overlaps with other sources "
+            "at or below the noise level, it is likely to be a mostly "
+            "isolated source in the deconvolved model frame.",
+        )
+        self.fluxOverlapKey =  schema.addField(
+            "deblend_fluxOverlap",
+            type=np.float32,
+            doc="This is the total flux from neighboring objects that "
+            "overlaps with this source.",
+        )
+        self.fluxOverlapFractionKey = schema.addField(
+            "deblend_fluxOverlapFraction",
+            type=np.float32,
+            doc="This is the fraction of "
+            "`flux from neighbors/source flux` "
+            "for a given source within the source's"
+            "footprint.",
+        )
+        self.blendednessKey = schema.addField(
+            "deblend_blendedness",
+            type=np.float32,
+            doc="The Bosch et al. 2018 metric for 'blendedness.' ",
+        )
 
     @timeMethod
     def run(
