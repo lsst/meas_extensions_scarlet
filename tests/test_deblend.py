@@ -208,9 +208,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 )
 
                 # Check that the number of deblended children is consistent
-                parents = catalog[catalog["parent"] == 0]
+                parents = catalog[catalog["deblend_level"] == 0]
                 self.assertEqual(
-                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents)
+                    np.sum(parents["deblend_nChild"]), np.sum(catalog["deblend_level"] == 2)
                 )
 
                 # Check that the models have not been cleared

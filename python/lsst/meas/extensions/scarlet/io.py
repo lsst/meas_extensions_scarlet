@@ -286,7 +286,9 @@ def extraxctMonochrmaticBlends(
         bbox=bbox,
     )
 
-    for blendId, blendData in modelData.blends.items():
+    items = list(modelData.blends.items())
+
+    for blendId, blendData in items:
         blend = monochromaticDataToScarlet(
             blendData=blendData,
             bandIndex=bandIndex,
