@@ -28,7 +28,7 @@ import numpy as np
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
-from lsst.afw.image import Exposure, MaskedImage
+from lsst.afw.image import Exposure, MaskedImage, MaskX
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Point2I
 
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # monochromatic model.
 monochromeBand = "dummy"
 monochromeBands = (monochromeBand,)
+
 
 def monochromaticDataToScarlet(
     blendData: scl.io.ScarletBlendData,
@@ -116,7 +117,7 @@ def monochromaticDataToScarlet(
         source.peak_id = sourceData.peak_id
         sources.append(source)
 
-    bbox  = scl.Box(blendData.shape, origin=blendData.origin)
+    bbox = scl.Box(blendData.shape, origin=blendData.origin)
     blend = scl.Blend(sources=sources, observation=observation[:, bbox])
     return blend
 
@@ -339,8 +340,7 @@ def createMonochromeWeightImage(blends: list[scl.Blend], observation: scl.Observ
     return weightImage
 
 
-
-def calculateFootprintCoverage(footprint, maskImage):
+def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.floating:
     """Calculate the fraction of pixels with no data in a Footprint
     Parameters
     ----------

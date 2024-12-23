@@ -120,7 +120,7 @@ def _getDeconvolvedFootprints(
     # in the deconvolved, noise reduced image).
     footprints = scl.detect.detect_footprints(
         images=np.array([detect]),
-        variance = np.ones((1, detect.shape[0], detect.shape[1]), dtype=detect.dtype),
+        variance=np.ones((1, detect.shape[0], detect.shape[1]), dtype=detect.dtype),
         scales=1,
         min_area=9,
         footprint_thresh=config.footprintSNRThresh,
@@ -664,8 +664,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
     def __init__(
         self,
-        schema : afwTable.Schema,
-        peakSchema : afwTable.Schema = None,
+        schema: afwTable.Schema,
+        peakSchema: afwTable.Schema = None,
         **kwargs
     ):
         """Create the task, adding necessary fields to the given schema.
@@ -886,7 +886,7 @@ class ScarletDeblendTask(pipeBase.Task):
             "at or below the noise level, it is likely to be a mostly "
             "isolated source in the deconvolved model frame.",
         )
-        self.fluxOverlapKey =  schema.addField(
+        self.fluxOverlapKey = schema.addField(
             "deblend_fluxOverlap",
             type=np.float32,
             doc="This is the total flux from neighboring objects that "
@@ -910,8 +910,8 @@ class ScarletDeblendTask(pipeBase.Task):
     def run(
         self,
         mExposure: afwImage.MultibandExposure,
-        mDeconvolved : afwImage.MultibandExposure,
-        mergedSources : afwTable.SourceCatalog,
+        mDeconvolved: afwImage.MultibandExposure,
+        mergedSources: afwTable.SourceCatalog,
     ) -> tuple[afwTable.SourceCatalog, scl.io.ScarletModelData]:
         """Get the psf from each exposure and then run deblend().
 
@@ -1125,7 +1125,7 @@ class ScarletDeblendTask(pipeBase.Task):
                         fp = catalog.find(sourceIndex).getFootprint()
                         fp.spans.setMask(
                             mask, mask.getPlaneBitMask(self.config.notDeblendedMask)
-                    )
+                        )
 
         nDeconvolvedParents = np.sum(catalog[self.deblendLevelKey] == 1)
         nDeblendedSources = np.sum(catalog[self.deblendLevelKey] == 2)
@@ -1564,7 +1564,7 @@ class ScarletDeblendTask(pipeBase.Task):
             y = peak["i_y"] - ymin
             try:
                 footprintIndex = footprintImage.data[y, x] - 1
-            except:
+            except:  # noqa: E722
                 continue
             if footprintIndex >= 0:
                 footprintIndices.add(footprintIndex)

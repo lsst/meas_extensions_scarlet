@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from typing import Sequence
 
 import lsst.geom as geom
@@ -6,7 +5,7 @@ import lsst.scarlet.lite as scl
 import numpy as np
 from scipy.signal import convolve
 from lsst.afw.detection import Footprint as afwFootprint
-from lsst.afw.detection import HeavyFootprintF, PeakCatalog, PeakTable, makeHeavyFootprint
+from lsst.afw.detection import HeavyFootprintF, PeakCatalog, makeHeavyFootprint
 from lsst.afw.detection.multiband import MultibandFootprint
 from lsst.afw.geom import SpanSet
 from lsst.afw.image import Image as afwImage

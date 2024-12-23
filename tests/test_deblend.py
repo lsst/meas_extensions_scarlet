@@ -204,7 +204,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     imageForRedistribution=imageForRedistribution,
                     removeScarletData=False,
                     updateFluxColumns=True,
-                    bbox = bbox,
+                    bbox=bbox,
                 )
 
                 # Check that the number of deblended children is consistent

@@ -98,7 +98,7 @@ class DeconvolveExposureConfig(
         "Pixels in the fit below this threshold will be set to zero",
     )
     useFootprints = pexConfig.Field[bool](
-        default = True,
+        default=True,
         doc="Use footprints to constrain the deconvolved model",
     )
 
