@@ -22,6 +22,7 @@
 import unittest
 
 import lsst.afw.image as afwImage
+import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
@@ -30,12 +31,8 @@ from lsst.afw.geom import SpanSet, Stencil
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet.io import (
-    monochromaticDataToScarlet,
-    updateCatalogFootprints,
-)
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
-from lsst.meas.extensions.scarlet.utils import bboxToScarletBox, scarletBoxToBBox
+from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
 from numpy.testing import assert_almost_equal
 from utils import initData
 
@@ -151,6 +148,14 @@ class TestDeblend(lsst.utils.tests.TestCase):
         detectionResult = detectionTask.run(table, self.coadds["r"])
         catalog = detectionResult.sources
 
+        # Deconvolve the coadds
+        deconvolvedCoadds = []
+        deconvolveTask = DeconvolveExposureTask()
+        for coadd in self.coadds:
+            deconvolvedCoadd = deconvolveTask.run(coadd, catalog).deconvolved
+            deconvolvedCoadds.append(deconvolvedCoadd)
+        mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
+
         # Add a footprint that is too large
         src = catalog.addNew()
         halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
@@ -168,7 +173,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        catalog, modelData = deblendTask.run(self.coadds, catalog)
+        catalog, modelData = deblendTask.run(self.coadds, mDeconvolved, catalog)
         return catalog, modelData, config
 
     def test_deblend_task(self):
@@ -187,15 +192,19 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
                 if useFlux:
                     imageForRedistribution = coadd
+                    bbox = None
                 else:
                     imageForRedistribution = None
+                    bbox = mes.utils.bboxToScarletBox(coadd.getBBox())
 
-                updateCatalogFootprints(
+                mes.io.updateCatalogFootprints(
                     modelData,
                     catalog,
                     band=band,
                     imageForRedistribution=imageForRedistribution,
                     removeScarletData=False,
+                    updateFluxColumns=True,
+                    bbox = bbox,
                 )
 
                 # Check that the number of deblended children is consistent
@@ -262,7 +271,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         bbox=modelBox,
                         dtype=np.float32,
                     )
-                    blend = monochromaticDataToScarlet(
+                    blend = mes.io.monochromaticDataToScarlet(
                         blendData=blendData,
                         bandIndex=bandIndex,
                         observation=observation,
@@ -278,6 +287,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     self.assertEqual(source.center[0], py)
 
                     if useFlux:
+                        assert imageForRedistribution is not None
                         # Get the flux re-weighted model and test against
                         # the HeavyFootprint.
                         # The HeavyFootprint needs to be projected onto
@@ -301,7 +311,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         )
                         blend.conserve_flux()
                         model = source.flux_weighted_image.data[0]
-                        bbox = scarletBoxToBBox(source.flux_weighted_image.bbox)
+                        bbox = mes.utils.scarletBoxToBBox(source.flux_weighted_image.bbox)
                         image = afwImage.ImageF(model, xy0=bbox.getMin())
                         fp.insert(image)
                         np.testing.assert_almost_equal(image.array, model)
@@ -309,7 +319,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         # Get the model for the source and test
                         # against the HeavyFootprint
                         bbox = fp.getBBox()
-                        bbox = bboxToScarletBox(bbox)
+                        bbox = mes.utils.bboxToScarletBox(bbox)
                         model = blend.observation.convolve(
                             source.get_model().project(bbox=bbox), mode="real"
                         ).data[0]

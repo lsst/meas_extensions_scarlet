@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # The name of the band in an monochome blend.
 # This is used as a placeholder since the band is not used in the
 # monochromatic model.
-monochromeBand = "dummmy"
+monochromeBand = "dummy"
 monochromeBands = (monochromeBand,)
 
 def monochromaticDataToScarlet(
@@ -128,6 +128,7 @@ def updateCatalogFootprints(
     imageForRedistribution: MaskedImage | Exposure | None = None,
     removeScarletData: bool = True,
     updateFluxColumns: bool = True,
+    bbox: scl.Box | None = None,
 ) -> dict[int, scl.Blend]:
     """Use the scarlet models to set HeavyFootprints for modeled sources
 
@@ -163,6 +164,7 @@ def updateCatalogFootprints(
         imageForRedistribution=imageForRedistribution,
         bandIndex=bandIndex,
         removeScarletData=removeScarletData,
+        bbox=bbox,
     )
 
     for blendId, blend in blends.items():
@@ -244,6 +246,35 @@ def extraxctMonochrmaticBlends(
     removeScarletData: bool = True,
     bbox: scl.Box | None = None,
 ) -> dict[int, scl.Blend]:
+    """Extract the monochromatic blends from the scarlet model data
+
+    Parameters
+    ----------
+    modelData:
+        The scarlet model data.
+    catalog:
+        The catalog that is being updated.
+    modelPsf:
+        The 2D model of the PSF.
+    observedPsf:
+        The observed PSF model for the catalog.
+    imageForRedistribution:
+        The image that is the source for flux re-distribution.
+        If `imageForRedistribution` is `None` then flux re-distribution is
+        not performed.
+    bandIndex:
+        The number of the band to extract.
+    removeScarletData:
+        Whether or not to remove `ScarletBlendData` for each blend
+        in order to save memory.
+    bbox:
+        The bounding box of the image to create the weight image for.
+
+    Returns
+    -------
+    blends :
+        A dictionary of blends extracted from the model data.
+    """
     blends = {}
     # Create an observation for the entire image
     observation = buildMonochromeObservation(
@@ -395,7 +426,6 @@ def updateBlendRecords(
         )
 
         if updateFluxColumns:
-            assert imageForRedistribution is not None
             if heavy.getArea() == 0:
                 # The source has no flux after being weighted with the PSF
                 # in this particular band (it might have flux in others).
@@ -412,9 +442,6 @@ def updateBlendRecords(
             else:
                 sourceRecord.set("deblend_zeroFlux", False)
                 sourceRecord.setFootprint(heavy)
-                calculateFootprintCoverage(
-                    sourceRecord.getFootprint(), imageForRedistribution.mask
-                )
 
             if useFlux:
                 # Set the fraction of pixels with valid data.
