@@ -342,12 +342,16 @@ def deblend(
     else:
         raise ValueError("Unrecognized optimizer. Must be either 'adaprox' or 'fista'.")
 
-    blend.fit(
-        max_iter=config.maxIter,
-        e_rel=config.relativeError,
-        min_iter=config.minIter,
-        resize=config.resizeFrequency,
-    )
+    if config.maxIter > 0:
+        blend.fit(
+            max_iter=config.maxIter,
+            e_rel=config.relativeError,
+            min_iter=config.minIter,
+            resize=config.resizeFrequency,
+        )
+    else:
+        loss = (blend.observation.images - blend.get_model(convolve=True)).data
+        blend.loss = [np.sum(loss), np.sum(loss)]
 
     # Attach the peak to all of the initialized sources
     for k, center in enumerate(peaks):
