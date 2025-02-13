@@ -40,6 +40,43 @@ __all__ = [
 ]
 
 
+def calculate_update_step(observation: scl.Observation) -> float:
+    """Calculate the scale factor for the update step in deconvolution.
+
+    For most images this will be 1.0 but for images with low SNR
+    and/or high sparsity (for example LSST u-band images) the scale
+    factor will be less than 1.0.
+
+    Parameters
+    ----------
+    observation :
+        Scarlet lite Observation.
+
+    Returns
+    -------
+    scale : float
+        Scale factor for the update step.
+    """
+    # Calculate sparsity as fraction of pixels significantly above noise
+    noise_level = observation.noise_rms[0]
+    signal_pixels = np.sum(observation.images.data > 3*noise_level)
+    sparsity = signal_pixels / observation.images.data.size
+
+    # Calculate typical SNR in signal regions
+    signal_mask = observation.images.data > 3*noise_level
+
+    if np.any(signal_mask):
+        median_signal = np.median(observation.images.data[signal_mask])
+        snr = median_signal / noise_level
+    else:
+        snr = 1.0
+
+    # Scale factor that decreases with sparsity and increases with SNR
+    scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
+
+    return max(0.01, scale)
+
+
 class DeconvolveExposureConnections(
     pipeBase.PipelineTaskConnections,
     dimensions=("tract", "patch", "skymap", "band"),
@@ -196,6 +233,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         """
         model = observation.images.copy()
         loss = []
+        step = calculate_update_step(observation)
         if catalog is not None:
             width, height = self.bbox.getDimensions()
             x0, y0 = self.bbox.getMin()
@@ -204,11 +242,18 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             residual = observation.images - observation.convolve(model)
             loss.append(-0.5 * np.sum(residual.data**2))
             update = observation.convolve(residual, grad=True)
+            update.data[:] *= step
             model += update
             model.data[model.data < 0] = 0
             if catalog is not None:
                 model.data[:] *= footprintImage
 
+            # Check for a diverging model
+            if len(loss) > 1 and loss[-1] < loss[-2]:
+                step = step / 2
+                self.log.warning(f"Loss increased at iteration {n}, decreasing scale to {step}")
+
+            # Check for convergence
             if n > self.config.minIter and np.abs(loss[-1] - loss[-2]) < self.config.eRel * np.abs(loss[-1]):
                 break
 
