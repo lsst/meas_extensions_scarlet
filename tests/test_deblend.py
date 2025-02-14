@@ -22,6 +22,7 @@
 import unittest
 
 import lsst.afw.image as afwImage
+import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
@@ -30,12 +31,8 @@ from lsst.afw.geom import SpanSet, Stencil
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
-from lsst.meas.extensions.scarlet.io import (
-    monochromaticDataToScarlet,
-    updateCatalogFootprints,
-)
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
-from lsst.meas.extensions.scarlet.utils import bboxToScarletBox, scarletBoxToBBox
+from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
 from numpy.testing import assert_almost_equal
 from utils import initData
 
@@ -81,59 +78,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for b, coadd in enumerate(self.coadds):
             coadd.setPsf(psfs[b])
 
-    def _insert_blank_source(self, modelData, catalog):
-        # Add parent
-        parent = catalog.addNew()
-        parent.setParent(0)
-        parent["deblend_nChild"] = 1
-        parent["deblend_nPeaks"] = 1
-        ss = SpanSet.fromShape(5, Stencil.CIRCLE, offset=(30, 70))
-        footprint = Footprint(ss)
-        peak = footprint.addPeak(30, 70, 0)
-        parent.setFootprint(footprint)
-
-        # Add the zero flux source
-        dtype = np.float32
-        center = (70, 30)
-        origin = (center[0] - 5, center[1] - 5)
-        psf = list(modelData.blends.values())[0].psf
-        src = catalog.addNew()
-        src.setParent(parent.getId())
-        src["deblend_peak_center_x"] = center[1]
-        src["deblend_peak_center_y"] = center[0]
-        src["deblend_nPeaks"] = 1
-
-        sources = {
-            src.getId(): {
-                "components": [],
-                "factorized": [
-                    {
-                        "origin": origin,
-                        "peak": center,
-                        "spectrum": np.zeros((len(self.bands),), dtype=dtype),
-                        "morph": np.zeros((11, 11), dtype=dtype),
-                        "shape": (11, 11),
-                    }
-                ],
-                "peak_id": peak.getId(),
-            }
-        }
-
-        blendData = scl.io.ScarletBlendData.from_dict(
-            {
-                "origin": origin,
-                "shape": (11, 11),
-                "psf_center": center,
-                "psf_shape": psf.shape,
-                "psf": psf.flatten(),
-                "sources": sources,
-                "bands": self.bands,
-            }
-        )
-        pid = parent.getId()
-        modelData.blends[pid] = blendData
-        return pid, src.getId()
-
     def _deblend(self, version):
         schema = SourceCatalog.Table.makeMinimalSchema()
         # Adjust config options to test skipping parents
@@ -150,6 +94,14 @@ class TestDeblend(lsst.utils.tests.TestCase):
         table = SourceCatalog.Table.make(schema)
         detectionResult = detectionTask.run(table, self.coadds["r"])
         catalog = detectionResult.sources
+
+        # Deconvolve the coadds
+        deconvolvedCoadds = []
+        deconvolveTask = DeconvolveExposureTask()
+        for coadd in self.coadds:
+            deconvolvedCoadd = deconvolveTask.run(coadd, catalog).deconvolved
+            deconvolvedCoadds.append(deconvolvedCoadd)
+        mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
 
         # Add a footprint that is too large
         src = catalog.addNew()
@@ -168,13 +120,11 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        catalog, modelData = deblendTask.run(self.coadds, catalog)
+        catalog, modelData = deblendTask.run(self.coadds, mDeconvolved, catalog)
         return catalog, modelData, config
 
     def test_deblend_task(self):
         catalog, modelData, config = self._deblend("lite")
-
-        bad_blend_id, bad_src_id = self._insert_blank_source(modelData, catalog)
 
         # Attach the footprints in each band and compare to the full
         # data model. This is done in each band, both with and without
@@ -187,21 +137,26 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
                 if useFlux:
                     imageForRedistribution = coadd
+                    bbox = None
                 else:
                     imageForRedistribution = None
+                    bbox = mes.utils.bboxToScarletBox(coadd.getBBox())
 
-                updateCatalogFootprints(
+                mes.io.updateCatalogFootprints(
                     modelData,
                     catalog,
                     band=band,
                     imageForRedistribution=imageForRedistribution,
                     removeScarletData=False,
+                    updateFluxColumns=True,
+                    bbox=bbox,
                 )
 
                 # Check that the number of deblended children is consistent
-                parents = catalog[catalog["parent"] == 0]
+                parents = catalog[(catalog["deblend_depth"] == 0) & ~catalog["deblend_skipped"]]
                 self.assertEqual(
-                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents)
+                    np.sum(parents["deblend_nChild"]),
+                    np.sum((catalog["deblend_depth"] > 0) & (catalog["deblend_nPeaks"] == 1))
                 )
 
                 # Check that the models have not been cleared
@@ -214,10 +169,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     children = catalog[catalog["parent"] == parent.get("id")]
                     # Check that nChild is set correctly
                     self.assertEqual(len(children), parent.get("deblend_nChild"))
-                    # Check that parent columns are propagated
-                    # to their children
-                    if parent.getId() == bad_blend_id:
-                        continue
                     for parentCol, childCol in config.columnInheritance.items():
                         np.testing.assert_array_equal(
                             parent.get(parentCol), children[childCol]
@@ -262,7 +213,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         bbox=modelBox,
                         dtype=np.float32,
                     )
-                    blend = monochromaticDataToScarlet(
+                    blend = mes.io.monochromaticDataToScarlet(
                         blendData=blendData,
                         bandIndex=bandIndex,
                         observation=observation,
@@ -278,6 +229,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     self.assertEqual(source.center[0], py)
 
                     if useFlux:
+                        assert imageForRedistribution is not None
                         # Get the flux re-weighted model and test against
                         # the HeavyFootprint.
                         # The HeavyFootprint needs to be projected onto
@@ -301,7 +253,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         )
                         blend.conserve_flux()
                         model = source.flux_weighted_image.data[0]
-                        bbox = scarletBoxToBBox(source.flux_weighted_image.bbox)
+                        bbox = mes.utils.scarletBoxToBBox(source.flux_weighted_image.bbox)
                         image = afwImage.ImageF(model, xy0=bbox.getMin())
                         fp.insert(image)
                         np.testing.assert_almost_equal(image.array, model)
@@ -309,7 +261,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         # Get the model for the source and test
                         # against the HeavyFootprint
                         bbox = fp.getBBox()
-                        bbox = bboxToScarletBox(bbox)
+                        bbox = mes.utils.bboxToScarletBox(bbox)
                         model = blend.observation.convolve(
                             source.get_model().project(bbox=bbox), mode="real"
                         ).data[0]
@@ -333,10 +285,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Check that only the appropriate parents were skipped
         skipped = largeFootprint | denseFootprint
         np.testing.assert_array_equal(skipped, catalog["deblend_skipped"])
-
-        # Check that the zero flux source was flagged
-        for src in catalog:
-            np.testing.assert_equal(src["deblend_zeroFlux"], src.getId() == bad_src_id)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
