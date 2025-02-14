@@ -30,6 +30,7 @@ import lsst.scarlet.lite as scl
 import numpy as np
 
 from . import utils
+from .footprint import footprintsToNumpy
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +108,8 @@ class DeconvolveExposureConnections(
 
     def __init__(self, *, config=None):
         if not config.useFootprints:
-            # Deconvolution does not use input catalog
+            # Deconvolution will not use input catalog if
+            # footprints are not used
             self.inputs.remove("catalog")
 
 
@@ -230,6 +232,11 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         ----------
         observation :
             Scarlet lite Observation.
+        catalog :
+            Catalog of sources detected in the deconvolved image.
+            This is used to mask the deconvolved image so that
+            the deconvolved footprints detected downstream will always
+            fit inside of the original footprints.
         """
         model = observation.images.copy()
         loss = []
@@ -237,7 +244,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         if catalog is not None:
             width, height = self.bbox.getDimensions()
             x0, y0 = self.bbox.getMin()
-            footprintImage = utils.footprintsToNumpy(catalog, (height, width), (x0, y0))
+            footprintImage = footprintsToNumpy(catalog, (height, width), (x0, y0))
         for n in range(self.config.maxIter):
             residual = observation.images - observation.convolve(model)
             loss.append(-0.5 * np.sum(residual.data**2))
@@ -246,6 +253,9 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             model += update
             model.data[model.data < 0] = 0
             if catalog is not None:
+                # Ensure that the deconvolved model footprints fit
+                # inside of the original footprints by setting regions
+                # outside of the original footprints to zero.
                 model.data[:] *= footprintImage
 
             # Check for a diverging model
