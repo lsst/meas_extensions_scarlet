@@ -1,5 +1,3 @@
-from typing import Sequence
-
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
 import numpy as np
@@ -9,7 +7,6 @@ from lsst.afw.image import (
     IncompleteDataError,
     MultibandExposure,
 )
-from lsst.afw.table import SourceCatalog
 
 defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
@@ -79,7 +76,7 @@ def multiband_convolve(images: np.ndarray, psfs: np.ndarray) -> np.ndarray:
         The convolved images.
     """
     result = np.zeros(images.shape, dtype=images.dtype)
-    for image, psf in zip(images, psfs, strict=True):
+    for bidx, (image, psf) in enumerate(zip(images, psfs, strict=True)):
         result[bidx] = convolve(image, psf, mode="same")
     return result
 

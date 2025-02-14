@@ -53,7 +53,6 @@ def footprintsToNumpy(
     return result
 
 
-
 def afwFootprintToScarlet(footprint: afwFootprint, copyPeaks: bool = True):
     """Convert an afw Footprint into a scarlet lite Footprint.
 
