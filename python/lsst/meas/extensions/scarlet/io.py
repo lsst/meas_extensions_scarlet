@@ -28,7 +28,7 @@ import numpy as np
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
-from lsst.afw.image import Exposure, MaskedImage
+from lsst.afw.image import Exposure, MaskedImage, MultibandExposure
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Box2I, Extent2I, Point2I
 from lsst.scarlet.lite import (
@@ -42,7 +42,7 @@ from lsst.scarlet.lite import (
 )
 
 from .metrics import setDeblenderMetrics
-from .utils import scarletModelToHeavy
+from .utils import scarletModelToHeavy, computePsfKernelImage
 
 logger = logging.getLogger(__name__)
 
@@ -472,3 +472,40 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
     )
 
     return blendData
+
+
+def loadBlend(blendData: scl.io.BlendData, model_psf: np.ndarray, mCoadd: MultibandExposure):
+    """Load a blend from the persisted data
+
+    Parameters
+    ----------
+    blendData:
+        The persisted scarlet BlendData to load into the blend.
+    model_psf:
+        The psf of the model in each band. This should be 2D, as scarlet
+        lite assumes that the PSF is the same for all bands.
+    mCoadd:
+        The coadd image to use for the observation attached to the blend.
+        This is required in order to create a difference kernel to convolve
+        the model into an observed seeing.
+
+    Returns
+    -------
+    blend : `scarlet.lite.Blend`
+        The blend object loaded from the persisted data.
+    """
+    psf, _ = computePsfKernelImage(mCoadd, blendData.psf_center)
+    bbox = Box(blendData.shape, origin=blendData.origin)
+    afw_box = Box2I(Point2I(bbox.origin[::-1]), Extent2I(bbox.shape[::-1]))
+    coadd = mCoadd[blendData.bands, afw_box]
+    observation = scl.Observation(
+        images=coadd.image.array,
+        variance=coadd.variance.array,
+        weights=np.ones(coadd.image.array.shape, dtype=np.float32),
+        psfs=psf,
+        model_psf=model_psf[None, :, :],
+        convolution_mode='real',
+        bands=mCoadd.filters,
+        bbox=bbox,
+    )
+    return blendData.to_blend(observation), afw_box
