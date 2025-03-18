@@ -164,7 +164,7 @@ def deblend(
             thresh=config.backgroundThresh,
         ).sources
     elif config.morphImage == "wavelet":
-        _bbox = bboxToScarletBox(len(mExposure.filters), bbox, bbox.getMin())
+        _bbox = bboxToScarletBox(len(mExposure.bands), bbox, bbox.getMin())
         _wavelets = wavelets[(slice(None), *_bbox[1:].slices)]
 
         sources = scl.initialization.FactorizedWaveletInitialization(
@@ -221,7 +221,7 @@ def deblend(
     blend.psfCenter = (psfCenter.x, psfCenter.y)
 
     # Calculate the bands that were skipped
-    skippedBands = [band for band in mExposure.filters if band not in observation.bands]
+    skippedBands = [band for band in mExposure.bands if band not in observation.bands]
 
     return blend, skippedSources, skippedBands
 
@@ -518,8 +518,8 @@ class ScarletDeblendTask(pipeBase.Task):
             Any fields beyond the PeakTable minimal schema will be transferred
             to the main source Schema.  If None, no fields will be transferred
             from the Peaks.
-        filters : list of str
-            Names of the filters used for the eposures. This is needed to store
+        bands : list of str
+            Names of the bands used for the exposures. This is needed to store
             the SED as a field
         **kwargs
             Passed to Task.__init__.
@@ -767,7 +767,7 @@ class ScarletDeblendTask(pipeBase.Task):
         Returns
         -------
         templateCatalogs: dict
-            Keys are the names of the filters and the values are
+            Keys are the names of the bands and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
@@ -791,7 +791,7 @@ class ScarletDeblendTask(pipeBase.Task):
         Returns
         -------
         catalogs : `dict` or `None`
-            Keys are the names of the filters and the values are
+            Keys are the names of the bands and the values are
             `lsst.afw.table.source.source.SourceCatalog`'s.
             These are catalogs with heavy footprints that are the templates
             created by the multiband templates.
