@@ -518,9 +518,6 @@ class ScarletDeblendTask(pipeBase.Task):
             Any fields beyond the PeakTable minimal schema will be transferred
             to the main source Schema.  If None, no fields will be transferred
             from the Peaks.
-        bands : list of str
-            Names of the bands used for the exposures. This is needed to store
-            the SED as a field
         **kwargs
             Passed to Task.__init__.
         """
