@@ -128,7 +128,7 @@ def computePsfKernelImage(mExposure, psfCenter):
     except IncompleteDataError as e:
         psfModels = e.partialPsf
         # Use only the bands that successfully generated a PSF image.
-        bands = psfModels.filters
+        bands = psfModels.bands
         mExposure = mExposure[bands,]
         if len(bands) == 1:
             # Only a single band generated a PSF, so the MultibandExposure
@@ -213,7 +213,7 @@ def buildObservation(
         psfs=psfModels,
         model_psf=modelPsf[None, :, :],
         convolution_mode=convolutionType,
-        bands=mExposure.filters,
+        bands=mExposure.bands,
         bbox=bboxToScarletBox(mExposure.getBBox()),
     )
 
