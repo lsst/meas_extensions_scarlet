@@ -21,16 +21,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from io import BytesIO
 import logging
+import json
+from typing import Any, BinaryIO
+import zipfile
+
+import numpy as np
+from pydantic_core import from_json
 
 import lsst.scarlet.lite as scl
-import numpy as np
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
 from lsst.afw.image import Exposure, MaskedImage
 from lsst.afw.table import SourceCatalog
+from lsst.daf.butler import StorageClassDelegate
+from lsst.daf.butler.formatters.typeless import TypelessFormatter
 from lsst.geom import Box2I, Extent2I, Point2I
+from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
     Blend,
     Box,
@@ -77,42 +87,42 @@ def monochromaticDataToScarlet(
         # There is no need to distinguish factorized components from regular
         # components, since there is only one band being used.
         for componentData in sourceData.components:
-            bbox = Box(componentData.shape, origin=componentData.origin)
-            model = scl.io.Image(
-                componentData.model[bandIndex][None, :, :], yx0=bbox.origin, bands=bands
-            )
-            component = scl.io.ComponentCube(
-                bands=bands,
-                model=model,
-                peak=tuple(componentData.peak[::-1]),
-                bbox=bbox,
-            )
-            components.append(component)
-
-        for factorizedData in sourceData.factorized_components:
-            bbox = Box(factorizedData.shape, origin=factorizedData.origin)
-            # Add dummy values for properties only needed for
-            # model fitting.
-            spectrum = FixedParameter(factorizedData.spectrum)
-            totalBands = len(spectrum.x)
-            morph = FixedParameter(factorizedData.morph)
-            factorized = FactorizedComponent(
-                bands=("dummy",) * totalBands,
-                spectrum=spectrum,
-                morph=morph,
-                peak=tuple(int(np.round(p)) for p in factorizedData.peak),  # type: ignore
-                bbox=bbox,
-                bg_rms=np.full((totalBands,), np.nan),
-            )
-            model = factorized.get_model().data[bandIndex][None, :, :]
-            model = scl.io.Image(model, yx0=bbox.origin, bands=bands)
-            component = scl.io.ComponentCube(
-                bands=bands,
-                model=model,
-                peak=factorized.peak,
-                bbox=factorized.bbox,
-            )
-            components.append(component)
+            if componentData.component_type == "component":
+                bbox = Box(componentData.shape, origin=componentData.origin)
+                model = scl.io.Image(
+                    componentData.model[bandIndex][None, :, :], yx0=bbox.origin, bands=bands
+                )
+                component = scl.io.ComponentCube(
+                    bands=bands,
+                    model=model,
+                    peak=tuple(componentData.peak[::-1]),
+                    bbox=bbox,
+                )
+                components.append(component)
+            else:
+                bbox = Box(componentData.shape, origin=componentData.origin)
+                # Add dummy values for properties only needed for
+                # model fitting.
+                spectrum = FixedParameter(componentData.spectrum)
+                totalBands = len(spectrum.x)
+                morph = FixedParameter(componentData.morph)
+                factorized = FactorizedComponent(
+                    bands=("dummy",) * totalBands,
+                    spectrum=spectrum,
+                    morph=morph,
+                    peak=tuple(int(np.round(p)) for p in componentData.peak),  # type: ignore
+                    bbox=bbox,
+                    bg_rms=np.full((totalBands,), np.nan),
+                )
+                model = factorized.get_model().data[bandIndex][None, :, :]
+                model = scl.io.Image(model, yx0=bbox.origin, bands=bands)
+                component = scl.io.ComponentCube(
+                    bands=bands,
+                    model=model,
+                    peak=factorized.peak,
+                    bbox=factorized.bbox,
+                )
+                components.append(component)
 
         source = Source(components=components)
         source.record_id = sourceId
@@ -472,3 +482,122 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
     )
 
     return blendData
+
+
+class ScarletModelFormatter(TypelessFormatter):
+    """Read and write zip archives.
+
+    In order for files to be read from a zip file, the pydantic model
+    must have a `load` method that accepts a file object and the filename
+    as arguments, as well as a `from_zip` method that accepts a dictionary
+    of files to create the object from the zip archive.
+    """
+
+    default_extension = ".scarlet"
+    unsupported_parameters = None
+    can_read_from_stream = True
+
+    def _build_model(self, zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
+        """Build a ScarletModelData instance from a dictionary of files.
+
+        Parameters
+        ----------
+        zip_dict : dict[str, Any]
+            Dictionary mapping filenames to the desired file type.
+
+        Returns
+        -------
+        model :
+            ScarletModelData instance.
+        """
+        model_psf = zip_dict.pop('psf')
+        psf_shape = zip_dict.pop('psf_shape')
+        blends = {}
+        for key, value in zip_dict.items():
+            blends[int(key)] = value
+        return scl.io.ScarletModelData.parse_obj({
+            'psf': model_psf,
+            'psfShape': psf_shape,
+            'blends': blends,
+        })
+
+    def _model_to_zip(self, model_data: scl.io.ScarletModelData) -> dict[str, Any]:
+        """Convert a ScarletModelData instance to a dictionary of files.
+
+        Parameters
+        ----------
+        model_data : `lsst.scarelt.lite.io.ScarletModelData`
+            ScarletModelData instance.
+
+        Returns
+        -------
+        zip_dict :
+            Dictionary mapping filenames to the desired file type.
+        """
+        json_model = model_data.as_dict()
+
+        data = {
+            str(blend_id): json.dumps(blend_data)
+            for blend_id, blend_data in json_model['blends'].items()
+        }
+        data.update({
+            'psf_shape': json.dumps(json_model['psfShape']),
+            'psf': json.dumps(json_model['psf']),
+        })
+        return data
+
+    def read_from_stream(
+        self, stream: BinaryIO | ResourceHandleProtocol, component: str | None = None, expected_size: int = -1
+    ) -> Any:
+        # Override of `FormatterV2.read_from_stream`.
+        if self.file_descriptor.parameters is not None and "blend_id" in self.file_descriptor.parameters:
+            filename = self.file_descriptor.parameters["blend_id"]
+            if isinstance(filename, Iterable):
+                filenames = [str(f) for f in filename]
+            else:
+                filenames = [str(filename)]
+            filenames += ['psf', 'psf_shape']
+        else:
+            filenames = None
+
+        with zipfile.ZipFile(stream, 'r') as zip_file:
+            if filenames is None:
+                filenames = [filename for filename in zip_file.namelist()]
+
+            unzipped_files = {}
+            for filename in filenames:
+                with zip_file.open(filename) as f:
+                    unzipped_files[filename] = from_json(f.read())
+
+            return self._build_model(unzipped_files)
+
+    def to_bytes(self, in_memory_dataset: Any) -> bytes:
+        in_memory_zip = BytesIO()
+        with zipfile.ZipFile(in_memory_zip, 'w') as zf:
+            zip_archive = self._model_to_zip(in_memory_dataset)
+            for filename, data in zip_archive.items():
+                zf.writestr(filename, data)
+        return in_memory_zip.getvalue()
+
+
+class ScarletModelDelegate(StorageClassDelegate):
+    """Delegate to extract a blend from an in-memory ScarletModelData object.
+    """
+    def can_accept(self, inMemoryDataset: Any) -> bool:
+        return isinstance(inMemoryDataset, scl.io.ScarletModelData)
+
+    def getComponent(self, composite: Any, componentName: str) -> Any:
+        raise AttributeError(f"Unsupported component: {componentName}")
+
+    def handleParameters(self, inMemoryDataset: Any, parameters: Mapping[str, Any] | None = None) -> Any:
+        if "blend_id" in parameters:
+            blend_id = parameters["blend_id"]
+            if isinstance(blend_id, Iterable):
+                blend_ids = [f for f in blend_id]
+            else:
+                blend_ids = [blend_id]
+            blends = {blend_id: inMemoryDataset.blends[blend_id] for blend_id in blend_ids}
+            inMemoryDataset.blends = blends
+        elif parameters is not None:
+            raise ValueError(f"Unsupported parameters: {parameters}")
+        return inMemoryDataset
