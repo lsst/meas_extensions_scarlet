@@ -19,7 +19,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import os
 import unittest
+import tempfile
 
 import lsst.afw.image as afwImage
 import lsst.scarlet.lite as scl
@@ -28,6 +30,8 @@ import numpy as np
 from lsst.afw.detection import Footprint
 from lsst.afw.geom import SpanSet, Stencil
 from lsst.afw.table import SourceCatalog
+from lsst.daf.butler import DatasetType, StorageClass
+from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
 from lsst.geom import Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.io import (
@@ -38,6 +42,8 @@ from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.utils import bboxToScarletBox, scarletBoxToBBox
 from numpy.testing import assert_almost_equal
 from utils import initData
+
+TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
 
 class TestDeblend(lsst.utils.tests.TestCase):
@@ -81,6 +87,26 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for b, coadd in enumerate(self.coadds):
             coadd.setPsf(psfs[b])
 
+        # Initialize a Butler
+        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
+        config = lsst.daf.butler.Config()
+        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
+        self.repo = makeTestRepo(repo_dir.name, config=config)
+        storageClass = StorageClass(
+            "ScarletModelData",
+            pytype=scl.io.ScarletModelData,
+            parameters=('blend_id',),
+            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+        )
+        datasetType = DatasetType(
+            "scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=self.repo.dimensions,
+        )
+        self.repo.registry.registerDatasetType(datasetType)
+
     def _insert_blank_source(self, modelData, catalog):
         # Add parent
         parent = catalog.addNew()
@@ -105,9 +131,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         sources = {
             src.getId(): {
-                "components": [],
-                "factorized": [
+                "components": [
                     {
+                        "component_type": "factorized",
                         "origin": origin,
                         "peak": center,
                         "spectrum": np.zeros((len(self.bands),), dtype=dtype),
@@ -337,6 +363,44 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Check that the zero flux source was flagged
         for src in catalog:
             np.testing.assert_equal(src["deblend_zeroFlux"], src.getId() == bad_src_id)
+
+    def _test_blend(self, blendData1, blendData2, model_psf):
+        # Test that two ScarletBlendData objects are equal
+        # up to machine precision.
+        np.testing.assert_almost_equal(blendData1.psf, blendData2.psf)
+        self.assertTupleEqual(blendData1.origin, blendData2.origin)
+        self.assertTupleEqual(blendData1.shape, blendData2.shape)
+        np.testing.assert_almost_equal(blendData1.psf_center, blendData2.psf_center)
+        np.testing.assert_almost_equal(blendData1.psf, blendData2.psf)
+        self.assertEqual(blendData1.bands, blendData2.bands)
+        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
+
+        # Test that the two blends are equal up to machine precision
+        # once converted into scarlet lite Blend objects.
+        blend1 = blendData1.minimal_data_to_blend(model_psf, dtype=np.float32)
+        blend2 = blendData2.minimal_data_to_blend(model_psf, dtype=np.float32)
+        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
+
+    def test_persistence(self):
+        # Test that the model data is persisted correctly
+        _, modelData, _ = self._deblend("lite")
+        butler = makeTestCollection(self.repo, uniqueId="test_run1")
+        butler.put(modelData, "scarlet_model_data", dataId={})
+        modelData2 = butler.get("scarlet_model_data", dataId={})
+        model_psf = modelData.psf[None, :, :]
+        np.testing.assert_almost_equal(modelData2.psf, modelData.psf)
+        self.assertEqual(len(modelData2.blends), len(modelData.blends))
+
+        for blendId in modelData.blends.keys():
+            blendData1 = modelData.blends[blendId]
+            blendData2 = modelData2.blends[blendId]
+            self._test_blend(blendData1, blendData2, model_psf)
+
+        # Test extracting a single blend
+        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": blendId})
+        self.assertEqual(len(modelData2.blends), 1)
+        blendData2 = modelData2.blends[blendId]
+        self._test_blend(blendData1, blendData2, model_psf)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
