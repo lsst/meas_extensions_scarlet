@@ -30,7 +30,7 @@ import numpy as np
 from lsst.afw.detection import Footprint
 from lsst.afw.geom import SpanSet, Stencil
 from lsst.afw.table import SourceCatalog
-from lsst.daf.butler import DatasetType, StorageClass
+from lsst.daf.butler import DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
 from lsst.geom import Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
@@ -401,6 +401,39 @@ class TestDeblend(lsst.utils.tests.TestCase):
         self.assertEqual(len(modelData2.blends), 1)
         blendData2 = modelData2.blends[blendId]
         self._test_blend(blendData1, blendData2, model_psf)
+
+    def test_legacy_model(self):
+        storageClass = StorageClass(
+            "ScarletModelData",
+            pytype=scl.io.ScarletModelData,
+        )
+        datasetType = DatasetType(
+            "old_scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=self.repo.dimensions,
+        )
+        ref = DatasetRef(
+            datasetType,
+            run="test_ingestion",
+            dataId={},
+        )
+        dataset = FileDataset(
+            path=os.path.join(TESTDIR, "data", "v29_models.json"),
+            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
+            refs=[ref],
+        )
+
+        # Ingest the legacy model into the butler
+        butler = makeTestCollection(self.repo, uniqueId="ingestion")
+        self.repo.registry.registerDatasetType(datasetType)
+        butler.ingest(dataset)
+
+        model = butler.get("old_scarlet_model_data", dataId={})
+        self.assertEqual(len(model.blends), 2)
+
+        test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
+        self.assertEqual(len(test.blends), 1)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
