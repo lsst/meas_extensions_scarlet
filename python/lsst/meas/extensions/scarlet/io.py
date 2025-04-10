@@ -494,7 +494,7 @@ class ScarletModelFormatter(TypelessFormatter):
     """
 
     default_extension = ".scarlet"
-    unsupported_parameters = None
+    unsupported_parameters = frozenset()
     can_read_from_stream = True
 
     def _build_model(self, zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
