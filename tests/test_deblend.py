@@ -402,6 +402,14 @@ class TestDeblend(lsst.utils.tests.TestCase):
         blendData2 = modelData2.blends[blendId]
         self._test_blend(blendData1, blendData2, model_psf)
 
+        # Test extracting two blends
+        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [1, 2]})
+        self.assertEqual(len(modelData2.blends), 2)
+        for blendId in [1, 2]:
+            blendData1 = modelData.blends[blendId]
+            blendData2 = modelData2.blends[blendId]
+            self._test_blend(blendData1, blendData2, model_psf)
+
     def test_legacy_model(self):
         storageClass = StorageClass(
             "ScarletModelData",

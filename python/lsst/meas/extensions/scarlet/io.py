@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from io import BytesIO
 import logging
 import json
@@ -37,6 +37,7 @@ from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
 from lsst.afw.image import Exposure, MaskedImage
 from lsst.afw.table import SourceCatalog
+import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
 from lsst.daf.butler.formatters.typeless import TypelessFormatter
 from lsst.geom import Box2I, Extent2I, Point2I
@@ -551,11 +552,8 @@ class ScarletModelFormatter(TypelessFormatter):
     ) -> Any:
         # Override of `FormatterV2.read_from_stream`.
         if self.file_descriptor.parameters is not None and "blend_id" in self.file_descriptor.parameters:
-            filename = self.file_descriptor.parameters["blend_id"]
-            if isinstance(filename, Iterable):
-                filenames = [str(f) for f in filename]
-            else:
-                filenames = [str(filename)]
+            filenames = lsst_utils.iteration.ensure_iterable(self.file_descriptor.parameters["blend_id"])
+            filenames = [str(f) for f in filenames]
             filenames += ['psf', 'psf_shape']
         else:
             filenames = None
@@ -591,11 +589,7 @@ class ScarletModelDelegate(StorageClassDelegate):
 
     def handleParameters(self, inMemoryDataset: Any, parameters: Mapping[str, Any] | None = None) -> Any:
         if "blend_id" in parameters:
-            blend_id = parameters["blend_id"]
-            if isinstance(blend_id, Iterable):
-                blend_ids = [f for f in blend_id]
-            else:
-                blend_ids = [blend_id]
+            blend_ids = lsst_utils.iteration.ensure_iterable(parameters["blend_id"])
             blends = {blend_id: inMemoryDataset.blends[blend_id] for blend_id in blend_ids}
             inMemoryDataset.blends = blends
         elif parameters is not None:
