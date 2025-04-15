@@ -182,8 +182,17 @@ def deblend(
     blend = scl.Blend(sources, observation)
 
     # Initialize each source with its best fit spectrum
+    initializedSpectrum = False
     if spectrumInit:
-        blend.fit_spectra()
+        try:
+            blend.fit_spectra()
+            initializedSpectrum = True
+        except Exception as e:
+            # If the spectrum initialization fails, we will just skip it
+            # and use the default spectrum.
+            logger.warning(
+                "Spectrum initialization failed with error: %s", e, exc_info=True
+            )
 
     # Set the optimizer
     if config.optimizer == "adaprox":
@@ -223,7 +232,7 @@ def deblend(
     # Calculate the bands that were skipped
     skippedBands = [band for band in mExposure.bands if band not in observation.bands]
 
-    return blend, skippedSources, skippedBands
+    return blend, skippedSources, skippedBands, initializedSpectrum
 
 
 class ScarletDeblendConfig(pexConfig.Config):
@@ -901,7 +910,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 t0 = time.monotonic()
                 # Build the parameter lists with the same ordering
                 if self.config.version == "lite":
-                    blend, skippedSources, skippedBands = deblend(
+                    blend, skippedSources, skippedBands, spectrumInit = deblend(
                         mExposure=mExposure,
                         modelPsf=modelPsf,
                         footprint=foot,
