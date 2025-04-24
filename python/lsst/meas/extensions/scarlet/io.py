@@ -39,7 +39,7 @@ from lsst.afw.image import Exposure, MaskedImage
 from lsst.afw.table import SourceCatalog
 import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
-from lsst.daf.butler.formatters.typeless import TypelessFormatter
+from lsst.daf.butler import FormatterV2
 from lsst.geom import Box2I, Extent2I, Point2I
 from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
@@ -485,7 +485,7 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
     return blendData
 
 
-class ScarletModelFormatter(TypelessFormatter):
+class ScarletModelFormatter(FormatterV2):
     """Read and write zip archives.
 
     In order for files to be read from a zip file, the pydantic model
@@ -497,6 +497,7 @@ class ScarletModelFormatter(TypelessFormatter):
     default_extension = ".scarlet"
     unsupported_parameters = frozenset()
     can_read_from_stream = True
+    can_read_from_local_file = True
 
     def _build_model(self, zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
         """Build a ScarletModelData instance from a dictionary of files.
@@ -547,6 +548,16 @@ class ScarletModelFormatter(TypelessFormatter):
         })
         return data
 
+    def read_from_local_file(self, path: str, component: str | None = None, expected_size: int = -1) -> Any:
+        # Override of `FormatterV2.read_from_local_file`.
+        with zipfile.ZipFile(path, 'r') as zip_file:
+            unzipped_files = {}
+            for filename in zip_file.namelist():
+                with zip_file.open(filename) as f:
+                    unzipped_files[filename] = from_json(f.read())
+
+        return self._build_model(unzipped_files)
+
     def read_from_stream(
         self, stream: BinaryIO | ResourceHandleProtocol, component: str | None = None, expected_size: int = -1
     ) -> Any:
@@ -556,12 +567,9 @@ class ScarletModelFormatter(TypelessFormatter):
             filenames = [str(f) for f in filenames]
             filenames += ['psf', 'psf_shape']
         else:
-            filenames = None
+            return NotImplemented
 
         with zipfile.ZipFile(stream, 'r') as zip_file:
-            if filenames is None:
-                filenames = [filename for filename in zip_file.namelist()]
-
             unzipped_files = {}
             for filename in filenames:
                 with zip_file.open(filename) as f:
