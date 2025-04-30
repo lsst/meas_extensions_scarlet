@@ -39,7 +39,7 @@ from lsst.afw.image import Exposure, MaskedImage
 from lsst.afw.table import SourceCatalog
 import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
-from lsst.daf.butler.formatters.typeless import TypelessFormatter
+from lsst.daf.butler import FormatterV2
 from lsst.geom import Box2I, Extent2I, Point2I
 from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
@@ -485,96 +485,141 @@ def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
     return blendData
 
 
-class ScarletModelFormatter(TypelessFormatter):
-    """Read and write zip archives.
+def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
+    """Build a ScarletModelData instance from a dictionary of files.
 
-    In order for files to be read from a zip file, the pydantic model
-    must have a `load` method that accepts a file object and the filename
-    as arguments, as well as a `from_zip` method that accepts a dictionary
-    of files to create the object from the zip archive.
+    Parameters
+    ----------
+    zip_dict : dict[str, Any]
+        Dictionary mapping filenames to the desired file type.
+
+    Returns
+    -------
+    model :
+        ScarletModelData instance.
+    """
+    model_psf = zip_dict.pop('psf')
+    psf_shape = zip_dict.pop('psf_shape')
+    blends = {}
+    for key, value in zip_dict.items():
+        blends[int(key)] = value
+    return scl.io.ScarletModelData.parse_obj({
+        'psf': model_psf,
+        'psfShape': psf_shape,
+        'blends': blends,
+    })
+
+
+def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> scl.io.ScarletModelData:
+    """Read a zip file and return a ScarletModelData instance.
+
+    Parameters
+    ----------
+    path : `str`
+        Path to the zip file.
+    blend_ids : `list[int]`, optional
+        List of blend IDs to extract from the zip file. If None,
+        all blends in the dataset will be extracted.
+
+    Returns
+    -------
+    model :
+        ScarletModelData instance.
+    """
+
+    if blend_ids is not None:
+        filenames = [str(f) for f in blend_ids]
+        filenames += ['psf', 'psf_shape']
+    else:
+        filenames = None
+
+    with zipfile.ZipFile(path_or_stream, 'r') as zip_file:
+        unzipped_files = {}
+        if filenames is None:
+            filenames = zip_file.namelist()
+        for filename in filenames:
+            with zip_file.open(filename) as f:
+                unzipped_files[filename] = from_json(f.read())
+
+        return build_scarlet_model(unzipped_files)
+
+
+def scarlet_model_to_zip_json(model_data: scl.io.ScarletModelData) -> dict[str, Any]:
+    """Convert a ScarletModelData instance to a dictionary of files.
+
+    This is required to convert the model data into a format that
+    can be insterted into a zip archive.
+
+    Parameters
+    ----------
+    model_data : `lsst.scarelt.lite.io.ScarletModelData`
+        ScarletModelData instance.
+
+    Returns
+    -------
+    data : dict[str, Any]
+        Dictionary mapping filenames to the desired file type.
+    """
+    json_model = model_data.as_dict()
+
+    data = {
+        str(blend_id): json.dumps(blend_data)
+        for blend_id, blend_data in json_model['blends'].items()
+    }
+    data.update({
+        'psf_shape': json.dumps(json_model['psfShape']),
+        'psf': json.dumps(json_model['psf']),
+    })
+    return data
+
+
+def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: scl.io.ScarletModelData):
+    """Write a ScarletModelData instance to a zip file.
+
+    Parameters
+    ----------
+    model_data : `lsst.scarlet.lite.io.ScarletModelData`
+        ScarletModelData instance.
+
+    Returns
+    -------
+    zip_dict :
+        Dictionary mapping filenames to the desired file type.
+    """
+    with zipfile.ZipFile(path_or_stream, 'w') as zf:
+        zip_archive = scarlet_model_to_zip_json(model_data)
+        for filename, data in zip_archive.items():
+            zf.writestr(filename, data)
+
+
+class ScarletModelFormatter(FormatterV2):
+    """Read and write scarlet models.
     """
 
     default_extension = ".scarlet"
     unsupported_parameters = frozenset()
     can_read_from_stream = True
+    can_read_from_local_file = True
 
-    def _build_model(self, zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
-        """Build a ScarletModelData instance from a dictionary of files.
-
-        Parameters
-        ----------
-        zip_dict : dict[str, Any]
-            Dictionary mapping filenames to the desired file type.
-
-        Returns
-        -------
-        model :
-            ScarletModelData instance.
-        """
-        model_psf = zip_dict.pop('psf')
-        psf_shape = zip_dict.pop('psf_shape')
-        blends = {}
-        for key, value in zip_dict.items():
-            blends[int(key)] = value
-        return scl.io.ScarletModelData.parse_obj({
-            'psf': model_psf,
-            'psfShape': psf_shape,
-            'blends': blends,
-        })
-
-    def _model_to_zip(self, model_data: scl.io.ScarletModelData) -> dict[str, Any]:
-        """Convert a ScarletModelData instance to a dictionary of files.
-
-        Parameters
-        ----------
-        model_data : `lsst.scarelt.lite.io.ScarletModelData`
-            ScarletModelData instance.
-
-        Returns
-        -------
-        zip_dict :
-            Dictionary mapping filenames to the desired file type.
-        """
-        json_model = model_data.as_dict()
-
-        data = {
-            str(blend_id): json.dumps(blend_data)
-            for blend_id, blend_data in json_model['blends'].items()
-        }
-        data.update({
-            'psf_shape': json.dumps(json_model['psfShape']),
-            'psf': json.dumps(json_model['psf']),
-        })
-        return data
+    def read_from_local_file(self, path: str, component: str | None = None, expected_size: int = -1) -> Any:
+        # Override of `FormatterV2.read_from_local_file`.
+        return read_scarlet_model(path)
 
     def read_from_stream(
         self, stream: BinaryIO | ResourceHandleProtocol, component: str | None = None, expected_size: int = -1
     ) -> Any:
         # Override of `FormatterV2.read_from_stream`.
         if self.file_descriptor.parameters is not None and "blend_id" in self.file_descriptor.parameters:
-            filenames = lsst_utils.iteration.ensure_iterable(self.file_descriptor.parameters["blend_id"])
-            filenames = [str(f) for f in filenames]
-            filenames += ['psf', 'psf_shape']
+            blend_ids = lsst_utils.iteration.ensure_iterable(self.file_descriptor.parameters["blend_id"])
         else:
-            filenames = None
+            return NotImplemented
 
-        with zipfile.ZipFile(stream, 'r') as zip_file:
-            if filenames is None:
-                filenames = [filename for filename in zip_file.namelist()]
-
-            unzipped_files = {}
-            for filename in filenames:
-                with zip_file.open(filename) as f:
-                    unzipped_files[filename] = from_json(f.read())
-
-            return self._build_model(unzipped_files)
+        return read_scarlet_model(stream, blend_ids=blend_ids)
 
     def to_bytes(self, in_memory_dataset: Any) -> bytes:
+        # Override of `FormatterV2.to_bytes`.
         in_memory_zip = BytesIO()
-        with zipfile.ZipFile(in_memory_zip, 'w') as zf:
-            zip_archive = self._model_to_zip(in_memory_dataset)
-            for filename, data in zip_archive.items():
-                zf.writestr(filename, data)
+        write_scarlet_model(in_memory_zip, in_memory_dataset)
         return in_memory_zip.getvalue()
 
 
