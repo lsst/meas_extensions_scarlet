@@ -163,7 +163,7 @@ def updateCatalogFootprints(
     bands = refBlend.bands
     bandIndex = bands.index(band)
     observedPsf = refBlend.psf[bandIndex][None, :, :]
-    blends = extraxctMonochromaticBlends(
+    blends = extractMonochromaticBlends(
         modelData=modelData,
         catalog=catalog,
         modelPsf=modelData.psf,
@@ -267,7 +267,7 @@ def buildMonochromaticObservation(
     return observation
 
 
-def extraxctMonochromaticBlends(
+def extractMonochromaticBlends(
     modelData: scl.ScarletModelData,
     catalog: SourceCatalog,
     modelPsf: np.ndarray,
