@@ -2,11 +2,15 @@ import lsst.geom as geom
 import lsst.scarlet.lite as scl
 import numpy as np
 from scipy.signal import convolve
-from lsst.afw.detection import Footprint as afwFootprint
+from lsst.afw.detection import InvalidPsfError, Footprint as afwFootprint
 from lsst.afw.image import (
     IncompleteDataError,
     MultibandExposure,
+    Exposure,
 )
+from lsst.afw.image.utils import projectImage
+from lsst.afw.table import SourceCatalog
+from lsst.geom import Point2D, Point2I
 
 defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
@@ -81,7 +85,7 @@ def multiband_convolve(images: np.ndarray, psfs: np.ndarray) -> np.ndarray:
     return result
 
 
-def computePsfKernelImage(mExposure, psfCenter):
+def computePsfKernelImage(mExposure, psfCenter, catalog=None):
     """Compute the PSF kernel image and update the multiband exposure
     if not all of the PSF images could be computed.
 
@@ -116,6 +120,141 @@ def computePsfKernelImage(mExposure, psfCenter):
     return psfModels.array, mExposure
 
 
+def computeNearestPsf(
+    calexp: Exposure,
+    catalog: SourceCatalog,
+    band: str,
+    psfCenter: Point2D,
+) -> tuple[np.ndarray, Point2I, float]:
+    """Create a PSF image at the neareset valid location
+
+    Sometimes not all locations in an image can generate a PSF image so the
+    source catalog is used to find the nearest valid location.
+
+    Parameters
+    ----------
+    calexp :
+        The exposure.
+    catalog :
+        The catalog.
+    band :
+        The band.
+    psfCenter :
+        The location of the PSF image.
+        If no location is provided, the center of the exposure is used.
+
+    Returns
+    -------
+    psf :
+        The PSF image.
+    location :
+        The location of the PSF image.
+    diff :
+        The difference between the requested location and the
+        nearest valid location.
+    """
+    if psfCenter is None:
+        psfCenter = calexp.getBBox().getCenter()
+
+    if not isinstance(psfCenter, geom.Point2D):
+        psfCenter = geom.Point2D(*psfCenter)
+
+    try:
+        psf = calexp.getPsf().computeKernelImage(psfCenter)
+        return psf, psfCenter, 0
+    except InvalidPsfError:
+        pass
+
+    xc, yc = psfCenter
+
+    # Only select records that have detections in this band
+    sources = catalog[catalog[f'merge_footprint_{band}']]
+
+    # Get the peaks of all of the sources
+    x = []
+    y = []
+    for src in sources:
+        for peak in src.getFootprint().peaks:
+            if peak[f'merge_peak_{band}']:
+                x.append(peak['i_x'])
+                y.append(peak['i_y'])
+    x = np.array(x)
+    y = np.array(y)
+
+    # Sort the peaks based on their distance to the location
+    diff_x = x - xc
+    diff_y = y - yc
+    sorted_indices = np.argsort(diff_x**2 + diff_y**2)
+
+    # Iterate over sources until a location is found that can generate a PSF
+    psf = None
+    for ref_index in sorted_indices:
+        try:
+            psf = calexp.getPsf().computeKernelImage(Point2D(x[ref_index], y[ref_index]))
+            break
+        except InvalidPsfError:
+            pass
+    if psf is None:
+        return None, None, None
+    newLocation = Point2I(x[ref_index], y[ref_index])
+    diff = np.sqrt(diff_x[ref_index]**2 + diff_y[ref_index]**2)
+
+    return psf, newLocation, diff
+
+
+def computeNearestMultiBandPsf(
+    mExposure: MultibandExposure,
+    psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
+    catalog: SourceCatalog,
+) -> tuple[np.ndarray, MultibandExposure]:
+    """Compute the image in each band at the location nearest to the PSF Center
+
+    Parameters
+    ----------
+    mExposure :
+        The multi-band exposure.
+    psfCenter :
+        The location `(x, y)` used as the center of the PSF.
+    catalog :
+        The source catalog.
+    """
+    psfs = {}
+    incomplete = False
+    for band in mExposure.filters:
+        psf, psfCenter, diff = computeNearestPsf(
+            mExposure[band,],
+            psfCenter,
+            catalog,
+            band,
+        )
+        if psf is None:
+            incomplete = True
+        else:
+            psfs[band] = psf
+
+    left = np.min([psf.getBBox().getMinX() for psf in psfs.values()])
+    bottom = np.min([psf.getBBox().getMinY() for psf in psfs.values()])
+    right = np.max([psf.getBBox().getMaxX() for psf in psfs.values()])
+    top = np.max([psf.getBBox().getMaxY() for psf in psfs.values()])
+    bbox = Box2I(Point2I(left, bottom), Point2I(right, top))
+
+    psf_images = [projectImage(psf, bbox) for psf in psfs.values()]
+
+    mPsf = MultibandImage.fromImages(list(psfs.keys()), psf_images)
+
+    if incomplete:
+        bands = mPsf.filters
+        mExposure = mExposure[bands,]
+
+        if len(bands) == 1:
+            # Only a single band generated a PSF, so the MultibandExposure
+            # became a single band ExposureF.
+            # Convert the result back into a MultibandExposure.
+            mExposure = MultibandExposure.fromExposures(bands, [mExposure])
+
+    return mPsf.array, mExposure
+
+
 def buildObservation(
     modelPsf: np.ndarray,
     psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
@@ -124,6 +263,7 @@ def buildObservation(
     footprint: afwFootprint = None,
     useWeights: bool = True,
     convolutionType: str = "real",
+    catalog: SourceCatalog | None = None,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
 
@@ -132,30 +272,33 @@ def buildObservation(
 
     Parameters
     ----------
-    modelPsf:
+    modelPsf :
         The 2D model of the PSF in the partially deconvolved space.
-    psfCenter:
+    psfCenter :
         The location `(x, y)` used as the center of the PSF.
-    mExposure:
+    mExposure :
         The multi-band exposure that the model represents.
         If `mExposure` is `None` then no image, variance, or weights are
         attached to the observation.
-    footprint:
+    footprint :
         The footprint that is being fit.
         If `footprint` is `None` then the weights are not updated to mask
         out pixels not contained in the footprint.
-    badPixelMasks:
+    badPixelMasks :
         The keys from the bit mask plane used to mask out pixels
         during the fit.
         If `badPixelMasks` is `None` then the default values from
         `ScarletDeblendConfig.badMask` are used.
-    useWeights:
+    useWeights :
         Whether or not fitting should use inverse variance weights to
         calculate the log-likelihood.
-    convolutionType:
+    convolutionType :
         The type of convolution to use (either "real" or "fft").
         When reconstructing an image it is advised to use "real" to avoid
         polluting the footprint with artifacts from the fft.
+    catalog :
+        A source catalog to use for PSFs that cannot be determined at
+        the center of the image.
 
     Returns
     -------
@@ -165,7 +308,10 @@ def buildObservation(
     # Initialize the observed PSFs
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-    psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
+    if catalog is None:
+        psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
+    else:
+        psfModels, mExposure = computeNearestMultiBandPsf(mExposure, psfCenter, catalog)
 
     # Use the inverse variance as the weights
     if useWeights:
