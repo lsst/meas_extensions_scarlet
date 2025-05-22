@@ -29,7 +29,7 @@ from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
 from lsst.afw.image import Exposure, MaskedImage, MaskX
-from lsst.afw.table import SourceCatalog
+from lsst.afw.table import SourceCatalog, SourceRecord
 from lsst.geom import Point2I
 
 from .metrics import setDeblenderMetrics
@@ -130,8 +130,7 @@ def updateCatalogFootprints(
     imageForRedistribution: MaskedImage | Exposure | None = None,
     removeScarletData: bool = True,
     updateFluxColumns: bool = True,
-    bbox: scl.Box | None = None,
-) -> dict[int, scl.Blend]:
+) -> None:
     """Use the scarlet models to set HeavyFootprints for modeled sources
 
     Parameters
@@ -151,9 +150,6 @@ def updateCatalogFootprints(
         Whether or not to update the `deblend_*` columns in the catalog.
         This should only be true when the input catalog schema already
         contains those columns.
-    bbox:
-        The bounding box of the image to create the weight image for.
-        Ignored if `imageForRedistribution` is not `None`.
     """
     # All of the blends should have the same PSF,
     # so we extract it from the first blend data.
@@ -163,40 +159,54 @@ def updateCatalogFootprints(
     bands = refBlend.bands
     bandIndex = bands.index(band)
     observedPsf = refBlend.psf[bandIndex][None, :, :]
-    blends = extractMonochromaticBlends(
-        modelData=modelData,
-        catalog=catalog,
-        modelPsf=modelData.psf,
-        observedPsf=observedPsf,
-        imageForRedistribution=imageForRedistribution,
-        bandIndex=bandIndex,
-        removeScarletData=removeScarletData,
-        bbox=bbox,
-    )
 
-    for blendId, blend in blends.items():
-        # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
-        if imageForRedistribution is not None:
-            parentRecord = catalog.find(blendId)
-            calculateFootprintCoverage(
+    # Flux re-distribution may mix depth=1 blends, so we iterate over the
+    # completely flux separated parents to ensure that the full models
+    # are used for each source.
+    parents = catalog[catalog["parent"] == 0]
+
+    for parentRecord in parents:
+        parentId = parentRecord.getId()
+
+        children = catalog.getChildren(parentId)
+
+        if len(children) == 0:
+            # No children, so it is either an isolated source or failed
+            # deblending.
+            # Either way we can skip creating heavy child footprints.
+            continue
+
+        if updateFluxColumns and imageForRedistribution is not None:
+            # Update the data coverage (1 - # of NO_DATA pixels/# of pixels)
+            parentRecord["deblend_dataCoverage"] = calculateFootprintCoverage(
                 parentRecord.getFootprint(), imageForRedistribution.mask
             )
-        updateBlendRecords(
-            blend=blend,
-            catalog=catalog,
+
+        observation = buildMonochromaticObservation(
+            modelPsf=modelData.psf,
+            observedPsf=observedPsf,
+            footprint=parentRecord.getFootprint(),
             imageForRedistribution=imageForRedistribution,
-            updateFluxColumns=updateFluxColumns,
         )
 
-    return blends
+        updateBlendRecords(
+            modelData=modelData,
+            bandIndex=bandIndex,
+            parent=parentRecord,
+            children=children,
+            catalog=catalog,
+            observation=observation,
+            updateFluxColumns=updateFluxColumns,
+            imageForRedistribution=imageForRedistribution,
+            removeScarletData=removeScarletData,
+        )
 
 
 def buildMonochromaticObservation(
-    catalog: SourceCatalog,
     modelPsf: np.ndarray,
     observedPsf: np.ndarray,
-    imageForRedistribution: MaskedImage | Exposure | None,
-    bbox: scl.Box | None = None,
+    footprint: afwFootprint | None = None,
+    imageForRedistribution: MaskedImage | Exposure | None = None,
 ) -> scl.Observation:
     """Create a single-band observation for the entire image
 
@@ -220,156 +230,44 @@ def buildMonochromaticObservation(
     observation : `scarlet.lite.Observation`
         The observation for the entire image
     """
-    useFlux = imageForRedistribution is not None
+    if footprint is None and imageForRedistribution is None:
+        raise ValueError("Either footprint or imageForRedistribution must be provided")
 
-    if useFlux:
-        if bbox is None:
-            bbox = utils.bboxToScarletBox(imageForRedistribution.getBBox())
-        assert bbox is not None  # needed for typing
-        parents = catalog[catalog["parent"] == 0]
-        footprintImage = footprintsToNumpy(parents, bbox.shape, bbox.origin[::-1])
-        # Extract the image array to re-distribute its flux
-        images = scl.Image(
-            imageForRedistribution.image.array[None, :, :],
-            yx0=bbox.origin,
-            bands=monochromaticBands,
-        )
+    if footprint is None:
+        bbox = imageForRedistribution.getBBox()
+    else:
+        bbox = footprint.getBBox()
 
-        variance = scl.Image(
-            imageForRedistribution.variance.array[None, :, :],
-            yx0=bbox.origin,
-            bands=monochromaticBands,
-        )
+    scarletBox = utils.bboxToScarletBox(bbox)
 
-        weights = scl.Image(
-            footprintImage[None, :, :],
-            yx0=bbox.origin,
-            bands=monochromaticBands,
-        )
+    if imageForRedistribution is not None:
+        cutout = imageForRedistribution[bbox]
+
+        # Mask the footprint
+        weights = np.ones(cutout.image.array.shape, dtype=cutout.image.array.dtype)
+
+        if footprint is not None:
+            weights *= footprint.spans.asArray()
 
         observation = scl.io.Observation(
-            images=images,
-            variance=variance,
-            weights=weights,
+            images=cutout.image.array[None, :, :],
+            variance=cutout.variance.array[None, :, :],
+            weights=weights[None, :, :],
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
+            convolution_mode="real",
+            bands=monochromaticBands,
+            bbox=scarletBox,
         )
     else:
-        if bbox is None:
-            raise ValueError("bbox must be provided when imageForRedistribution is None")
         observation = scl.io.Observation.empty(
             bands=monochromaticBands,
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
             bbox=bbox,
-            dtype=np.float32,
+            dtype=modelPsf.dtype,
         )
     return observation
-
-
-def extractMonochromaticBlends(
-    modelData: scl.ScarletModelData,
-    catalog: SourceCatalog,
-    modelPsf: np.ndarray,
-    observedPsf: np.ndarray,
-    imageForRedistribution: MaskedImage | Exposure | None,
-    bandIndex: int,
-    removeScarletData: bool = True,
-    bbox: scl.Box | None = None,
-) -> dict[int, scl.Blend]:
-    """Extract the monochromatic blends from the scarlet model data
-
-    Parameters
-    ----------
-    modelData :
-        The scarlet model data.
-    catalog :
-        The catalog that is being updated.
-    modelPsf :
-        The 2D model of the PSF.
-    observedPsf :
-        The observed PSF model for the catalog.
-    imageForRedistribution:
-        The image that is the source for flux re-distribution.
-        If `imageForRedistribution` is `None` then flux re-distribution is
-        not performed.
-    bandIndex :
-        The number of the band to extract.
-    removeScarletData :
-        Whether or not to remove `ScarletBlendData` for each blend
-        in order to save memory.
-    bbox :
-        The bounding box of the image to create the weight image for.
-
-    Returns
-    -------
-    blends :
-        A dictionary of blends extracted from the model data.
-    """
-    blends = {}
-    # Create an observation for the entire image
-    observation = buildMonochromaticObservation(
-        catalog=catalog,
-        modelPsf=modelPsf,
-        observedPsf=observedPsf,
-        imageForRedistribution=imageForRedistribution,
-        bbox=bbox,
-    )
-
-    items = list(modelData.blends.items())
-
-    for blendId, blendData in items:
-        blend = monochromaticDataToScarlet(
-            blendData=blendData,
-            bandIndex=bandIndex,
-            observation=observation,
-        )
-        blends[blendId] = blend
-        # Save memory by removing the data for the blend
-        if removeScarletData:
-            del modelData.blends[blendId]
-
-    if imageForRedistribution is not None:
-        weightImage = createMonochromaticWeightImage(list(blends.values()), observation)
-        for blend in blends.values():
-            # Re-distribute the flux using the ratio of the blends flux to
-            # the flux in the image.
-            blend.conserve_flux(weight_image=weightImage)
-
-    return blends
-
-
-def createMonochromaticWeightImage(blends: list[scl.Blend], observation: scl.Observation) -> scl.Image:
-    """Create a weight image from the scarlet model data
-
-    Parameters
-    ----------
-    modelData:
-        The scarlet model data.
-    bbox :
-        The bounding box of the image to create the weight image for.
-
-    Returns
-    -------
-    weightImage : `lsst.afw.image.Image`
-        The weight image with the same dimensions as the model data.
-    """
-    # Create a weight image with the same dimensions as the model data
-    weightImage = scl.Image.from_box(observation.bbox, bands=monochromaticBands)
-    for blend in blends:
-        for source in blend.sources:
-            # Note that this is the deconvolvd source model
-            model = source.get_model()
-            weightImage += model
-
-    weightImage = observation.convolve(weightImage)
-
-    # Due to ringing in the PSF, the convolved model can have
-    # negative values. We take the absolute value to avoid
-    # negative fluxes in the flux weighted images.
-    weightImage.data[:] = np.abs(weightImage.data)
-
-    return weightImage
 
 
 def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.floating:
@@ -403,10 +301,15 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 
 def updateBlendRecords(
-    blend: scl.Blend,
+    modelData: scl.io.ScarletModelData,
+    bandIndex: int,
+    parent: SourceRecord,
+    children: SourceCatalog,
     catalog: SourceCatalog,
-    imageForRedistribution: MaskedImage | Exposure | None,
+    observation: scl.Observation,
     updateFluxColumns: bool,
+    imageForRedistribution: MaskedImage | Exposure | None = None,
+    removeScarletData: bool = True,
 ):
     """Create footprints and update band-dependent columns in the catalog
 
@@ -436,6 +339,36 @@ def updateBlendRecords(
     """
     useFlux = imageForRedistribution is not None
 
+    # Create a blend with the parent and all of its children.
+    if parent.getId() in modelData.blends:
+        blendData = modelData.blends[parent.getId()]
+        blend = monochromaticDataToScarlet(blendData, bandIndex, observation)
+        sources = blend.sources
+    else:
+        sources = []
+
+    for child in children:
+        if child.getId() in modelData.blends:
+            # The child is a blend, so we need to update the
+            # parent with the child blend.
+            blendData = modelData.blends[child.getId()]
+            blend = monochromaticDataToScarlet(
+                blendData, bandIndex, observation,
+            )
+            sources.extend(blend.sources)
+
+    if len(sources) == 0:
+        # No sources to update, so we can skip the rest of the function.
+        return
+
+    blend = scl.Blend(
+        sources=sources,
+        observation=observation,
+    )
+
+    if useFlux:
+        blend.conserve_flux()
+
     # Set the metrics for the blend.
     # TODO: remove this once DM-34558 runs all deblender metrics
     # in a separate task.
@@ -447,7 +380,6 @@ def updateBlendRecords(
     for source in blend.sources:
         sourceRecord = catalog.find(source.record_id)
 
-        parent = catalog.find(sourceRecord["parent"])
         peaks = parent.getFootprint().peaks
         peakIdx = np.where(peaks["id"] == source.peak_id)[0][0]
         source.detectedPeak = peaks[peakIdx]

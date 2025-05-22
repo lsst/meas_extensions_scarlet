@@ -189,6 +189,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
                     flux = img[Point2I(px, py)]
                     self.assertEqual(flux, child.get("deblend_peak_instFlux"))
 
+                    self.assertEqual(child.get("deblend_nPeaks"), len(fp.peaks))
+
                     # Check that the peak positions match the catalog entry
                     peaks = fp.getPeaks()
                     self.assertEqual(px, peaks[0].getIx())

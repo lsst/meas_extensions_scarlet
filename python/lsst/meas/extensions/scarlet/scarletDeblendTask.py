@@ -314,10 +314,13 @@ def deblend(
         if not isPseudoSource(peak, config.pseudoColumns)
     ]
 
+    detect_image = np.sum(context.deconvolved[:, bbox].data, axis=0)
+
     # Initialize the sources
     sources = scl.initialization.FactorizedInitialization(
         observation=observation,
         centers=peaks,
+        detect=detect_image,
         min_snr=config.minSNR,
         monotonicity=context.monotonicity,
         bg_thresh=config.backgroundThresh,
@@ -1137,10 +1140,10 @@ class ScarletDeblendTask(pipeBase.Task):
                 self._updateBlendRecord(
                     blendRecord=convolvedParent,
                     nPeaks=len(convolvedParentFoot.peaks),
-                    nChild=np.sum(deconvolvedParents[self.nChildKey]),
-                    nComponents=np.sum(deconvolvedParents[self.nComponentsKey]),
-                    runtime=np.sum(deconvolvedParents[self.runtimeKey]),
-                    iterations=np.sum(deconvolvedParents[self.iterKey]),
+                    nChild=np.sum([child[self.nChildKey] for child in deconvolvedParents]),
+                    nComponents=np.sum([child[self.nComponentsKey] for child in deconvolvedParents]),
+                    runtime=np.sum([child[self.runtimeKey] for child in deconvolvedParents]),
+                    iterations=np.sum([child[self.iterKey] for child in deconvolvedParents]),
                     logL=np.nan,
                     chi2=np.sum(chi2.data)/np.sum(parentFootprintImage),
                     spectrumInit=np.all([
@@ -1152,6 +1155,9 @@ class ScarletDeblendTask(pipeBase.Task):
                         for child in deconvolvedParents
                     ]),  # type: ignore
                 )
+                # Persist convolved parent columns to the children
+                for child in deconvolvedParents:
+                    self._propagateToChild(child=child, parent=convolvedParent)
 
         # Update the mExposure mask with the footprint of skipped parents
         for sourceIndex in skippedParents:

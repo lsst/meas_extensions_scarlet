@@ -155,6 +155,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
+        inputs['band'] = inputRefs.coadd.dataId['band']
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
 
@@ -162,6 +163,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         self,
         coadd: afwImage.Exposure,
         catalog: afwTable.SourceCatalog | None = None,
+        band: str = 'dummy'
     ) -> pipeBase.Struct:
         """Deconvolve an Exposure
 
@@ -176,7 +178,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             Deconvolved exposure
         """
         # Load the scarlet lite Observation
-        observation = self._buildObservation(coadd)
+        observation = self._buildObservation(coadd, catalog, band)
         self.bbox = coadd.getBBox()
 
         # Deconvolve.
@@ -187,7 +189,12 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         exposure = self._modelToExposure(model.data[0], coadd)
         return pipeBase.Struct(deconvolved=exposure)
 
-    def _buildObservation(self, coadd: afwImage.Exposure) -> scl.Observation:
+    def _buildObservation(
+        self,
+        coadd: afwImage.Exposure,
+        catalog: afwTable.SourceCatalog | None = None,
+        band: str = 'dummy'
+    ) -> scl.Observation:
         """Build a scarlet lite Observation from an Exposure.
 
         We don't actually use scarlet, but the optimized convolutions
@@ -197,12 +204,22 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         ----------
         coadd :
             Coadd image to deconvolve.
+        catalog :
+            Catalog of sources.
+            This is used to find a location for the PSF if it cannot be
+            generated at the center of the coadd.
+
         """
-        bands = ("dummy",)
+        bands = (band,)
         model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 
         image = coadd.image.array
-        psf = coadd.getPsf().computeKernelImage(coadd.getBBox().getCenter()).array
+        psfCenter = coadd.getBBox().getCenter()
+        if catalog is not None:
+            psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
+            psf = psf.array
+        else:
+            psf = coadd.getPsf().computeKernelImage(psfCenter).array
         weights = np.ones_like(coadd.image.array)
         badPixelMasks = utils.defaultBadPixelMasks
         badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
