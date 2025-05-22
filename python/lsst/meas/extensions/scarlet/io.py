@@ -439,3 +439,10 @@ def updateBlendRecords(
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
         else:
             sourceRecord.setFootprint(heavy)
+    if removeScarletData:
+        if parent.getId() in modelData.blends:
+            del modelData.blends[parent.getId()]
+
+        for child in children:
+            if child.getId() in modelData.blends:
+                del modelData.blends[child.getId()]
