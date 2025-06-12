@@ -22,6 +22,7 @@
 import logging
 
 import lsst.afw.image as afwImage
+import lsst.afw.table as afwTable
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
@@ -29,6 +30,7 @@ import lsst.scarlet.lite as scl
 import numpy as np
 
 from . import utils
+from .footprint import footprintsToNumpy
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +39,43 @@ __all__ = [
     "DeconvolveExposureConfig",
     "DeconvolveExposureConnections",
 ]
+
+
+def calculate_update_step(observation: scl.Observation) -> float:
+    """Calculate the scale factor for the update step in deconvolution.
+
+    For most images this will be 1.0 but for images with low SNR
+    and/or high sparsity (for example LSST u-band images) the scale
+    factor will be less than 1.0.
+
+    Parameters
+    ----------
+    observation :
+        Scarlet lite Observation.
+
+    Returns
+    -------
+    scale : float
+        Scale factor for the update step.
+    """
+    # Calculate sparsity as fraction of pixels significantly above noise
+    noise_level = observation.noise_rms[0]
+    signal_pixels = np.sum(observation.images.data > 3*noise_level)
+    sparsity = signal_pixels / observation.images.data.size
+
+    # Calculate typical SNR in signal regions
+    signal_mask = observation.images.data > 3*noise_level
+
+    if np.any(signal_mask):
+        median_signal = np.median(observation.images.data[signal_mask])
+        snr = median_signal / noise_level
+    else:
+        snr = 1.0
+
+    # Scale factor that decreases with sparsity and increases with SNR
+    scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
+
+    return max(0.01, scale)
 
 
 class DeconvolveExposureConnections(
@@ -53,12 +92,25 @@ class DeconvolveExposureConnections(
         dimensions=("tract", "patch", "band", "skymap"),
     )
 
+    catalog = cT.Input(
+        doc="Catalog of sources detected in the deconvolved image",
+        name="{inputCoaddName}Coadd_mergeDet",
+        storageClass="SourceCatalog",
+        dimensions=("tract", "patch", "skymap"),
+    )
+
     deconvolved = cT.Output(
         doc="Deconvolved exposure",
         name="deconvolved_{inputCoaddName}_coadd",
         storageClass="ExposureF",
         dimensions=("tract", "patch", "band", "skymap"),
     )
+
+    def __init__(self, *, config=None):
+        if not config.useFootprints:
+            # Deconvolution will not use input catalog if
+            # footprints are not used
+            self.inputs.remove("catalog")
 
 
 class DeconvolveExposureConfig(
@@ -84,6 +136,10 @@ class DeconvolveExposureConfig(
         doc="Threshold for background subtraction. "
         "Pixels in the fit below this threshold will be set to zero",
     )
+    useFootprints = pexConfig.Field[bool](
+        default=True,
+        doc="Use footprints to constrain the deconvolved model",
+    )
 
 
 class DeconvolveExposureTask(pipeBase.PipelineTask):
@@ -99,10 +155,16 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
+        inputs['band'] = inputRefs.coadd.dataId['band']
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
 
-    def run(self, coadd: afwImage.Exposure) -> pipeBase.Struct:
+    def run(
+        self,
+        coadd: afwImage.Exposure,
+        catalog: afwTable.SourceCatalog | None = None,
+        band: str = 'dummy'
+    ) -> pipeBase.Struct:
         """Deconvolve an Exposure
 
         Parameters
@@ -116,17 +178,23 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             Deconvolved exposure
         """
         # Load the scarlet lite Observation
-        observation = self._buildObservation(coadd)
+        observation = self._buildObservation(coadd, catalog, band)
+        self.bbox = coadd.getBBox()
 
         # Deconvolve.
         # Store the loss history for debugging purposes.
-        model, self.loss = self._deconvolve(observation)
+        model, self.loss = self._deconvolve(observation, catalog)
 
         # Store the model in an Exposure
         exposure = self._modelToExposure(model.data[0], coadd)
         return pipeBase.Struct(deconvolved=exposure)
 
-    def _buildObservation(self, coadd: afwImage.Exposure) -> scl.Observation:
+    def _buildObservation(
+        self,
+        coadd: afwImage.Exposure,
+        catalog: afwTable.SourceCatalog | None = None,
+        band: str = 'dummy'
+    ) -> scl.Observation:
         """Build a scarlet lite Observation from an Exposure.
 
         We don't actually use scarlet, but the optimized convolutions
@@ -136,12 +204,22 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         ----------
         coadd :
             Coadd image to deconvolve.
+        catalog :
+            Catalog of sources.
+            This is used to find a location for the PSF if it cannot be
+            generated at the center of the coadd.
+
         """
-        bands = ("dummy",)
+        bands = (band,)
         model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 
         image = coadd.image.array
-        psf = coadd.getPsf().computeKernelImage(coadd.getBBox().getCenter()).array
+        psfCenter = coadd.getBBox().getCenter()
+        if catalog is not None:
+            psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
+            psf = psf.array
+        else:
+            psf = coadd.getPsf().computeKernelImage(psfCenter).array
         weights = np.ones_like(coadd.image.array)
         badPixelMasks = utils.defaultBadPixelMasks
         badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
@@ -160,23 +238,49 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         )
         return observation
 
-    def _deconvolve(self, observation: scl.Observation) -> tuple[scl.Image, list[float]]:
+    def _deconvolve(
+        self,
+        observation: scl.Observation,
+        catalog: afwTable.SourceCatalog | None = None,
+    ) -> tuple[scl.Image, list[float]]:
         """Deconvolve the observed image.
 
         Parameters
         ----------
         observation :
             Scarlet lite Observation.
+        catalog :
+            Catalog of sources detected in the deconvolved image.
+            This is used to mask the deconvolved image so that
+            the deconvolved footprints detected downstream will always
+            fit inside of the original footprints.
         """
         model = observation.images.copy()
         loss = []
+        step = calculate_update_step(observation)
+        if catalog is not None:
+            width, height = self.bbox.getDimensions()
+            x0, y0 = self.bbox.getMin()
+            footprintImage = footprintsToNumpy(catalog, (height, width), (x0, y0))
         for n in range(self.config.maxIter):
             residual = observation.images - observation.convolve(model)
             loss.append(-0.5 * np.sum(residual.data**2))
             update = observation.convolve(residual, grad=True)
+            update.data[:] *= step
             model += update
             model.data[model.data < 0] = 0
+            if catalog is not None:
+                # Ensure that the deconvolved model footprints fit
+                # inside of the original footprints by setting regions
+                # outside of the original footprints to zero.
+                model.data[:] *= footprintImage
 
+            # Check for a diverging model
+            if len(loss) > 1 and loss[-1] < loss[-2]:
+                step = step / 2
+                self.log.warning(f"Loss increased at iteration {n}, decreasing scale to {step}")
+
+            # Check for convergence
             if n > self.config.minIter and np.abs(loss[-1] - loss[-2]) < self.config.eRel * np.abs(loss[-1]):
                 break
 
