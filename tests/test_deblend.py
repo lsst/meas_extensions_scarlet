@@ -33,11 +33,10 @@ from lsst.afw.geom import SpanSet, Stencil
 from lsst.afw.table import SourceCatalog
 from lsst.daf.butler import DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
-from lsst.geom import Point2D, Point2I
+from lsst.geom import Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
-from numpy.testing import assert_almost_equal
 from utils import initData
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
@@ -104,7 +103,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         )
         self.repo.registry.registerDatasetType(datasetType)
 
-    def _deblend(self, version):
+    def _deblend(self):
         schema = SourceCatalog.Table.makeMinimalSchema()
         # Adjust config options to test skipping parents
         config = ScarletDeblendTask.ConfigClass()
@@ -112,7 +111,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         config.maxFootprintArea = 1000
         config.maxNumberOfPeaks = 4
         config.catchFailures = False
-        config.version = version
 
         # Detect sources
         detectionTask = SourceDetectionTask(schema=schema)
@@ -130,12 +128,12 @@ class TestDeblend(lsst.utils.tests.TestCase):
         mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
 
         # Add a footprint that is too large
-        src = catalog.addNew()
-        halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
-        ss = SpanSet.fromShape(halfLength, Stencil.BOX, offset=(50, 50))
-        bigfoot = Footprint(ss)
-        bigfoot.addPeak(50, 50, 100)
-        src.setFootprint(bigfoot)
+        # src = catalog.addNew()
+        # halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
+        # ss = SpanSet.fromShape(halfLength, Stencil.BOX, offset=(50, 50))
+        # bigfoot = Footprint(ss)
+        # bigfoot.addPeak(50, 50, 100)
+        # src.setFootprint(bigfoot)
 
         # Add a footprint with too many peaks
         src = catalog.addNew()
@@ -146,11 +144,16 @@ class TestDeblend(lsst.utils.tests.TestCase):
         src.setFootprint(denseFoot)
 
         # Run the deblender
-        catalog, modelData = deblendTask.run(self.coadds, mDeconvolved, catalog)
-        return catalog, modelData, config
+        result = deblendTask.run(self.coadds, mDeconvolved, catalog)
+        return result, config
 
     def test_deblend_task(self):
-        catalog, modelData, config = self._deblend("lite")
+        result, config = self._deblend()
+        catalog = result.catalog
+        modelData = result.modelData
+        blendCatalog = result.blendCatalog
+        observedPsf = modelData.metadata["psf"]
+        modelPsf = modelData.metadata["model_psf"]
 
         # Attach the footprints in each band and compare to the full
         # data model. This is done in each band, both with and without
@@ -176,16 +179,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 )
 
                 # Check that the number of deblended children is consistent
-                parents = catalog[(catalog["deblend_depth"] == 0) & ~catalog["deblend_skipped"]]
+                parents = catalog[catalog["parent"] == 0]
                 self.assertEqual(
-                    np.sum(parents["deblend_nChild"]),
-                    np.sum((catalog["deblend_depth"] > 0) & (catalog["deblend_nPeaks"] == 1))
-                )
-
-                # Check that the models have not been cleared
-                # from the modelData
-                self.assertEqual(
-                    len(modelData.blends), np.sum(~parents["deblend_skipped"])
+                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents)
                 )
 
                 for parent in parents:
@@ -196,6 +192,13 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         np.testing.assert_array_equal(
                             parent.get(parentCol), children[childCol]
                         )
+
+                    # Extract the parent blend data
+                    parentBlendData = modelData.blends[parent.getId()]
+                    parentFootprint = parent.getFootprint()
+                    x0, y0 = parentFootprint.getBBox().getMin()
+                    width, height = parentFootprint.getBBox().getDimensions()
+                    yx0 = (y0, x0)
 
                     for child in children:
                         fp = child.getFootprint()
@@ -220,21 +223,14 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         self.assertEqual(py, peaks[0].getIy())
 
                         # Load the data to check against the HeavyFootprint
-                        blendData = modelData.blends[child["parent"]]
+                        blendData = parentBlendData.children[child["deblend_blendId"]]
                         # We need to set an observation in order to convolve
                         # the model.
-                        position = Point2D(*blendData.psf_center[::-1])
-                        _psfs = (
-                            self.coadds[band]
-                            .getPsf()
-                            .computeKernelImage(position)
-                            .array[None, :, :]
-                        )
-                        modelBox = scl.Box(blendData.shape, origin=blendData.origin)
+                        modelBox = scl.Box((height, width), origin=(y0, x0))
                         observation = scl.Observation.empty(
                             bands=("dummy",),
-                            psfs=_psfs,
-                            model_psf=modelData.psf[None, :, :],
+                            psfs=observedPsf[bandIndex][None, :, :],
+                            model_psf=modelPsf[None, :, :],
                             bbox=modelBox,
                             dtype=np.float32,
                         )
@@ -243,9 +239,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                             bandIndex=bandIndex,
                             observation=observation,
                         )
-                        # The stored PSF should be the same as the
-                        # calculated one.
-                        assert_almost_equal(blendData.psf[bandIndex:bandIndex + 1], _psfs)
 
                         # Get the scarlet model for the source
                         source = [
@@ -262,9 +255,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                             # the image of the flux-redistributed model,
                             # since the HeavyFootprint
                             # may trim rows or columns.
-                            parentFootprint = parent.getFootprint()
-                            x0, y0 = parentFootprint.getBBox().getMin()
-                            yx0 = (y0, x0)
                             _images = imageForRedistribution[
                                 parentFootprint.getBBox()
                             ].image.array
@@ -280,7 +270,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
                             )
                             blend.conserve_flux()
                             model = source.flux_weighted_image.data[0]
-                            image = afwImage.ImageF(model, xy0=Point2I(x0, y0))
+                            my0, mx0 = source.flux_weighted_image.yx0
+                            image = afwImage.ImageF(model, xy0=Point2I(mx0, my0))
                             fp.insert(image)
                             np.testing.assert_almost_equal(image.array, model)
                         else:
@@ -298,65 +289,96 @@ class TestDeblend(lsst.utils.tests.TestCase):
             fp = src.getFootprint()
             self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
 
+        # For now I've removed this test.
+        # In order to test large footprints now,
+        # we need to to actually create a large footprint in the
+        # image, in the deconvolved space. So this will likely
+        # need to be a separate test and I don't think that creating
+        # it should hold up the rest of the deconovled deblender
+        # implementation ticket (DM-47738).
+
         # Check that only the large footprint was flagged as too big
-        largeFootprint = np.zeros(len(catalog), dtype=bool)
-        largeFootprint[2] = True
-        np.testing.assert_array_equal(largeFootprint, catalog["deblend_parentTooBig"])
+        # largeFootprint = np.zeros(len(blendCatalog), dtype=bool)
+        # largeFootprint[2] = True
+        # np.testing.assert_array_equal(largeFootprint,
+        #     blendCatalog["deblend_parentTooBig"])
 
         # Check that only the dense footprint was flagged as too dense
-        denseFootprint = np.zeros(len(catalog), dtype=bool)
-        denseFootprint[3] = True
-        np.testing.assert_array_equal(denseFootprint, catalog["deblend_tooManyPeaks"])
+        denseFootprint = np.zeros(len(blendCatalog), dtype=bool)
+        denseFootprint[2] = True
+        np.testing.assert_array_equal(denseFootprint, blendCatalog["deblend_tooManyPeaks"])
 
         # Check that only the appropriate parents were skipped
-        skipped = largeFootprint | denseFootprint
-        np.testing.assert_array_equal(skipped, catalog["deblend_skipped"])
+        skipped = denseFootprint
+        np.testing.assert_array_equal(skipped, blendCatalog["deblend_skipped"])
 
-    def _test_blend(self, blendData1, blendData2, model_psf):
+    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal
         # up to machine precision.
-        np.testing.assert_almost_equal(blendData1.psf, blendData2.psf)
         self.assertTupleEqual(blendData1.origin, blendData2.origin)
-        self.assertTupleEqual(blendData1.shape, blendData2.shape)
-        np.testing.assert_almost_equal(blendData1.psf_center, blendData2.psf_center)
-        np.testing.assert_almost_equal(blendData1.psf, blendData2.psf)
-        self.assertEqual(blendData1.bands, blendData2.bands)
         self.assertEqual(len(blendData1.sources), len(blendData2.sources))
 
         # Test that the two blends are equal up to machine precision
         # once converted into scarlet lite Blend objects.
-        blend1 = blendData1.minimal_data_to_blend(model_psf, dtype=np.float32)
-        blend2 = blendData2.minimal_data_to_blend(model_psf, dtype=np.float32)
+        blend1 = blendData1.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
+        blend2 = blendData2.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
         np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
 
     def test_persistence(self):
         # Test that the model data is persisted correctly
-        _, modelData, _ = self._deblend("lite")
+        result, _ = self._deblend()
+        modelData = result.modelData
+        bands = modelData.metadata["bands"]
         butler = makeTestCollection(self.repo, uniqueId="test_run1")
         butler.put(modelData, "scarlet_model_data", dataId={})
         modelData2 = butler.get("scarlet_model_data", dataId={})
-        model_psf = modelData.psf[None, :, :]
-        np.testing.assert_almost_equal(modelData2.psf, modelData.psf)
+        model_psf = modelData.metadata["model_psf"][None, :, :]
+        model_psf2 = modelData2.metadata["model_psf"][None, :, :]
+        np.testing.assert_almost_equal(model_psf2, model_psf)
+        psf = modelData.metadata["psf"]
+        psf2 = modelData2.metadata["psf"]
+        np.testing.assert_almost_equal(psf2, psf)
         self.assertEqual(len(modelData2.blends), len(modelData.blends))
 
-        for blendId in modelData.blends.keys():
-            blendData1 = modelData.blends[blendId]
-            blendData2 = modelData2.blends[blendId]
-            self._test_blend(blendData1, blendData2, model_psf)
+        for parentId in modelData.blends.keys():
+            nChildren = len(modelData.blends[parentId].children)
+            self.assertEqual(nChildren, len(modelData2.blends[parentId].children))
+            for blendId in modelData.blends[parentId].children:
+                print(modelData.blends[parentId].children.keys())
+                print(modelData2.blends[parentId].children.keys())
+                blendData1 = modelData.blends[parentId].children[blendId]
+                blendData2 = modelData2.blends[parentId].children[blendId]
+                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
         # Test extracting a single blend
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": blendId})
+        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": parentId})
         self.assertEqual(len(modelData2.blends), 1)
-        blendData2 = modelData2.blends[blendId]
-        self._test_blend(blendData1, blendData2, model_psf)
+
+        for blendId, blendData1 in modelData.blends[parentId].children.items():
+            blendData2 = modelData2.blends[parentId].children[blendId]
+            self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
         # Test extracting two blends
         modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [1, 2]})
         self.assertEqual(len(modelData2.blends), 2)
-        for blendId in [1, 2]:
-            blendData1 = modelData.blends[blendId]
-            blendData2 = modelData2.blends[blendId]
-            self._test_blend(blendData1, blendData2, model_psf)
+        for parentId in [1, 2]:
+            parentData1 = modelData.blends[parentId]
+            parentData2 = modelData2.blends[parentId]
+            self.assertEqual(len(parentData1.children), len(parentData2.children))
+            for blendId in parentData1.children.keys():
+                blendData1 = parentData1.children[blendId]
+                blendData2 = parentData2.children[blendId]
+                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
     def test_legacy_model(self):
         storageClass = StorageClass(
@@ -387,6 +409,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         model = butler.get("old_scarlet_model_data", dataId={})
         self.assertEqual(len(model.blends), 2)
+        print(model.blends.keys())
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)

@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from io import BytesIO
 import logging
 import json
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 import zipfile
 
 import numpy as np
@@ -35,15 +35,14 @@ import lsst.scarlet.lite as scl
 from lsst.afw.detection import Footprint as afwFootprint
 from lsst.afw.detection import HeavyFootprintF
 from lsst.afw.geom import Span, SpanSet
-from lsst.afw.image import Exposure, MaskedImage, MaskX
+from lsst.afw.image import Exposure, MaskedImage, MaskX, MultibandExposure
 from lsst.afw.table import SourceCatalog, SourceRecord
 import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
 from lsst.daf.butler import FormatterV2
-from lsst.geom import Point2I
+from lsst.geom import Point2I, Extent2I, Box2I
 from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
-    Blend,
     Box,
     FactorizedComponent,
     FixedParameter,
@@ -172,10 +171,12 @@ def updateCatalogFootprints(
     # so we extract it from the first blend data.
     if len(modelData.blends) == 0:
         raise ValueError("Scarlet model data is empty")
-    refBlend = next(iter(modelData.blends.values()))
-    bands = refBlend.bands
+    if modelData.metadata is None:
+        raise ValueError("Scarlet model data does not contain metadata")
+    bands = modelData.metadata["bands"]
     bandIndex = bands.index(band)
-    observedPsf = refBlend.psf[bandIndex][None, :, :]
+    modelPsf = modelData.metadata["model_psf"]
+    observedPsf = modelData.metadata["psf"][bandIndex][None, :, :]
 
     # Flux re-distribution may mix depth=1 blends, so we iterate over the
     # completely flux separated parents to ensure that the full models
@@ -183,11 +184,7 @@ def updateCatalogFootprints(
     parents = catalog[catalog["parent"] == 0]
 
     for parentRecord in parents:
-        parentId = parentRecord.getId()
-
-        children = catalog.getChildren(parentId)
-
-        if len(children) == 0:
+        if parentRecord["deblend_nChild"] == 0:
             # No children, so it is either an isolated source or failed
             # deblending.
             # Either way we can skip creating heavy child footprints.
@@ -200,7 +197,7 @@ def updateCatalogFootprints(
             )
 
         observation = buildMonochromaticObservation(
-            modelPsf=modelData.psf,
+            modelPsf=modelPsf,
             observedPsf=observedPsf,
             footprint=parentRecord.getFootprint(),
             imageForRedistribution=imageForRedistribution,
@@ -210,7 +207,6 @@ def updateCatalogFootprints(
             modelData=modelData,
             bandIndex=bandIndex,
             parent=parentRecord,
-            children=children,
             catalog=catalog,
             observation=observation,
             updateFluxColumns=updateFluxColumns,
@@ -321,7 +317,6 @@ def updateBlendRecords(
     modelData: scl.io.ScarletModelData,
     bandIndex: int,
     parent: SourceRecord,
-    children: SourceCatalog,
     catalog: SourceCatalog,
     observation: scl.Observation,
     updateFluxColumns: bool,
@@ -357,21 +352,12 @@ def updateBlendRecords(
     useFlux = imageForRedistribution is not None
 
     # Create a blend with the parent and all of its children.
-    if parent.getId() in modelData.blends:
-        blendData = modelData.blends[parent.getId()]
-        blend = monochromaticDataToScarlet(blendData, bandIndex, observation)
-        sources = blend.sources
-    else:
-        sources = []
-
-    for child in children:
-        if child.getId() in modelData.blends:
-            # The child is a blend, so we need to update the
-            # parent with the child blend.
-            blendData = modelData.blends[child.getId()]
-            blend = monochromaticDataToScarlet(
-                blendData, bandIndex, observation,
-            )
+    blendData = modelData.blends[parent.getId()]
+    sources = []
+    if isinstance(blendData, scl.io.HierarchicalBlendData):
+        for blendId in blendData.children:
+            _blendData = cast(scl.io.ScarletBlendData, blendData.children[blendId])
+            blend = monochromaticDataToScarlet(_blendData, bandIndex, observation)
             sources.extend(blend.sources)
 
     if len(sources) == 0:
@@ -460,79 +446,6 @@ def updateBlendRecords(
         if parent.getId() in modelData.blends:
             del modelData.blends[parent.getId()]
 
-        for child in children:
-            if child.getId() in modelData.blends:
-                del modelData.blends[child.getId()]
-
-
-def oldScarletToData(blend: Blend, psfCenter: tuple[int, int], xy0: Point2I):
-    """Convert a scarlet.lite blend into a persistable data object
-
-    Note: This converts a blend from the old version of scarlet.lite,
-    which is deprecated, to the persistable data format used in the
-    new scarlet lite package.
-    This is kept to compare the two scarlet versions,
-    and can be removed once the new lsst.scarlet.lite package is
-    used in production.
-
-    Parameters
-    ----------
-    blend:
-        The blend that is being persisted.
-    psfCenter:
-        The center of the PSF.
-    xy0:
-        The lower coordinate of the entire blend.
-    Returns
-    -------
-    blendData : `ScarletBlendDataModel`
-        The data model for a single blend.
-    """
-    from scarlet import lite
-
-    yx0 = (xy0.y, xy0.x)
-
-    sources = {}
-    for source in blend.sources:
-        components = []
-        factorizedComponents = []
-        for component in source.components:
-            origin = tuple(component.bbox.origin[i + 1] + yx0[i] for i in range(2))
-            peak = tuple(component.center[i] + yx0[i] for i in range(2))
-
-            if isinstance(component, lite.LiteFactorizedComponent):
-                componentData = scl.io.ScarletFactorizedComponentData(
-                    origin=origin,
-                    peak=peak,
-                    spectrum=component.sed,
-                    morph=component.morph,
-                )
-                factorizedComponents.append(componentData)
-            else:
-                componentData = scl.io.ScarletComponentData(
-                    origin=origin,
-                    peak=peak,
-                    model=component.get_model(),
-                )
-                components.append(componentData)
-        sourceData = scl.io.ScarletSourceData(
-            components=components,
-            factorized_components=factorizedComponents,
-            peak_id=source.peak_id,
-        )
-        sources[source.record_id] = sourceData
-
-    blendData = scl.io.ScarletBlendData(
-        origin=(xy0.y, xy0.x),
-        shape=blend.observation.bbox.shape[-2:],
-        sources=sources,
-        psf_center=psfCenter,
-        psf=blend.observation.psfs,
-        bands=blend.observation.bands,
-    )
-
-    return blendData
-
 
 def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
     """Build a ScarletModelData instance from a dictionary of files.
@@ -547,15 +460,20 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
     model :
         ScarletModelData instance.
     """
-    model_psf = zip_dict.pop('psf')
-    psf_shape = zip_dict.pop('psf_shape')
+    metadata = zip_dict.pop('metadata', None)
+    if metadata is None:
+        model_psf = zip_dict.pop('psf')
+        psf_shape = zip_dict.pop('psf_shape')
+        metadata = {
+            'psf': model_psf,
+            'psfShape': psf_shape,
+        }
     blends = {}
     for key, value in zip_dict.items():
         blends[int(key)] = value
     return scl.io.ScarletModelData.parse_obj({
-        'psf': model_psf,
-        'psfShape': psf_shape,
         'blends': blends,
+        'metadata': metadata,
     })
 
 
@@ -578,7 +496,6 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
 
     if blend_ids is not None:
         filenames = [str(f) for f in blend_ids]
-        filenames += ['psf', 'psf_shape']
     else:
         filenames = None
 
@@ -586,6 +503,15 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
         unzipped_files = {}
         if filenames is None:
             filenames = zip_file.namelist()
+        # Attempt to read the metadata file first, if it exists.
+        try:
+            with zip_file.open('metadata') as f:
+                metadata = from_json(f.read())
+                unzipped_files['metadata'] = metadata
+        except ValueError:
+            # The metadata file is not present, so we will
+            # assume that the model is in the legacy format.
+            filenames += ['psf', 'psf_shape']
         for filename in filenames:
             with zip_file.open(filename) as f:
                 unzipped_files[filename] = from_json(f.read())
@@ -615,10 +541,16 @@ def scarlet_model_to_zip_json(model_data: scl.io.ScarletModelData) -> dict[str, 
         str(blend_id): json.dumps(blend_data)
         for blend_id, blend_data in json_model['blends'].items()
     }
-    data.update({
-        'psf_shape': json.dumps(json_model['psfShape']),
-        'psf': json.dumps(json_model['psf']),
-    })
+    # Support for legacy models
+    if 'psf' in json_model:
+        data.update({
+            'psf_shape': json.dumps(json_model['psfShape']),
+            'psf': json.dumps(json_model['psf']),
+        })
+    else:
+        data.update({
+            'metadata': json.dumps(json_model['metadata']),
+        })
     return data
 
 
@@ -689,3 +621,40 @@ class ScarletModelDelegate(StorageClassDelegate):
         elif parameters is not None:
             raise ValueError(f"Unsupported parameters: {parameters}")
         return inMemoryDataset
+
+
+def loadBlend(blendData: scl.io.ScarletBlendData, model_psf: np.ndarray, mCoadd: MultibandExposure):
+    """Load a blend from the persisted data
+
+    Parameters
+    ----------
+    blendData:
+        The persisted scarlet BlendData to load into the blend.
+    model_psf:
+        The psf of the model in each band. This should be 2D, as scarlet
+        lite assumes that the PSF is the same for all bands.
+    mCoadd:
+        The coadd image to use for the observation attached to the blend.
+        This is required in order to create a difference kernel to convolve
+        the model into an observed seeing.
+
+    Returns
+    -------
+    blend : `scarlet.lite.Blend`
+        The blend object loaded from the persisted data.
+    """
+    psf, _ = utils.computePsfKernelImage(mCoadd, blendData.psf_center)
+    bbox = Box(blendData.shape, origin=blendData.origin)
+    afw_box = Box2I(Point2I(bbox.origin[::-1]), Extent2I(bbox.shape[::-1]))
+    coadd = mCoadd[blendData.bands, afw_box]
+    observation = scl.Observation(
+        images=coadd.image.array,
+        variance=coadd.variance.array,
+        weights=np.ones(coadd.image.array.shape, dtype=np.float32),
+        psfs=psf,
+        model_psf=model_psf[None, :, :],
+        convolution_mode='real',
+        bands=mCoadd.bands,
+        bbox=bbox,
+    )
+    return blendData.to_blend(observation), afw_box
