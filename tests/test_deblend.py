@@ -41,6 +41,25 @@ from utils import initData
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
+def printHierarchy(modelData: scl.io.ScarletModelData):
+    """Print the hierarchy of the model data.
+
+    This function is primarily for debugging purposes.
+
+    Parameters
+    ----------
+    modelData : scl.io.ScarletModelData
+        The model data containing blends and their sources.
+    """
+    print("Model Data Hierarchy:")
+    for parentId, parentData in modelData.blends.items():
+        print(f"Parent ID: {parentId}")
+        print(f"nChildren: {len(parentData.children)}")
+        for blendId, blendData in parentData.children.items():
+            print(f"  Blend ID: {blendId}")
+            print(f"    nSources: {len(blendData.sources)}")
+            print(f"   Source Ids: {blendData.sources.keys()}")
+
 
 class TestDeblend(lsst.utils.tests.TestCase):
     def setUp(self):
@@ -145,6 +164,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         # Run the deblender
         result = deblendTask.run(self.coadds, mDeconvolved, catalog)
+
+        # For debugging
+        self.deblendTask = deblendTask
         return result, config
 
     def test_deblend_task(self):
@@ -354,8 +376,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
             nChildren = len(modelData.blends[parentId].children)
             self.assertEqual(nChildren, len(modelData2.blends[parentId].children))
             for blendId in modelData.blends[parentId].children:
-                print(modelData.blends[parentId].children.keys())
-                print(modelData2.blends[parentId].children.keys())
                 blendData1 = modelData.blends[parentId].children[blendId]
                 blendData2 = modelData2.blends[parentId].children[blendId]
                 self._test_blend(blendData1, blendData2, model_psf, psf, bands)
@@ -409,7 +429,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         model = butler.get("old_scarlet_model_data", dataId={})
         self.assertEqual(len(model.blends), 2)
-        print(model.blends.keys())
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)

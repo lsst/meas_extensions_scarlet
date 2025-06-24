@@ -770,6 +770,7 @@ class ScarletDeblendTask(pipeBase.Task):
         self._addParentSchemaKeys(blendSchema)
         self._addSharedSchemaKeys(blendSchema)
         self.blendSchema = blendSchema
+        self.blendPeakSchemaMapper = afwTable.SchemaMapper(peakMinimalSchema, blendSchema)
 
         # For now source records have parent schema keys and deblended
         # source keys.
@@ -779,33 +780,33 @@ class ScarletDeblendTask(pipeBase.Task):
         self._addSharedSchemaKeys(schema)
         self.schema = schema
         self.toCopyFromParent = [
-            item.key
+            name
             for item in self.schema
-            if item.field.getName().startswith("merge_footprint")
+            if (name := item.field.getName()).startswith("merge_footprint")
         ]
 
     def _addParentSchemaKeys(self, schema: afwTable.Schema):
         """Add parent specific keys to the schema"""
         # Parent (blend) fields
-        self.runtimeKey = schema.addField(
+        schema.addField(
             "deblend_runtime", type=np.float32, doc="runtime in ms"
         )
-        self.iterKey = schema.addField(
+        schema.addField(
             "deblend_iterations", type=np.int32, doc="iterations to converge"
         )
-        self.nChildKey = schema.addField(
+        schema.addField(
             "deblend_nChild",
             type=np.int32,
             doc="Number of children this object has (defaults to 0)",
         )
-        self.nPeaksKey = schema.addField(
+        schema.addField(
             "deblend_nPeaks",
             type=np.int32,
             doc="Number of initial peaks in the blend. "
             "This includes peaks that may have been culled "
             "during deblending or failed to deblend",
         )
-        self.scarletSpectrumInitKey = schema.addField(
+        schema.addField(
             "deblend_spectrumInitFlag",
             type="Flag",
             doc="True when scarlet initializes sources "
@@ -815,59 +816,59 @@ class ScarletDeblendTask(pipeBase.Task):
             "a less accurate initialization.",
         )
         # Skipped flags
-        self.deblendSkippedKey = schema.addField(
+        schema.addField(
             "deblend_skipped", type="Flag", doc="Deblender skipped this source"
         )
-        self.isolatedParentKey = schema.addField(
+        schema.addField(
             "deblend_isolatedParent",
             type="Flag",
             doc="The source has only a single peak " "and was not deblended",
         )
-        self.pseudoKey = schema.addField(
+        schema.addField(
             "deblend_isPseudo",
             type="Flag",
             doc='The source is identified as a "pseudo" source and '
             "was not deblended",
         )
-        self.tooManyPeaksKey = schema.addField(
+        schema.addField(
             "deblend_tooManyPeaks",
             type="Flag",
             doc="Source had too many peaks; " "only the brightest were included",
         )
-        self.tooBigKey = schema.addField(
+        schema.addField(
             "deblend_parentTooBig",
             type="Flag",
             doc="Parent footprint covered too many pixels",
         )
-        self.maskedKey = schema.addField(
+        schema.addField(
             "deblend_masked",
             type="Flag",
             doc="Parent footprint had too many masked pixels",
         )
         # Convergence flags
-        self.blendConvergenceFailedFlagKey = schema.addField(
+        schema.addField(
             "deblend_blendConvergenceFailedFlag",
             type="Flag",
             doc="at least one source in the blend" "failed to converge",
         )
         # Error flags
-        self.deblendFailedKey = schema.addField(
+        schema.addField(
             "deblend_failed", type="Flag", doc="Deblending failed on source"
         )
-        self.deblendChildFailedKey = schema.addField(
+        schema.addField(
             "deblend_childFailed",
             type="Flag",
             doc="Deblending failed on at least one child blend. "
                 " This is set in a parent when at least one of its children "
                 "is a blend that failed to deblend.",
-        ),
-        self.deblendErrorKey = schema.addField(
+        )
+        schema.addField(
             "deblend_error",
             type="String",
             size=25,
             doc="Name of error if the blend failed",
         )
-        self.incompleteDataKey = schema.addField(
+        schema.addField(
             "deblend_incompleteData",
             type="Flag",
             doc="True when a blend has at least one band "
@@ -877,13 +878,13 @@ class ScarletDeblendTask(pipeBase.Task):
 
     def _addChildSchemaKeys(self, schema: afwTable.Schema):
         """Add deblender specific keys to the schema"""
-        self.peakCenter = afwTable.Point2IKey.addFields(
+        afwTable.Point2IKey.addFields(
             schema,
             name="deblend_peak_center",
             doc="Center used to apply constraints in scarlet",
             unit="pixel",
         )
-        self.peakIdKey = schema.addField(
+        schema.addField(
             "deblend_peakId",
             type=np.int32,
             doc="ID of the peak in the parent footprint. "
@@ -891,31 +892,31 @@ class ScarletDeblendTask(pipeBase.Task):
             "and 'peakId' should be for all child sources. "
             "Top level blends with no parents have 'peakId=0'",
         )
-        self.modelCenterFlux = schema.addField(
+        schema.addField(
             "deblend_peak_instFlux",
             type=float,
             units="count",
             doc="The instFlux at the peak position of deblended mode",
         )
-        self.scarletFluxKey = schema.addField(
+        schema.addField(
             "deblend_scarletFlux", type=np.float32, doc="Flux measurement from scarlet"
         )
-        self.edgePixelsKey = schema.addField(
+        schema.addField(
             "deblend_edgePixels",
             type="Flag",
             doc="Source had flux on the edge of the parent footprint",
         )
-        self.coverageKey = schema.addField(
+        schema.addField(
             "deblend_dataCoverage",
             type=np.float32,
             doc="Fraction of pixels with data. "
             "In other words, 1 - fraction of pixels with NO_DATA set.",
         )
-        self.zeroFluxKey = schema.addField(
+        schema.addField(
             "deblend_zeroFlux", type="Flag", doc="Source has zero flux."
         )
         # Blendedness/classification metrics
-        self.maxOverlapKey = schema.addField(
+        schema.addField(
             "deblend_maxOverlap",
             type=np.float32,
             doc="Maximum overlap with all of the other neighbors flux "
@@ -925,13 +926,13 @@ class ScarletDeblendTask(pipeBase.Task):
             "at or below the noise level, it is likely to be a mostly "
             "isolated source in the deconvolved model frame.",
         )
-        self.fluxOverlapKey = schema.addField(
+        schema.addField(
             "deblend_fluxOverlap",
             type=np.float32,
             doc="This is the total flux from neighboring objects that "
             "overlaps with this source.",
         )
-        self.fluxOverlapFractionKey = schema.addField(
+        schema.addField(
             "deblend_fluxOverlapFraction",
             type=np.float32,
             doc="This is the fraction of "
@@ -939,12 +940,12 @@ class ScarletDeblendTask(pipeBase.Task):
             "for a given source within the source's"
             "footprint.",
         )
-        self.blendednessKey = schema.addField(
+        schema.addField(
             "deblend_blendedness",
             type=np.float32,
             doc="The Bosch et al. 2018 metric for 'blendedness.' ",
         )
-        self.blendIdKey = schema.addField(
+        schema.addField(
             "deblend_blendId",
             type=np.int64,
             doc="Parents in the catalog may be subdivided by deblending "
@@ -952,7 +953,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 "deblended separately. This is the ID of the "
                 "deconvolved blend in the catalog."
         )
-        self.blendnNChildKey = schema.addField(
+        schema.addField(
             "deblend_blendNChild",
             type=np.int32,
             doc="The number of children in the deconvolved blend."
@@ -961,27 +962,27 @@ class ScarletDeblendTask(pipeBase.Task):
     def _addSharedSchemaKeys(self, schema: afwTable.Schema):
         """Add parent and child specific keys to the schema"""
         # Measurement keys
-        self.scarletLogLKey = schema.addField(
+        schema.addField(
             "deblend_logL",
-            type=np.float64,
+            type=np.float32,
             doc="Final logL, used to identify regressions in scarlet.",
         )
-        self.scarletChi2Key = schema.addField(
+        schema.addField(
             "deblend_chi2",
             type=np.float32,
             doc="Final reduced chi2 (per pixel), used to identify goodness of fit.",
         )
-        self.parentNPeaksKey = schema.addField(
+        schema.addField(
             "deblend_parentNPeaks",
             type=np.int32,
             doc="deblend_nPeaks from this records parent.",
         )
-        self.parentNChildKey = schema.addField(
+        schema.addField(
             "deblend_parentNChild",
             type=np.int32,
             doc="deblend_nChild from this records parent.",
         )
-        self.nComponentsKey = schema.addField(
+        schema.addField(
             "deblend_nComponents",
             type=np.int32,
             doc="Number of components in a ScarletLiteSource. "
@@ -1152,7 +1153,7 @@ class ScarletDeblendTask(pipeBase.Task):
             )
 
             parentRecord = catalog[parentIndex]
-            blendRecords = blendCatalog.getChildren(parentRecord.getId())
+            blendRecords = blendCatalog[blendCatalog["parent"] == parentRecord.getId()]
 
             if len(blendRecords) == 0:
                 # There are no children so we must not be processing singles.
@@ -1186,14 +1187,14 @@ class ScarletDeblendTask(pipeBase.Task):
                     blend, blendModel, chi2 = self._deblendParent(blendRecord)
                 except DeblenderSkippedError as e:
                     self._skipBlend(blendRecord, e.skipKey, e.message)
-                    parentRecord.set(self.deblendSkippedKey, True)
+                    parentRecord.set("deblend_skipped", True)
                     parentRecord.set(e.skipKey, True)
                     continue
                 except DeblenderError as e:
-                    blendRecord.set(self.deblendErrorKey, e.errorName)
-                    blendRecord.set(self.deblendFailedKey, True)
-                    self._skipBlend(blendRecord, self.deblendFailedKey, e.message)
-                    parentRecord.set(self.deblendChildFailedKey, True)
+                    blendRecord.set("deblend_error", e.errorName)
+                    blendRecord.set("deblend_deblendFailed", True)
+                    self._skipBlend(blendRecord, "deblend_failed", e.message)
+                    parentRecord.set("deblend_childFailed", True)
                     continue
 
                 # Update the parent model
@@ -1227,28 +1228,32 @@ class ScarletDeblendTask(pipeBase.Task):
             self._updateParentRecord(
                 parentRecord=parentRecord,
                 nPeaks=len(parentFootprint.peaks),
-                nChild=np.sum([child[self.nChildKey] for child in blendRecords]),
-                nComponents=np.sum([child[self.nComponentsKey] for child in blendRecords]),
-                runtime=np.sum([child[self.runtimeKey] for child in blendRecords]),
-                iterations=np.sum([child[self.iterKey] for child in blendRecords]),
+                nChild=np.sum([child["deblend_nChild"] for child in blendRecords]),
+                nComponents=np.sum([child["deblend_nComponents"] for child in blendRecords]),
+                runtime=np.sum([child["deblend_runtime"] for child in blendRecords]),
+                iterations=np.sum([child["deblend_iterations"] for child in blendRecords]),
                 logL=np.nan,
                 chi2=np.sum(chi2.data)/np.sum(parentFootprintImage),
                 spectrumInit=np.all([
-                    child[self.scarletSpectrumInitKey]
+                    child["deblend_spectrumInitFlag"]
                     for child in blendRecords
                 ]),  # type: ignore
                 converged=np.all([
-                    child[self.blendConvergenceFailedFlagKey]
+                    child["deblend_blendConvergenceFailedFlag"]
                     for child in blendRecords
                 ]),  # type: ignore
             )
             # Persist parent columns to the children
             for child in sourceRecords:
-                self._propagateToChild(child=child, parent=parentRecord)
+                for key in self.toCopyFromParent:
+                    child.set(key, parentRecord.get(key))
+                for parentColumn, childColumn in self.config.columnInheritance.items():
+                    child.set(childColumn, parentRecord.get(parentColumn))
 
             # Persist convolved parent columns to the blends
             for child in blendRecords:
-                self._propagateToChild(child=child, parent=parentRecord)
+                for key in self.toCopyFromParent:
+                    child.set(key, parentRecord.get(key))
 
             # Persist the blend data
             modelData.blends[parentRecord.getId()] = scl.io.HierarchicalBlendData(
@@ -1310,7 +1315,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Since we use the first peak for the parent object, we should
         # propagate its flags to the parent source.
-        blendRecord.assign(peaks[0], self.peakSchemaMapper)
+        blendRecord.assign(peaks[0], self.blendPeakSchemaMapper)
 
         # Skip the source if it meets the skipping criteria
         isSkipped = self._checkSkipped(blendRecord, self.mExposure)
@@ -1453,7 +1458,7 @@ class ScarletDeblendTask(pipeBase.Task):
     def _skipBlend(
         self,
         blendRecord: afwTable.SourceRecord,
-        skipKey: bool,
+        skipKey: str,
         logMessage: str | None,
     ):
         """Update a parent record that is not being deblended.
@@ -1491,7 +1496,7 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Mark the source as skipped by the deblender and
         # flag the reason why.
-        blendRecord.set(self.deblendSkippedKey, True)
+        blendRecord.set("deblend_skipped", True)
         blendRecord.set(skipKey, True)
 
         # Add the NOT_DEBLENDED mask to the mask plane in each band
@@ -1532,14 +1537,14 @@ class ScarletDeblendTask(pipeBase.Task):
         if isPseudoSource(parent, self.config.pseudoColumns):
             # We also skip pseudo sources, like sky objects, which
             # are intended to be skipped.
-            skipKey = self.pseudoKey
+            skipKey = "deblend_isPseudo"
         elif self._isLargeFootprint(footprint):
             # The footprint is above the maximum footprint size limit
-            skipKey = self.tooBigKey
+            skipKey = "deblend_parentTooBig"
             skipMessage = f"Parent {parent.getId()}: skipping large footprint"
         elif self._isMasked(footprint, mExposure):
             # The footprint exceeds the maximum number of masked pixels
-            skipKey = self.maskedKey
+            skipKey = "deblend_masked"
             skipMessage = f"Parent {parent.getId()}: skipping masked footprint"
         elif (
             self.config.maxNumberOfPeaks > 0
@@ -1549,7 +1554,7 @@ class ScarletDeblendTask(pipeBase.Task):
             # if the number of peaks exceeds max peaks, since neglecting
             # to model any peaks often results in catastrophic failure
             # of scarlet to generate models for the brighter sources.
-            skipKey = self.tooManyPeaksKey
+            skipKey = "deblend_tooManyPeaks"
             skipMessage = f"Parent {parent.getId()}: skipping blend with too many peaks"
         if skipKey is not None:
             return (cast(afwTable.Key, skipKey), skipMessage)
@@ -1604,15 +1609,15 @@ class ScarletDeblendTask(pipeBase.Task):
             True when the optimizer reached convergence before
             reaching the maximum number of iterations.
         """
-        parentRecord.set(self.nPeaksKey, nPeaks)
-        parentRecord.set(self.nChildKey, nChild)
-        parentRecord.set(self.nComponentsKey, nComponents)
-        parentRecord.set(self.runtimeKey, runtime)
-        parentRecord.set(self.iterKey, iterations)
-        parentRecord.set(self.scarletLogLKey, logL)
-        parentRecord.set(self.scarletSpectrumInitKey, spectrumInit)
-        parentRecord.set(self.blendConvergenceFailedFlagKey, converged)
-        parentRecord.set(self.scarletChi2Key, chi2)
+        parentRecord.set("deblend_nPeaks", nPeaks)
+        parentRecord.set("deblend_nChild", nChild)
+        parentRecord.set("deblend_nComponents", nComponents)
+        parentRecord.set("deblend_runtime", runtime)
+        parentRecord.set("deblend_iterations", iterations)
+        parentRecord.set("deblend_logL", logL)
+        parentRecord.set("deblend_spectrumInitFlag", spectrumInit)
+        parentRecord.set("deblend_blendConvergenceFailedFlag", converged)
+        parentRecord.set("deblend_chi2", chi2)
 
     def _buildBlendCatalog(
         self,
@@ -1792,46 +1797,32 @@ class ScarletDeblendTask(pipeBase.Task):
         # so we just use the first peak catalog
         src.assign(peak, self.peakSchemaMapper)
         src.setParent(parent.getId())
-        src.set(self.blendIdKey, blendRecord.getId())
-        src.set(self.nPeaksKey, 1)
-        src.set(self.nChildKey, 0)
-        src.set(self.blendnNChildKey, len(blendRecord.getFootprint().peaks))
+        src.set("deblend_blendId", blendRecord.getId())
+        src.set("deblend_nPeaks", 1)
+        src.set("deblend_nChild", 0)
+        src.set("deblend_blendNChild", len(blendRecord.getFootprint().peaks))
         # We set the runtime to zero so that summing up the
         # runtime column will give the total time spent
         # running the deblender for the catalog.
-        src.set(self.runtimeKey, 0)
+        src.set("deblend_runtime", 0)
 
         # Set the position of the peak from the parent footprint
         # This will make it easier to match the same source across
         # deblenders and across observations, where the peak
         # position is unlikely to change unless enough time passes
         # for a source to move on the sky.
-        src.set(self.peakCenter, geom.Point2I(peak["i_x"], peak["i_y"]))
-        src.set(self.peakIdKey, peak["id"])
+        src.set("deblend_peak_center_x", peak["i_x"])
+        src.set("deblend_peak_center_y", peak["i_y"])
+        src.set("deblend_peakId", peak["id"])
 
         # Store the number of components for the source
-        src.set(self.nComponentsKey, len(scarletSource.components))
+        src.set("deblend_nComponents", len(scarletSource.components))
 
         # Flag sources missing one or more bands
-        src.set(self.incompleteDataKey, blendRecord.get(self.incompleteDataKey))
+        src.set("deblend_incompleteData", blendRecord.get("deblend_incompleteData"))
 
         # Calculate the reduced chi2 for the source
         area = np.sum(scarletSource.get_model().data > 0)
-        src.set(self.scarletChi2Key, np.sum(chi2[:, scarletSource.bbox].data/area))
+        src.set("deblend_chi2", np.sum(chi2[:, scarletSource.bbox].data/area))
 
         return src
-
-    def _propagateToChild(self, parent: afwTable.SourceRecord, child: afwTable.SourceRecord):
-        """Propagate columns from the parent to the child.
-
-        Parameters
-        ----------
-        parent :
-            The parent source record.
-        child :
-            The child source record.
-        """
-        for key in self.toCopyFromParent:
-            child.set(key, parent.get(key))
-        for parentColumn, childColumn in self.config.columnInheritance.items():
-            child.set(childColumn, parent.get(parentColumn))

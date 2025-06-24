@@ -183,7 +183,7 @@ def updateCatalogFootprints(
     # are used for each source.
     parents = catalog[catalog["parent"] == 0]
 
-    for parentRecord in parents:
+    for n, parentRecord in enumerate(parents):
         if parentRecord["deblend_nChild"] == 0:
             # No children, so it is either an isolated source or failed
             # deblending.
