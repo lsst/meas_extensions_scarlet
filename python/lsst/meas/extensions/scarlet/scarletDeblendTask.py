@@ -1653,8 +1653,12 @@ class ScarletDeblendTask(pipeBase.Task):
             # For example, this propagates `merge_peak_sky` to the parent
             parent.assign(parent.getFootprint().peaks[0], self.peakSchemaMapper)
 
-            if (len(parentFoot.peaks) < 2 and not self.config.processSingles):
-                # Skip isolated sources unless processSingles is turned on.
+            isPseudo = isPseudoSource(parent, self.config.pseudoColumns)
+            skipIsolated = len(parentFoot.peaks) < 2 and not self.config.processSingles
+
+            if isPseudo or skipIsolated:
+                # Skip pseudo sources and if processSingles is turned off,
+                # Skip isolated sources.
                 # Note: this does not flag isolated sources as skipped or
                 # set the NOT_DEBLENDED mask in the exposure,
                 # since these aren't really any skipped blends.
