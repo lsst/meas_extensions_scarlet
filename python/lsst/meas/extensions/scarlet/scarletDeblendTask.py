@@ -31,7 +31,6 @@ import lsst.afw.detection as afwDet
 import lsst.afw.geom.ellipses as afwEll
 import lsst.afw.image as afwImage
 import lsst.afw.table as afwTable
-import lsst.geom as geom
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.scarlet.lite as scl
@@ -1249,11 +1248,6 @@ class ScarletDeblendTask(pipeBase.Task):
                     child.set(key, parentRecord.get(key))
                 for parentColumn, childColumn in self.config.columnInheritance.items():
                     child.set(childColumn, parentRecord.get(parentColumn))
-
-            # Persist convolved parent columns to the blends
-            for child in blendRecords:
-                for key in self.toCopyFromParent:
-                    child.set(key, parentRecord.get(key))
 
             # Persist the blend data
             modelData.blends[parentRecord.getId()] = scl.io.HierarchicalBlendData(

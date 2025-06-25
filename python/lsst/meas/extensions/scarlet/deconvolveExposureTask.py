@@ -92,6 +92,20 @@ class DeconvolveExposureConnections(
         dimensions=("tract", "patch", "band", "skymap"),
     )
 
+    coadd_cell = cT.Input(
+        doc="Exposure on which to run deblending",
+        name="{inputCoaddName}CoaddCell",
+        storageClass="MultipleCellCoadd",
+        dimensions=("tract", "patch", "band", "skymap")
+    )
+
+    background = cT.Input(
+        doc="Background model to subtract from the cell-based coadd",
+        name="{inputCoaddName}Coadd_calexp_background",
+        storageClass="Background",
+        dimensions=("tract", "patch", "band", "skymap")
+    )
+
     catalog = cT.Input(
         doc="Catalog of sources detected in the deconvolved image",
         name="{inputCoaddName}Coadd_mergeDet",
@@ -111,6 +125,12 @@ class DeconvolveExposureConnections(
             # Deconvolution will not use input catalog if
             # footprints are not used
             self.inputs.remove("catalog")
+
+        if config.useCellCoadds:
+            del self.coadd
+        else:
+            del self.coadd_cell
+            del self.background
 
 
 class DeconvolveExposureConfig(
@@ -140,6 +160,10 @@ class DeconvolveExposureConfig(
         default=True,
         doc="Use footprints to constrain the deconvolved model",
     )
+    useCellCoadds = pexConfig.Field[bool](
+        doc="Use cell-based coadd instead of regular coadd?",
+        default=False,
+    )
 
 
 class DeconvolveExposureTask(pipeBase.PipelineTask):
@@ -156,6 +180,15 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
         inputs['band'] = inputRefs.coadd.dataId['band']
+
+        # Stitch together cell-based coadds (if necessary)
+        if self.config.useCellCoadds:
+            cellCoadd = inputs.pop('coadd_cell')
+            background = inputs.pop('background')
+            coadd = cellCoadd.stitch().asExposure()
+            coadd.image -= background.getImage()
+            inputs['coadd'] = coadd
+
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
 

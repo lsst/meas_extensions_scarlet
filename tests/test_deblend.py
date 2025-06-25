@@ -41,6 +41,7 @@ from utils import initData
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
+
 def printHierarchy(modelData: scl.io.ScarletModelData):
     """Print the hierarchy of the model data.
 
