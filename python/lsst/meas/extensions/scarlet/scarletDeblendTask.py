@@ -283,7 +283,8 @@ class ScarletDeblendContext:
 
         # Create the deconvolved image
         yx0 = observation.images.yx0
-        deconvolved = scl.Image(mDeconvolved.image.array, bands=observation.images.bands, yx0=yx0)
+        bands = observation.images.bands
+        deconvolved = scl.Image(mDeconvolved.image[bands, :].array, bands=bands, yx0=yx0)
 
         # Detect footprints in the deconvolved image
         footprints, footprintImage = _getDeconvolvedFootprints(
@@ -1155,8 +1156,20 @@ class ScarletDeblendTask(pipeBase.Task):
             blendRecords = blendCatalog[blendCatalog["parent"] == parentRecord.getId()]
 
             if len(blendRecords) == 0:
-                # There are no children so we must not be processing singles.
-                continue
+                # There are no children so we must not be processing singles,
+                # but we still need to update the parent record
+                self._updateParentRecord(
+                    parentRecord=parentRecord,
+                    nPeaks=len(parentRecord.getFootprint().peaks),
+                    nChild=0,
+                    nComponents=0,
+                    runtime=0.0,
+                    iterations=0,
+                    logL=np.nan,
+                    chi2=np.nan,
+                    spectrumInit=False,
+                    converged=True,  # No children, so no convergence issues
+                )
 
             self.log.trace(
                 "Split parent %d into %d deconvolved parents",
