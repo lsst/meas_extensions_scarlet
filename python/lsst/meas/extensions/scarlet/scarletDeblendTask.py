@@ -284,7 +284,11 @@ class ScarletDeblendContext:
         # Create the deconvolved image
         yx0 = observation.images.yx0
         bands = observation.images.bands
-        deconvolved = scl.Image(mDeconvolved.image[bands, :].array, bands=bands, yx0=yx0)
+        deconvolved = scl.Image(mDeconvolved.image.array, bands=mDeconvolved.bands, yx0=yx0)
+        if len(bands) == 1:
+            deconvolved = deconvolved[bands[0]:]
+        else:
+            deconvolved = deconvolved[bands]
 
         # Detect footprints in the deconvolved image
         footprints, footprintImage = _getDeconvolvedFootprints(
@@ -1170,6 +1174,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     spectrumInit=False,
                     converged=True,  # No children, so no convergence issues
                 )
+                continue
 
             self.log.trace(
                 "Split parent %d into %d deconvolved parents",
@@ -1204,7 +1209,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     continue
                 except DeblenderError as e:
                     blendRecord.set("deblend_error", e.errorName)
-                    blendRecord.set("deblend_deblendFailed", True)
+                    blendRecord.set("deblend_failed", True)
                     self._skipBlend(blendRecord, "deblend_failed", e.message)
                     parentRecord.set("deblend_childFailed", True)
                     continue
