@@ -225,18 +225,16 @@ def buildMonochromaticObservation(
 
     Parameters
     ----------
-    catalog :
-        The catalog that is being updated.
     modelPsf :
         The 2D model of the PSF.
     observedPsf :
         The observed PSF model for the catalog.
+    footprint :
+        The footprint of the source, used for masking out the model.
     imageForRedistribution:
         The image that is the source for flux re-distribution.
         If `imageForRedistribution` is `None` then flux re-distribution is
         not performed.
-    bbox :
-        The bounding box of the image to create the weight image for.
 
     Returns
     -------
@@ -327,27 +325,27 @@ def updateBlendRecords(
 
     Parameters
     ----------
-    blendData:
-        Persistable data for the entire blend.
-    catalog:
-        The catalog that is being updated.
-    modelPsf:
-        The 2D model of the PSF.
-    observedPsf:
-        The observed PSF model for the catalog.
-    imageForRedistribution:
-        The image that is the source for flux re-distribution.
-        If `imageForRedistribution` is `None` then flux re-distribution is
-        not performed.
-    bandIndex:
+    modelData :
+        Persistable data for the entire catalog.
+    bandIndex :
         The number of the band to extract.
-    blendFootprint:
-        The footprint of the blend, used for masking out the model
-        when re-distributing flux.
-    updateFluxColumns:
+    parent :
+        The parent source record.
+    catalog :
+        The catalog that is being updated.
+    observation :
+        The observation of the blend.
+    updateFluxColumns :
         Whether or not to update the `deblend_*` columns in the catalog.
         This should only be true when the input catalog schema already
         contains those columns.
+    imageForRedistribution :
+        The image that is the source for flux re-distribution.
+        If `imageForRedistribution` is `None` then flux re-distribution is
+        not performed.
+    removeScarletData :
+        Whether or not to remove `ScarletBlendData` for each blend
+        to save memory.
     """
     useFlux = imageForRedistribution is not None
 

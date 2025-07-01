@@ -147,6 +147,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
             deconvolvedCoadds.append(deconvolvedCoadd)
         mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
 
+        # TODO: Re-implement this test in DM-51672
         # Add a footprint that is too large
         # src = catalog.addNew()
         # halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
@@ -172,9 +173,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
     def test_deblend_task(self):
         result, config = self._deblend()
-        catalog = result.catalog
-        modelData = result.modelData
-        blendCatalog = result.blendCatalog
+        catalog = result.deblendedCatalog
+        modelData = result.scarletModelData
+        blendCatalog = result.objectParents
         observedPsf = modelData.metadata["psf"]
         modelPsf = modelData.metadata["model_psf"]
 
@@ -264,9 +265,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         )
 
                         # Get the scarlet model for the source
-                        source = [
+                        source = next(
                             src for src in blend.sources if src.record_id == child.getId()
-                        ][0]
+                        )
                         self.assertEqual(source.center[1], px)
                         self.assertEqual(source.center[0], py)
 
@@ -319,6 +320,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # need to be a separate test and I don't think that creating
         # it should hold up the rest of the deconovled deblender
         # implementation ticket (DM-47738).
+        # TODO: Re-implement this test in DM-51672
 
         # Check that only the large footprint was flagged as too big
         # largeFootprint = np.zeros(len(blendCatalog), dtype=bool)
@@ -360,7 +362,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
     def test_persistence(self):
         # Test that the model data is persisted correctly
         result, _ = self._deblend()
-        modelData = result.modelData
+        modelData = result.scarletModelData
         bands = modelData.metadata["bands"]
         butler = makeTestCollection(self.repo, uniqueId="test_run1")
         butler.put(modelData, "scarlet_model_data", dataId={})

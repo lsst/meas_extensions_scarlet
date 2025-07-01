@@ -60,11 +60,9 @@ def calculate_update_step(observation: scl.Observation) -> float:
     """
     # Calculate sparsity as fraction of pixels significantly above noise
     noise_level = observation.noise_rms[0]
-    signal_pixels = np.sum(observation.images.data > 3*noise_level)
-    sparsity = signal_pixels / observation.images.data.size
-
-    # Calculate typical SNR in signal regions
     signal_mask = observation.images.data > 3*noise_level
+    signal_pixels = np.sum(signal_mask)
+    sparsity = signal_pixels / observation.images.data.size
 
     if np.any(signal_mask):
         median_signal = np.median(observation.images.data[signal_mask])
@@ -205,6 +203,16 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         coadd :
             Coadd image to deconvolve
 
+        catalog :
+            Catalog of sources detected in the merged catalog.
+            This is used to supress noise in regions with no
+            significant flux about the noise in the coadds.
+
+        band :
+            Band of the coadd image.
+            Since this is a single band task the band isn't really necessary
+            but can be useful for debugging so we keep it as a parameter.
+
         Returns
         -------
         deconvolved : `pipeBase.Struct`
@@ -241,6 +249,9 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             Catalog of sources.
             This is used to find a location for the PSF if it cannot be
             generated at the center of the coadd.
+
+        band :
+            Band of the coadd image.
 
         """
         bands = (band,)

@@ -127,7 +127,7 @@ def computeNearestPsf(
     band: str,
     psfCenter: Point2D,
 ) -> tuple[np.ndarray, Point2I, float]:
-    """Create a PSF image at the neareset valid location
+    """Create a PSF image at the nearest valid location
 
     Sometimes not all locations in an image can generate a PSF image so the
     source catalog is used to find the nearest valid location.
@@ -203,12 +203,15 @@ def computeNearestPsf(
     return psf, newLocation, diff
 
 
-def computeNearestMultiBandPsf(
+def computeNearestPsfMultiBand(
     mExposure: MultibandExposure,
     psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
     catalog: SourceCatalog,
 ) -> tuple[np.ndarray, MultibandExposure]:
     """Compute the image in each band at the location nearest to the PSF Center
+
+    If the PSF cannot be generated in all bands then `mExposure` is updated
+    to use only the bands that successfully generated a PSF image.
 
     Parameters
     ----------
@@ -312,7 +315,7 @@ def buildObservation(
     if catalog is None:
         psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
     else:
-        psfModels, mExposure = computeNearestMultiBandPsf(mExposure, psfCenter, catalog)
+        psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
 
     # Use the inverse variance as the weights
     if useWeights:

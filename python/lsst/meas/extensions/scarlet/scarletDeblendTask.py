@@ -138,8 +138,10 @@ def _getDeconvolvedFootprints(
     ----------
     mDeconvolved :
         The deconvolved multiband exposure to detect footprints in.
-    modelPsf :
-        The PSF of the model.
+    sources :
+        The source catalog for the entire coadd.
+    config :
+        The configuration for the deblender.
 
     Returns
     -------
@@ -778,7 +780,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # For now source records have parent schema keys and deblended
         # source keys.
-        # Depending on the outcode of RFC-1076 the parent keys may be removed.
+        # DM-51670 will add the top level parents to the parent catalog
+        # and remove the parent keys from the source catalog.
         self._addParentSchemaKeys(schema)
         self._addChildSchemaKeys(schema)
         self._addSharedSchemaKeys(schema)
@@ -1000,7 +1003,7 @@ class ScarletDeblendTask(pipeBase.Task):
         mExposure: afwImage.MultibandExposure,
         mDeconvolved: afwImage.MultibandExposure,
         mergedSources: afwTable.SourceCatalog,
-    ) -> tuple[afwTable.SourceCatalog, scl.io.ScarletModelData]:
+    ) -> pipeBase.Struct:
         """Get the psf from each exposure and then run deblend().
 
         Parameters
@@ -1275,7 +1278,7 @@ class ScarletDeblendTask(pipeBase.Task):
         nDeblendedSources = np.sum(catalog["parent"] != 0)
         self.log.info(
             "Deblender results: %d parent sources were "
-            "split into %d deconvovled parents,"
+            "split into %d deconvolved parents,"
             "resulting in %d deblended sources, "
             "for a total catalog size of %d sources",
             nParents,
@@ -1706,8 +1709,8 @@ class ScarletDeblendTask(pipeBase.Task):
         blendCatalog :
             The catalog of deconvolved parents to add the new
             deconvolved parent to.
-        sclFootprint :
-            The scarlet footprint
+        sclFootprints :
+            List of scarlet lite Footprints.
         footprintImage :
             An indexed image of the scarlet footprints so that the value
             of a pixel gives the index + 1 of the footprints that
@@ -1727,12 +1730,10 @@ class ScarletDeblendTask(pipeBase.Task):
             y = peak["i_y"] - ymin
             try:
                 footprintIndex = footprintImage.data[y, x] - 1
-            except:  # noqa: E722
-                continue
+            except IndexError:
+                raise RuntimeError(f"no footprint at ({y}, {x})")
             if footprintIndex >= 0:
                 footprintIndices.add(footprintIndex)
-            else:
-                raise RuntimeError(f"no footprint at ({y}, {x})")
 
         # Get the intersection of each deconvolved footprint with
         # the parent footprint.

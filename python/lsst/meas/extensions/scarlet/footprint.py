@@ -1,3 +1,24 @@
+# This file is part of meas_extensions_scarlet.
+#
+# Developed for the LSST Data Management System.
+# This product includes software developed by the LSST Project
+# (https://www.lsst.org).
+# See the COPYRIGHT file at the top-level directory of this distribution
+# for details of code ownership.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Functions for converting between afw and scarlet footprints."""
 
 from typing import Sequence
@@ -21,6 +42,7 @@ def footprintsToNumpy(
     catalog: SourceCatalog,
     shape: tuple[int, int],
     xy0: tuple[int, int] | None = None,
+    asBool: bool = True,
 ) -> np.ndarray:
     """Convert all of the footprints in a catalog into a boolean array.
 
@@ -49,7 +71,9 @@ def footprintsToNumpy(
     for src in catalog:
         spans = src.getFootprint().spans
         yidx, xidx = spans.shiftedBy(*offset).indices()
-        result[yidx, xidx] = 1
+        result[yidx, xidx] = src.getId()
+    if asBool:
+        result = result != 0
     return result
 
 
