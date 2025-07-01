@@ -604,21 +604,21 @@ class ScarletDeblendConfig(pexConfig.Config):
 
     # Size restrictions
     maxNumberOfPeaks = pexConfig.Field[int](
-        default=-1,
+        default=600,
         doc=(
             "Only deblend the brightest maxNumberOfPeaks peaks in the parent"
             " (<= 0: unlimited)"
         ),
     )
     maxFootprintArea = pexConfig.Field[int](
-        default=-1,
+        default=2_000_000,
         doc=(
             "Maximum area for footprints before they are ignored as large; "
             "non-positive means no threshold applied"
         ),
     )
     maxAreaTimesPeaks = pexConfig.Field[int](
-        default=-1,
+        default=1_000_000_000,
         doc=(
             "Maximum rectangular footprint area * nPeaks in the footprint. "
             "This was introduced in DM-33690 to prevent fields that are crowded or have a "
@@ -1292,9 +1292,9 @@ class ScarletDeblendTask(pipeBase.Task):
         sortedBlendCatalog.extend(blendCatalog, deep=True)
 
         return pipeBase.Struct(
-            catalog=sortedCatalog,
-            modelData=modelData,
-            blendCatalog=sortedBlendCatalog,
+            deblendedCatalog=sortedCatalog,
+            scarletModelData=modelData,
+            objectParents=sortedBlendCatalog,
         )
 
     def _deblendParent(
