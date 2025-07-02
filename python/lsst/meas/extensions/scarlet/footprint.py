@@ -247,8 +247,8 @@ def scarletFootprintsToPeakCatalog(
 
     This creates a dummy Footprint to add the peaks to,
     then extracts the peaks from the Footprint.
-    It seems like there should be a better way to do this but
-    I couldn't find one.
+    It would be better to create a PeakCatalog directly,
+    but currently that is not supported in afw.
 
     Parameters
     ----------

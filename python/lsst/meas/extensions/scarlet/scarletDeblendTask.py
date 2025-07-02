@@ -1308,12 +1308,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Parameters
         ----------
-        parent :
-            The parent source record that contains the blendRecord.
         blendRecord :
             The parent source record to deblend.
-        children :
-            The dict from peak IDs to source records for the children.
 
         Returns
         -------
