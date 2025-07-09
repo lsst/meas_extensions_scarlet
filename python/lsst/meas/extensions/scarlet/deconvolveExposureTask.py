@@ -177,15 +177,17 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
-        inputs['band'] = inputRefs.coadd.dataId['band']
 
         # Stitch together cell-based coadds (if necessary)
         if self.config.useCellCoadds:
+            inputs['band'] = inputRefs.coadd_cell.dataId['band']
             cellCoadd = inputs.pop('coadd_cell')
             background = inputs.pop('background')
             coadd = cellCoadd.stitch().asExposure()
             coadd.image -= background.getImage()
             inputs['coadd'] = coadd
+        else:
+            inputs['band'] = inputRefs.coadd.dataId['band']
 
         outputs = self.run(**inputs)
         butlerQC.put(outputs, outputRefs)
