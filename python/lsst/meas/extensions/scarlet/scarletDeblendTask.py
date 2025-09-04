@@ -41,8 +41,7 @@ from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
 from . import utils
-from .footprint import footprintsToNumpy
-from .footprint import scarletFootprintToAfw, getFootprintIntersection
+from .footprint import scarletFootprintToAfw
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -195,7 +194,7 @@ def _getDeconvolvedFootprints(
     # catalog will produce unexpected results if a deconvolved footprint
     # is in more than one footprint from the source catalog or has
     # flux outside of its parent footprint.
-    sourceImage = footprintsToNumpy(sources, detect.shape, (xmin, ymin))
+    sourceImage = afwDet.footprintsToNumpy(sources, shape=detect.shape, xy0=(xmin, ymin))
     detectionArray = detectionArray * sourceImage
 
     footprints = get_footprints(
@@ -1736,7 +1735,7 @@ class ScarletDeblendTask(pipeBase.Task):
         # the parent footprint.
         for index in footprintIndices:
             _sclFootprint = scarletFootprintToAfw(sclFootprints[index])
-            intersection = getFootprintIntersection(afwFootprint, _sclFootprint, copyFromFirst=True)
+            intersection = afwFootprint.intersect(_sclFootprint, copyPeaks=True)
             if len(intersection.peaks) > 0:
                 self._addBlendRecord(
                     parentId=parentId,
