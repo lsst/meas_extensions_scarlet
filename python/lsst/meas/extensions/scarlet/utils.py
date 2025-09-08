@@ -12,6 +12,7 @@ from lsst.afw.image import (
 from lsst.afw.image.utils import projectImage
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Box2I, Point2D, Point2I
+from lsst.pipe.base import NoWorkFound
 
 defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
@@ -227,14 +228,17 @@ def computeNearestPsfMultiBand(
     for band in mExposure.filters:
         psf, psfCenter, diff = computeNearestPsf(
             mExposure[band,],
-            psfCenter,
             catalog,
             band,
+            psfCenter,
         )
         if psf is None:
             incomplete = True
         else:
             psfs[band] = psf
+
+    if len(psfs) == 0:
+        return None, None
 
     left = np.min([psf.getBBox().getMinX() for psf in psfs.values()])
     bottom = np.min([psf.getBBox().getMinY() for psf in psfs.values()])
@@ -316,6 +320,9 @@ def buildObservation(
         psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
     else:
         psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
+
+    if psfModels is None:
+        raise NoWorkFound("No valid PSF could be obtained for building the observation")
 
     # Use the inverse variance as the weights
     if useWeights:

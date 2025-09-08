@@ -218,7 +218,6 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         deconvolved : `pipeBase.Struct`
             Deconvolved exposure
         """
-        # Load the scarlet lite Observation
         observation = self._buildObservation(coadd, catalog, band)
         self.bbox = coadd.getBBox()
 
@@ -261,9 +260,14 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         psfCenter = coadd.getBBox().getCenter()
         if catalog is not None:
             psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
+            if psf is None:
+                # There were no valid locations from
+                # which a PSF could be obtained
+                raise pipeBase.NoWorkFound("No valid PSF could be obtained for deconvolution")
             psf = psf.array
         else:
             psf = coadd.getPsf().computeKernelImage(psfCenter).array
+
         weights = np.ones_like(coadd.image.array)
         badPixelMasks = utils.defaultBadPixelMasks
         badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
