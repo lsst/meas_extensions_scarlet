@@ -281,6 +281,7 @@ class ScarletDeblendContext:
             badPixelMasks=config.badMask,
             useWeights=config.useWeights,
             convolutionType=config.convolutionType,
+            catalog=catalog,
         )
 
         # Create the deconvolved image
