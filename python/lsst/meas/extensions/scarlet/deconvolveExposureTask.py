@@ -21,6 +21,7 @@
 
 import logging
 
+import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
 import lsst.afw.table as afwTable
 import lsst.pex.config as pexConfig
@@ -30,7 +31,6 @@ import lsst.scarlet.lite as scl
 import numpy as np
 
 from . import utils
-from .footprint import footprintsToNumpy
 
 log = logging.getLogger(__name__)
 
@@ -309,7 +309,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         if catalog is not None:
             width, height = self.bbox.getDimensions()
             x0, y0 = self.bbox.getMin()
-            footprintImage = footprintsToNumpy(catalog, (height, width), (x0, y0))
+            footprintImage = afwDet.footprintsToNumpy(catalog, shape=(height, width), xy0=(x0, y0))
         for n in range(self.config.maxIter):
             residual = observation.images - observation.convolve(model)
             loss.append(-0.5 * np.sum(residual.data**2))
