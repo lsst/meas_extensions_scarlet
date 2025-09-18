@@ -41,6 +41,7 @@ import lsst.utils as lsst_utils
 from lsst.daf.butler import StorageClassDelegate
 from lsst.daf.butler import FormatterV2
 from lsst.geom import Point2I, Extent2I, Box2I
+from lsst.pipe.base import NoWorkFound
 from lsst.resources import ResourceHandleProtocol
 from lsst.scarlet.lite import (
     Box,
@@ -174,7 +175,10 @@ def updateCatalogFootprints(
     if modelData.metadata is None:
         raise ValueError("Scarlet model data does not contain metadata")
     bands = modelData.metadata["bands"]
-    bandIndex = bands.index(band)
+    try:
+        bandIndex = bands.index(band)
+    except ValueError:
+        raise NoWorkFound(f"Band '{band}' not found in scarlet model data")
     modelPsf = modelData.metadata["model_psf"]
     observedPsf = modelData.metadata["psf"][bandIndex][None, :, :]
 
