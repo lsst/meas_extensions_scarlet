@@ -225,7 +225,7 @@ def computeNearestPsfMultiBand(
     """
     psfs = {}
     incomplete = False
-    for band in mExposure.filters:
+    for band in mExposure.bands:
         psf, psfCenter, diff = computeNearestPsf(
             mExposure[band,],
             catalog,
