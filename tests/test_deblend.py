@@ -28,154 +28,234 @@ import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
-from lsst.afw.detection import Footprint
-from lsst.afw.geom import SpanSet, Stencil
-from lsst.afw.table import SourceCatalog
-from lsst.daf.butler import DatasetType, StorageClass, FileDataset, DatasetRef
+from lsst.afw.detection import GaussianPsf
+from lsst.afw.table import SourceCatalog, SourceTable, SchemaMapper
+from lsst.daf.butler import Config, DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
 from lsst.geom import Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
-from utils import initData
+from lsst.pipe.base import Struct
+from utils import initData, SersicModel, PsfModel
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
 
-def printHierarchy(modelData: scl.io.ScarletModelData):
-    """Print the hierarchy of the model data.
-
-    This function is primarily for debugging purposes.
-
-    Parameters
-    ----------
-    modelData : scl.io.ScarletModelData
-        The model data containing blends and their sources.
-    """
-    print("Model Data Hierarchy:")
-    for parentId, parentData in modelData.blends.items():
-        print(f"Parent ID: {parentId}")
-        print(f"nChildren: {len(parentData.children)}")
-        for blendId, blendData in parentData.children.items():
-            print(f"  Blend ID: {blendId}")
-            print(f"    nSources: {len(blendData.sources)}")
-            print(f"   Source Ids: {blendData.sources.keys()}")
-
-
 class TestDeblend(lsst.utils.tests.TestCase):
     def setUp(self):
-        # Set the random seed so that the noise field is unaffected
-        np.random.seed(0)
-        shape = (5, 100, 115)
-        coords = [
-            # blend
-            (15, 25),
-            (10, 30),
-            (17, 38),
-            # isolated source
-            (85, 90),
+        self.modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        psfRadius = 20
+        psfShape = (2 * psfRadius + 1, 2 * psfRadius + 1)
+        self.psfs = [
+            GaussianPsf(psfShape[1], psfShape[0], 1.0),
+            GaussianPsf(psfShape[1], psfShape[0], 1.2),
+            GaussianPsf(psfShape[1], psfShape[0], 1.4),
         ]
-        amplitudes = [
-            # blend
-            80,
-            60,
-            90,
-            # isolated source
-            20,
+        self.imagePsf = np.asarray(
+            [psf.computeImage(psf.getAveragePosition()).array for psf in self.psfs]
+        ).astype(np.float32)
+        self.imagePsf /= self.imagePsf.sum(axis=(1, 2))[:, None, None]
+        self.bands = tuple("gri")
+
+        self.models = [
+            # Isolated source
+            PsfModel(
+                center=(30, 15),
+                spectrum=np.array([8, 2, 1]),
+                bands=self.bands,
+            ),
+            # Two source blend
+            SersicModel(
+                center=(40, 20),
+                major=5,
+                minor=2,
+                radius=15,
+                theta=-np.pi/4,
+                n=1,
+                spectrum=np.array([2, 4, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(12, 20),
+                spectrum=np.array([1, 2, 8]),
+                bands=self.bands,
+            ),
+            # 3 source blend
+            SersicModel(
+                center=(25, 70),
+                major=5,
+                minor=2,
+                radius=20,
+                theta=np.pi/48,
+                n=1,
+                spectrum=np.array([2, 5, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(32, 60),
+                spectrum=np.array([1, 2, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(16, 80),
+                spectrum=np.array([8, 2, 1]),
+                bands=self.bands,
+            ),
+            # Large blend
+            SersicModel(
+                center=(70, 70),
+                major=5,
+                minor=2,
+                radius=25,
+                theta=0,
+                n=1,
+                spectrum=np.array([2, 10, 18]),
+                bands=self.bands,
+            ),
+            SersicModel(
+                center=(85, 85),
+                major=5,
+                minor=2,
+                radius=25,
+                theta=np.pi/2,
+                n=1,
+                spectrum=np.array([5, 10, 20]),
+                bands=self.bands,
+            ),
         ]
-        result = initData(shape, coords, amplitudes)
-        targetPsfImage, psfImages, images, channels, seds, morphs, psfs = result
-        B, Ny, Nx = shape
 
-        # Add some noise, otherwise the task will blow up due to
-        # zero variance
-        noise = 10 * (np.random.rand(*images.shape).astype(np.float32) - 0.5)
-        images += noise
-
-        self.bands = "grizy"
-        _images = afwImage.MultibandMaskedImage.fromArrays(
-            self.bands, images.astype(np.float32), None, noise**2
+    def scarlet_image_to_exposure(
+        self,
+        image: scl.Image,
+        noise: np.ndarray,
+    ) -> afwImage.MultibandExposure:
+        masked_image = afwImage.MultibandMaskedImage.fromArrays(
+            image.bands, image.data, None, noise**2
         )
         coadds = [
-            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images
+            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in masked_image
         ]
-        self.coadds = afwImage.MultibandExposure.fromExposures(self.bands, coadds)
-        for b, coadd in enumerate(self.coadds):
-            coadd.setPsf(psfs[b])
+        mCoadd = afwImage.MultibandExposure.fromExposures(image.bands, coadds)
+        for b, coadd in enumerate(mCoadd):
+            coadd.setPsf(self.psfs[b])
+        return mCoadd
 
-        # Initialize a Butler
-        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
-        config = lsst.daf.butler.Config()
-        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
-        self.repo = makeTestRepo(repo_dir.name, config=config)
-        storageClass = StorageClass(
-            "ScarletModelData",
-            pytype=scl.io.ScarletModelData,
-            parameters=('blend_id',),
-            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+    def initialize_data(
+        self,
+        models,
+        deconvolveConfig=None,
+        deblendConfig=None,
+        doDetect: bool = True,
+    ):
+        if deconvolveConfig is None:
+            deconvolveConfig = DeconvolveExposureTask.ConfigClass()
+        if deblendConfig is None:
+            deblendConfig = ScarletDeblendTask.ConfigClass()
+        # Generate the data for the test
+        deconvolved, convolved = initData(models, self.modelPsf, self.imagePsf)
+        # Set the random seed so that the noise field is unaffected
+        # and add noise to the image
+        np.random.seed(0)
+        noise = 0.05 * (np.random.rand(*convolved.shape).astype(np.float32) - 0.5)
+        noisyImage = convolved.copy()
+        noisyImage._data += noise
+        # Create the multiband coadd
+        mCoadd = self.scarlet_image_to_exposure(noisyImage, noise)
+        # Initialze tasks
+        inputSchema = SourceTable.makeMinimalSchema()
+        table = SourceTable.make(inputSchema)
+        detectionTask = SourceDetectionTask(schema=inputSchema)
+        schemaMapper = SchemaMapper(inputSchema)
+        schemaMapper.addMinimalSchema(inputSchema)
+        schema = schemaMapper.getOutputSchema()
+        deconvolveTask = DeconvolveExposureTask(config=deconvolveConfig)
+        deblendTask = ScarletDeblendTask(schema=schema, config=deblendConfig)
+
+        result = Struct(
+            deconvolved=deconvolved,
+            convolved=convolved,
+            noise=noise,
+            noisyImage=noisyImage,
+            mCoadd=mCoadd,
+            detectionTask=detectionTask,
+            deconvolveTask=deconvolveTask,
+            deblendTask=deblendTask,
         )
-        datasetType = DatasetType(
-            "scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=self.repo.dimensions,
-        )
-        self.repo.registry.registerDatasetType(datasetType)
 
-    def _deblend(self):
-        schema = SourceCatalog.Table.makeMinimalSchema()
-        # Adjust config options to test skipping parents
-        config = ScarletDeblendTask.ConfigClass()
-        config.maxIter = 100
-        config.maxFootprintArea = 1000
-        config.maxNumberOfPeaks = 4
-        config.catchFailures = False
+        if doDetect:
+            # Generate a detection catalog
+            detectionResult = detectionTask.run(table, mCoadd["r"])
+            table = SourceCatalog.Table.make(schema)
+            catalog = SourceCatalog(table)
+            catalog.extend(detectionResult.sources, schemaMapper)
+            result.catalog = catalog
 
-        # Detect sources
-        detectionTask = SourceDetectionTask(schema=schema)
-        deblendTask = ScarletDeblendTask(schema=schema, config=config)
-        table = SourceCatalog.Table.make(schema)
-        detectionResult = detectionTask.run(table, self.coadds["r"])
-        catalog = detectionResult.sources
+        return result
 
-        # Deconvolve the coadds
+    def deconvolve(self, data: Struct):
         deconvolvedCoadds = []
-        deconvolveTask = DeconvolveExposureTask()
-        for coadd in self.coadds:
+        deconvolveTask = data.deconvolveTask
+        if deconvolveTask.config.useFootprints:
+            catalog = data.catalog
+        else:
+            catalog = None
+        for coadd in data.mCoadd:
             deconvolvedCoadd = deconvolveTask.run(coadd, catalog).deconvolved
             deconvolvedCoadds.append(deconvolvedCoadd)
         mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
+        return mDeconvolved
 
-        # TODO: Re-implement this test in DM-51672
-        # Add a footprint that is too large
-        # src = catalog.addNew()
-        # halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
-        # ss = SpanSet.fromShape(halfLength, Stencil.BOX, offset=(50, 50))
-        # bigfoot = Footprint(ss)
-        # bigfoot.addPeak(50, 50, 100)
-        # src.setFootprint(bigfoot)
+    def test_default_deconvolve(self):
+        data = self.initialize_data(self.models)
+        deconvolved = self.deconvolve(data)
 
-        # Add a footprint with too many peaks
-        src = catalog.addNew()
-        ss = SpanSet.fromShape(10, Stencil.BOX, offset=(75, 20))
-        denseFoot = Footprint(ss)
-        for n in range(config.maxNumberOfPeaks + 1):
-            denseFoot.addPeak(70 + 2 * n, 15 + 2 * n, 10 * n)
-        src.setFootprint(denseFoot)
+        diff = data.deconvolved.data - deconvolved.image.array
+        # Due to peakiness of Sersic models the center has a sharp peak,
+        # so we ignore a 3x3 region around each source center
+        for model in self.models:
+            yc, xc = model.center
+            for x in (-1, 0, 1):
+                for y in (-1, 0, 1):
+                    diff[:, yc+y, xc+x] = 0
+        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
+        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
 
-        # Run the deblender
-        result = deblendTask.run(self.coadds, mDeconvolved, catalog)
+        context = mes.scarletDeblendTask.ScarletDeblendContext.build(
+            data.mCoadd,
+            deconvolved,
+            data.catalog,
+            data.deblendTask.ConfigClass()
+        )
 
-        # For debugging
-        self.deblendTask = deblendTask
-        return result, config
+        self.assertEqual(len(context.footprints), 4)
 
-    def test_deblend_task(self):
-        result, config = self._deblend()
+    def test_catalog_free_deconvolve(self):
+        config = DeconvolveExposureTask.ConfigClass()
+        config.useFootprints = False
+        data = self.initialize_data(self.models, deconvolveConfig=config)
+        deconvolved = self.deconvolve(data)
+
+        diff = data.deconvolved.data - deconvolved.image.array
+        # Due to peakiness of Sersic models the center has a sharp peak,
+        # so we ignore a 3x3 region around each source center
+        for model in self.models:
+            yc, xc = model.center
+            for x in (-1, 0, 1):
+                for y in (-1, 0, 1):
+                    diff[:, yc+y, xc+x] = 0
+        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
+        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
+
+    def test_footprints(self):
+        data = self.initialize_data(self.models)
+        nParents = len(data.catalog)
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
+
+        config = data.deblendTask.config
         catalog = result.deblendedCatalog
         modelData = result.scarletModelData
-        blendCatalog = result.objectParents
         observedPsf = modelData.metadata["psf"]
         modelPsf = modelData.metadata["model_psf"]
 
@@ -186,7 +266,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for useFlux in [False, True]:
             for band in self.bands:
                 bandIndex = self.bands.index(band)
-                coadd = self.coadds[band]
+                coadd = data.mCoadd[band]
 
                 if useFlux:
                     imageForRedistribution = coadd
@@ -313,29 +393,27 @@ class TestDeblend(lsst.utils.tests.TestCase):
             fp = src.getFootprint()
             self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
 
-        # For now I've removed this test.
-        # In order to test large footprints now,
-        # we need to to actually create a large footprint in the
-        # image, in the deconvolved space. So this will likely
-        # need to be a separate test and I don't think that creating
-        # it should hold up the rest of the deconovled deblender
-        # implementation ticket (DM-47738).
-        # TODO: Re-implement this test in DM-51672
+        # Check that the catalog matches the expected results
+        nModels = len(self.models)
+        self.assertEqual(len(catalog), nParents+nModels)
 
-        # Check that only the large footprint was flagged as too big
-        # largeFootprint = np.zeros(len(blendCatalog), dtype=bool)
-        # largeFootprint[2] = True
-        # np.testing.assert_array_equal(largeFootprint,
-        #     blendCatalog["deblend_parentTooBig"])
+    def test_skipped(self):
+        # Use tight configs to force skipping a 3 source footprint
+        # and "large" footprint
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxFootprintArea = 1000
+        config.maxNumberOfPeaks = 2
+        config.catchFailures = False
 
-        # Check that only the dense footprint was flagged as too dense
-        denseFootprint = np.zeros(len(blendCatalog), dtype=bool)
-        denseFootprint[2] = True
-        np.testing.assert_array_equal(denseFootprint, blendCatalog["deblend_tooManyPeaks"])
+        data = self.initialize_data(self.models, deblendConfig=config)
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
 
-        # Check that only the appropriate parents were skipped
-        skipped = denseFootprint
-        np.testing.assert_array_equal(skipped, blendCatalog["deblend_skipped"])
+        catalog = result.deblendedCatalog
+        parents = catalog[catalog["parent"] == 0]
+        self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
+        self.assertEqual(np.sum(parents["deblend_parentTooBig"]), 1)
+        self.assertEqual(np.sum(parents["deblend_tooManyPeaks"]), 1)
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal
@@ -359,12 +437,37 @@ class TestDeblend(lsst.utils.tests.TestCase):
         )
         np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
 
+    def _setup_butler(self):
+        # Initialize a Butler to test persistence
+        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
+        config = Config()
+        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
+        repo = makeTestRepo(repo_dir.name, config=config)
+        storageClass = StorageClass(
+            "ScarletModelData",
+            pytype=scl.io.ScarletModelData,
+            parameters=('blend_id',),
+            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+        )
+        datasetType = DatasetType(
+            "scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=repo.dimensions,
+        )
+        repo.registry.registerDatasetType(datasetType)
+        return repo
+
     def test_persistence(self):
         # Test that the model data is persisted correctly
-        result, _ = self._deblend()
+        data = self.initialize_data(self.models)
+        repo = self._setup_butler()
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
         modelData = result.scarletModelData
         bands = modelData.metadata["bands"]
-        butler = makeTestCollection(self.repo, uniqueId="test_run1")
+        butler = makeTestCollection(repo, uniqueId="test_run1")
         butler.put(modelData, "scarlet_model_data", dataId={})
         modelData2 = butler.get("scarlet_model_data", dataId={})
         model_psf = modelData.metadata["model_psf"][None, :, :]
@@ -404,6 +507,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
     def test_legacy_model(self):
+        repo = self._setup_butler()
         storageClass = StorageClass(
             "ScarletModelData",
             pytype=scl.io.ScarletModelData,
@@ -412,7 +516,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
             "old_scarlet_model_data",
             dimensions=(),
             storageClass=storageClass,
-            universe=self.repo.dimensions,
+            universe=repo.dimensions,
         )
         ref = DatasetRef(
             datasetType,
@@ -426,8 +530,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         )
 
         # Ingest the legacy model into the butler
-        butler = makeTestCollection(self.repo, uniqueId="ingestion")
-        self.repo.registry.registerDatasetType(datasetType)
+        butler = makeTestCollection(repo, uniqueId="ingestion")
+        repo.registry.registerDatasetType(datasetType)
         butler.ingest(dataset)
 
         model = butler.get("old_scarlet_model_data", dataId={})
