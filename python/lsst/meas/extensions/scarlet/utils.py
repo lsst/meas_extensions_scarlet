@@ -125,8 +125,8 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
 def computeNearestPsf(
     calexp: Exposure,
     catalog: SourceCatalog,
-    band: str,
-    psfCenter: Point2D,
+    band: str | None = None,
+    psfCenter: Point2D | None = None,
 ) -> tuple[np.ndarray, Point2I, float]:
     """Create a PSF image at the nearest valid location
 
@@ -170,14 +170,17 @@ def computeNearestPsf(
     xc, yc = psfCenter
 
     # Only select records that have detections in this band
-    sources = catalog[catalog[f'merge_footprint_{band}']]
+    if band is not None:
+        sources = catalog[catalog[f'merge_footprint_{band}']]
+    else:
+        sources = catalog
 
     # Get the peaks of all of the sources
     x = []
     y = []
     for src in sources:
         for peak in src.getFootprint().peaks:
-            if peak[f'merge_peak_{band}']:
+            if band is None or peak[f'merge_peak_{band}']:
                 x.append(peak['i_x'])
                 y.append(peak['i_y'])
     x = np.array(x)
@@ -251,7 +254,7 @@ def computeNearestPsfMultiBand(
     mPsf = MultibandImage.fromImages(list(psfs.keys()), psf_images)
 
     if incomplete:
-        bands = mPsf.filters
+        bands = mPsf.bands
         mExposure = mExposure[bands,]
 
         if len(bands) == 1:
