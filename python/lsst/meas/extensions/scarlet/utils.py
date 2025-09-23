@@ -111,6 +111,8 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
         psfModels = mExposure.computePsfKernelImage(psfCenter)
     except IncompleteDataError as e:
         psfModels = e.partialPsf
+        if psfModels is None:
+            return None, None
         # Use only the bands that successfully generated a PSF image.
         bands = psfModels.bands
         mExposure = mExposure[bands,]
@@ -140,7 +142,9 @@ def computeNearestPsf(
     catalog :
         The catalog.
     band :
-        The band.
+        The band of the exposure used to filter the catalog by only
+        selecting sources that have a
+        If band is ``None`` then the full catalog is used.
     psfCenter :
         The location of the PSF image.
         If no location is provided, the center of the exposure is used.

@@ -28,15 +28,16 @@ import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
-from lsst.afw.detection import GaussianPsf
+from lsst.afw.detection import Footprint, GaussianPsf, InvalidPsfError, PeakTable, Psf
+from lsst.afw.geom import SpanSet
 from lsst.afw.table import SourceCatalog, SourceTable, SchemaMapper
 from lsst.daf.butler import Config, DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
-from lsst.geom import Point2I
+from lsst.geom import Extent2I, Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
-from lsst.pipe.base import Struct
+from lsst.pipe.base import NoWorkFound, Struct
 from utils import initData, SersicModel, PsfModel
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
@@ -415,50 +416,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         self.assertEqual(np.sum(parents["deblend_parentTooBig"]), 1)
         self.assertEqual(np.sum(parents["deblend_tooManyPeaks"]), 1)
 
-    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
-        # Test that two ScarletBlendData objects are equal
-        # up to machine precision.
-        self.assertTupleEqual(blendData1.origin, blendData2.origin)
-        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
-
-        # Test that the two blends are equal up to machine precision
-        # once converted into scarlet lite Blend objects.
-        blend1 = blendData1.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        blend2 = blendData2.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
-
-    def _setup_butler(self):
-        # Initialize a Butler to test persistence
-        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
-        config = Config()
-        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
-        repo = makeTestRepo(repo_dir.name, config=config)
-        storageClass = StorageClass(
-            "ScarletModelData",
-            pytype=scl.io.ScarletModelData,
-            parameters=('blend_id',),
-            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
-        )
-        datasetType = DatasetType(
-            "scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=repo.dimensions,
-        )
-        repo.registry.registerDatasetType(datasetType)
-        return repo
-
     def test_persistence(self):
         # Test that the model data is persisted correctly
         data = self.initialize_data(self.models)
@@ -539,6 +496,247 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
+
+    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
+        # Test that two ScarletBlendData objects are equal
+        # up to machine precision.
+        self.assertTupleEqual(blendData1.origin, blendData2.origin)
+        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
+
+        # Test that the two blends are equal up to machine precision
+        # once converted into scarlet lite Blend objects.
+        blend1 = blendData1.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
+        blend2 = blendData2.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
+        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
+
+    def _setup_butler(self):
+        # Initialize a Butler to test persistence
+        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
+        config = Config()
+        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
+        repo = makeTestRepo(repo_dir.name, config=config)
+        storageClass = StorageClass(
+            "ScarletModelData",
+            pytype=scl.io.ScarletModelData,
+            parameters=('blend_id',),
+            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+        )
+        datasetType = DatasetType(
+            "scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=repo.dimensions,
+        )
+        repo.registry.registerDatasetType(datasetType)
+        return repo
+
+
+class BadPsf(Psf):
+    def __init__(self, validPoint: Point2D, psf: GaussianPsf):
+        self.validPoint = validPoint
+        self.psf = psf
+        super().__init__()
+
+    def computeKernelImage(self, location: Point2D):
+        if location == self.validPoint:
+            return self.psf.computeKernelImage(location)
+        raise InvalidPsfError(f"Invalid PSF at location {location}")
+
+
+class TestUtils(lsst.utils.tests.TestCase):
+    def setUp(self):
+        self.bands = tuple("gri")
+
+    def test_box_transforms(self):
+        # Test scarlet Box to BBox
+        box = scl.Box((25, 30), (17, 5))
+        bbox = mes.utils.scarletBoxToBBox(box)
+        x0, y0 = bbox.getMin()
+        width = bbox.getWidth()
+        height = bbox.getHeight()
+        self.assertTupleEqual((y0, x0), box.origin)
+        self.assertTupleEqual((height, width), box.shape)
+
+        # Test back to scarlet Box
+        newBox = mes.utils.bboxToScarletBox(bbox)
+        self.assertTupleEqual(newBox.origin, box.origin)
+        self.assertTupleEqual(newBox.shape, box.shape)
+
+    def test_computeNearestPsfGood(self):
+        # Test that using a valid PSF works normally
+        psf, psfImage = self._generateGoodPsf()
+        coadd = self._generateCoadd(psf)
+
+        # Test that computing the PSF works
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, None, "g", Point2D(25, 25))
+        np.testing.assert_array_equal(derivedPsf.array, psfImage)
+        self.assertEqual(center, Point2D(25, 25))
+        self.assertEqual(dist, 0)
+
+    def test_computeNearestPsfRecoverable(self):
+        # Test that using a PSF not defined at the initial location
+        # will fallback to a valid location.
+        psf, psfImage = self._generateGoodPsf()
+        coadd = self._generateCoadd(BadPsf(Point2D(1, 1), psf))
+        catalog = self._generateCatalog(self.bands, [[(1, 1, 10)]])
+
+        # Test that computing the PSF works after finding a new location.
+        # Since the PSF above is *only* defined at (1, 1) it will fail to
+        # compute a PSF image at (4, 5) but should fall back to (1, 1).
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, catalog, None, Point2D(4, 5))
+        np.testing.assert_array_equal(derivedPsf.array, psfImage)
+        self.assertEqual(center, Point2I(1, 1))
+        self.assertEqual(dist, 5)
+
+    def test_computeNearestPsfBad(self):
+        # Test that a PSF that cannot find a matching location returns None
+        psf = self._generateGoodPsf()
+        coadd = self._generateCoadd(BadPsf(Point2D(1, 1), psf))
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that computing the PSF cannot generate a PSF
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, catalog, None, Point2D(4, 5))
+        self.assertIsNone(derivedPsf)
+        self.assertIsNone(center)
+        self.assertIsNone(dist)
+
+    def test_computeNearestPsfMultiBandGood(self):
+        # Test that a valid PSF in every band works normally
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+
+        # Test that computing the PSF works
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), None)
+        np.testing.assert_array_equal(psfArray, psfImage)
+        self.assertTupleEqual(newCoadd.bands, bands)
+
+    def test_computeNearestPsfMultiBandRecoverable(self):
+        # Test that a Psf at a different location is still recoverable
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs[1] = BadPsf(Point2D(1, 1), psfs[1])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands, [[(1, 1, 10)]])
+
+        # Test that computing the PSF works because the catalog has a peak
+        # at the location of the BadPsf.
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        np.testing.assert_array_equal(psfArray, psfImage)
+        self.assertTupleEqual(newCoadd.bands, bands)
+
+    def test_computeNearestPsfMultiBandIncomplete(self):
+        # Test that missing a PSF in one band returns a PSF and
+        # an exposure that are missing bands.
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs[1] = BadPsf(Point2D(1, 1), psfs[1])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that computing the PSF works for the g- and i-band PSFs that
+        # are not BadPsf.
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        np.testing.assert_array_equal(psfArray, np.delete(psfImage, 1, axis=0))
+        self.assertTupleEqual(newCoadd.bands, tuple("gi"))
+
+    def test_computeNearestPsfMultiBandBad(self):
+        # Test that None is returned if none of the PSFs can be computed
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs = [BadPsf(Point2D(1, 1), psfs) for psf in psfs]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        self.assertIsNone(psfArray)
+        self.assertIsNone(newCoadd)
+
+    def test_buildObservationBadPsfs(self):
+        # Test that creating an observation with all bad PSFs
+        # raises NoWorkFound
+        modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs = [BadPsf(Point2D(1, 1), psf) for psf in psfs]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that building the observation fails without a catalog
+        with self.assertRaises(NoWorkFound):
+            mes.utils.buildObservation(modelPsf, Point2I(25, 25), mCoadd)
+
+        # Test that building the observation fails even with a catalog
+        with self.assertRaises(NoWorkFound):
+            mes.utils.buildObservation(modelPsf, Point2I(25, 25), mCoadd, catalog=catalog)
+
+    def _generateGoodPsf(self, sigma: float = 1.0):
+        # Generate a PSF and Image of the PSF
+        psfRadius = 20
+        psfShape = (2 * psfRadius + 1, 2 * psfRadius + 1)
+        psf = GaussianPsf(psfShape[1], psfShape[0], sigma)
+        psfImage = psf.computeImage(psf.getAveragePosition()).array
+        return psf, psfImage
+
+    def _generateMultibandPsf(self, sigmas: list[float]):
+        # Generate a multiband PSF with a BadPsf for each None value in sigmas
+        psfs = []
+        psfImages = []
+        for sigma in sigmas:
+            psf, psfImage = self._generateGoodPsf(sigma)
+            psfs.append(psf)
+            psfImages.append(psfImage)
+        return psfs, np.asarray(psfImages)
+
+    def _generateCoadd(self, psf: Psf):
+        # Create an empty exposure
+        masked_image = afwImage.MaskedImage(Extent2I(50, 50), dtype=np.float32)
+        coadd = afwImage.Exposure(masked_image, dtype=np.float32)
+        coadd.setPsf(psf)
+        return coadd
+
+    def _generateMultibandCoadd(self, psfs: Psf, bands: list[str]):
+        # Create an empty multi-band exposure
+        coadds = []
+        for psf in psfs:
+            coadds.append(self._generateCoadd(psf))
+        return afwImage.MultibandExposure.fromExposures(bands, coadds)
+
+    def _generateCatalog(self, bands, footprints: list[list[tuple[int, int, int]]] | None = None):
+        # Generate a catalog with a source for each footprint
+        if footprints is None:
+            footprints = []
+        schema = SourceTable.makeMinimalSchema()
+        peakSchema = PeakTable.makeMinimalSchema()
+        for band in bands:
+            schema.addField(f"merge_footprint_{band}", type="Flag")
+            peakSchema.addField(f"merge_peak_{band}", type="Flag")
+
+        table = SourceTable.make(schema)
+        catalog = SourceCatalog(table)
+
+        for peaks in footprints:
+            src = catalog.addNew()
+            footprint = Footprint(SpanSet(), peakSchema)
+            for peak in peaks:
+                footprint.addPeak(*peak)
+            src.setFootprint(footprint)
+
+            for band in bands:
+                src[f"merge_footprint_{band}"] = True
+                footprint.peaks[f"merge_peak_{band}"] = True
+        return catalog
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
