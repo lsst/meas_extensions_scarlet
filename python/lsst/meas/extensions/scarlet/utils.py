@@ -111,6 +111,8 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
         psfModels = mExposure.computePsfKernelImage(psfCenter)
     except IncompleteDataError as e:
         psfModels = e.partialPsf
+        if psfModels is None:
+            return None, None
         # Use only the bands that successfully generated a PSF image.
         bands = psfModels.bands
         mExposure = mExposure[bands,]
@@ -125,8 +127,8 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
 def computeNearestPsf(
     calexp: Exposure,
     catalog: SourceCatalog,
-    band: str,
-    psfCenter: Point2D,
+    band: str | None = None,
+    psfCenter: Point2D | None = None,
 ) -> tuple[np.ndarray, Point2I, float]:
     """Create a PSF image at the nearest valid location
 
@@ -140,7 +142,9 @@ def computeNearestPsf(
     catalog :
         The catalog.
     band :
-        The band.
+        The band of the exposure used to filter the catalog by only
+        selecting sources that have a
+        If band is ``None`` then the full catalog is used.
     psfCenter :
         The location of the PSF image.
         If no location is provided, the center of the exposure is used.
@@ -170,14 +174,17 @@ def computeNearestPsf(
     xc, yc = psfCenter
 
     # Only select records that have detections in this band
-    sources = catalog[catalog[f'merge_footprint_{band}']]
+    if band is not None:
+        sources = catalog[catalog[f'merge_footprint_{band}']]
+    else:
+        sources = catalog
 
     # Get the peaks of all of the sources
     x = []
     y = []
     for src in sources:
         for peak in src.getFootprint().peaks:
-            if peak[f'merge_peak_{band}']:
+            if band is None or peak[f'merge_peak_{band}']:
                 x.append(peak['i_x'])
                 y.append(peak['i_y'])
     x = np.array(x)
@@ -225,7 +232,7 @@ def computeNearestPsfMultiBand(
     """
     psfs = {}
     incomplete = False
-    for band in mExposure.filters:
+    for band in mExposure.bands:
         psf, psfCenter, diff = computeNearestPsf(
             mExposure[band,],
             catalog,
@@ -251,7 +258,7 @@ def computeNearestPsfMultiBand(
     mPsf = MultibandImage.fromImages(list(psfs.keys()), psf_images)
 
     if incomplete:
-        bands = mPsf.filters
+        bands = mPsf.bands
         mExposure = mExposure[bands,]
 
         if len(bands) == 1:

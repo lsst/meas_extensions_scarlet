@@ -28,154 +28,235 @@ import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
-from lsst.afw.detection import Footprint
-from lsst.afw.geom import SpanSet, Stencil
-from lsst.afw.table import SourceCatalog
-from lsst.daf.butler import DatasetType, StorageClass, FileDataset, DatasetRef
+from lsst.afw.detection import Footprint, GaussianPsf, InvalidPsfError, PeakTable, Psf
+from lsst.afw.geom import SpanSet
+from lsst.afw.table import SourceCatalog, SourceTable, SchemaMapper
+from lsst.daf.butler import Config, DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
-from lsst.geom import Point2I
+from lsst.geom import Extent2I, Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
-from utils import initData
+from lsst.pipe.base import NoWorkFound, Struct
+from utils import initData, SersicModel, PsfModel
 
 TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
 
-def printHierarchy(modelData: scl.io.ScarletModelData):
-    """Print the hierarchy of the model data.
-
-    This function is primarily for debugging purposes.
-
-    Parameters
-    ----------
-    modelData : scl.io.ScarletModelData
-        The model data containing blends and their sources.
-    """
-    print("Model Data Hierarchy:")
-    for parentId, parentData in modelData.blends.items():
-        print(f"Parent ID: {parentId}")
-        print(f"nChildren: {len(parentData.children)}")
-        for blendId, blendData in parentData.children.items():
-            print(f"  Blend ID: {blendId}")
-            print(f"    nSources: {len(blendData.sources)}")
-            print(f"   Source Ids: {blendData.sources.keys()}")
-
-
 class TestDeblend(lsst.utils.tests.TestCase):
     def setUp(self):
-        # Set the random seed so that the noise field is unaffected
-        np.random.seed(0)
-        shape = (5, 100, 115)
-        coords = [
-            # blend
-            (15, 25),
-            (10, 30),
-            (17, 38),
-            # isolated source
-            (85, 90),
+        self.modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        psfRadius = 20
+        psfShape = (2 * psfRadius + 1, 2 * psfRadius + 1)
+        self.psfs = [
+            GaussianPsf(psfShape[1], psfShape[0], 1.0),
+            GaussianPsf(psfShape[1], psfShape[0], 1.2),
+            GaussianPsf(psfShape[1], psfShape[0], 1.4),
         ]
-        amplitudes = [
-            # blend
-            80,
-            60,
-            90,
-            # isolated source
-            20,
+        self.imagePsf = np.asarray(
+            [psf.computeImage(psf.getAveragePosition()).array for psf in self.psfs]
+        ).astype(np.float32)
+        self.imagePsf /= self.imagePsf.sum(axis=(1, 2))[:, None, None]
+        self.bands = tuple("gri")
+
+        self.models = [
+            # Isolated source
+            PsfModel(
+                center=(30, 15),
+                spectrum=np.array([8, 2, 1]),
+                bands=self.bands,
+            ),
+            # Two source blend
+            SersicModel(
+                center=(40, 20),
+                major=5,
+                minor=2,
+                radius=15,
+                theta=-np.pi/4,
+                n=1,
+                spectrum=np.array([2, 4, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(12, 20),
+                spectrum=np.array([1, 2, 8]),
+                bands=self.bands,
+            ),
+            # 3 source blend
+            SersicModel(
+                center=(25, 70),
+                major=5,
+                minor=2,
+                radius=20,
+                theta=np.pi/48,
+                n=1,
+                spectrum=np.array([2, 5, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(32, 60),
+                spectrum=np.array([1, 2, 8]),
+                bands=self.bands,
+            ),
+            PsfModel(
+                center=(16, 80),
+                spectrum=np.array([8, 2, 1]),
+                bands=self.bands,
+            ),
+            # Large blend
+            SersicModel(
+                center=(70, 70),
+                major=5,
+                minor=2,
+                radius=25,
+                theta=0,
+                n=1,
+                spectrum=np.array([2, 10, 18]),
+                bands=self.bands,
+            ),
+            SersicModel(
+                center=(85, 85),
+                major=5,
+                minor=2,
+                radius=25,
+                theta=np.pi/2,
+                n=1,
+                spectrum=np.array([5, 10, 20]),
+                bands=self.bands,
+            ),
         ]
-        result = initData(shape, coords, amplitudes)
-        targetPsfImage, psfImages, images, channels, seds, morphs, psfs = result
-        B, Ny, Nx = shape
 
-        # Add some noise, otherwise the task will blow up due to
-        # zero variance
-        noise = 10 * (np.random.rand(*images.shape).astype(np.float32) - 0.5)
-        images += noise
-
-        self.bands = "grizy"
-        _images = afwImage.MultibandMaskedImage.fromArrays(
-            self.bands, images.astype(np.float32), None, noise**2
+    def scarlet_image_to_exposure(
+        self,
+        image: scl.Image,
+        noise: np.ndarray,
+    ) -> afwImage.MultibandExposure:
+        masked_image = afwImage.MultibandMaskedImage.fromArrays(
+            image.bands, image.data, None, noise**2
         )
         coadds = [
-            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in _images
+            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in masked_image
         ]
-        self.coadds = afwImage.MultibandExposure.fromExposures(self.bands, coadds)
-        for b, coadd in enumerate(self.coadds):
-            coadd.setPsf(psfs[b])
+        mCoadd = afwImage.MultibandExposure.fromExposures(image.bands, coadds)
+        for b, coadd in enumerate(mCoadd):
+            coadd.setPsf(self.psfs[b])
+        return mCoadd
 
-        # Initialize a Butler
-        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
-        config = lsst.daf.butler.Config()
-        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
-        self.repo = makeTestRepo(repo_dir.name, config=config)
-        storageClass = StorageClass(
-            "ScarletModelData",
-            pytype=scl.io.ScarletModelData,
-            parameters=('blend_id',),
-            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+    def initialize_data(
+        self,
+        models,
+        deconvolveConfig=None,
+        deblendConfig=None,
+        doDetect: bool = True,
+    ):
+        if deconvolveConfig is None:
+            deconvolveConfig = DeconvolveExposureTask.ConfigClass()
+        if deblendConfig is None:
+            deblendConfig = ScarletDeblendTask.ConfigClass()
+        # Generate the data for the test
+        deconvolved, convolved = initData(models, self.modelPsf, self.imagePsf)
+        # Set the random seed so that the noise field is unaffected
+        # and add noise to the image
+        np.random.seed(0)
+        noise = 0.05 * (np.random.rand(*convolved.shape).astype(np.float32) - 0.5)
+        noisyImage = convolved.copy()
+        noisyImage._data += noise
+        # Create the multiband coadd
+        mCoadd = self.scarlet_image_to_exposure(noisyImage, noise)
+        # Initialze tasks
+        inputSchema = SourceTable.makeMinimalSchema()
+        table = SourceTable.make(inputSchema)
+        detectionTask = SourceDetectionTask(schema=inputSchema)
+        schemaMapper = SchemaMapper(inputSchema)
+        schemaMapper.addMinimalSchema(inputSchema)
+        schema = schemaMapper.getOutputSchema()
+        deconvolveTask = DeconvolveExposureTask(config=deconvolveConfig)
+        deblendTask = ScarletDeblendTask(schema=schema, config=deblendConfig)
+
+        result = Struct(
+            deconvolved=deconvolved,
+            convolved=convolved,
+            noise=noise,
+            noisyImage=noisyImage,
+            mCoadd=mCoadd,
+            detectionTask=detectionTask,
+            deconvolveTask=deconvolveTask,
+            deblendTask=deblendTask,
         )
-        datasetType = DatasetType(
-            "scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=self.repo.dimensions,
-        )
-        self.repo.registry.registerDatasetType(datasetType)
 
-    def _deblend(self):
-        schema = SourceCatalog.Table.makeMinimalSchema()
-        # Adjust config options to test skipping parents
-        config = ScarletDeblendTask.ConfigClass()
-        config.maxIter = 100
-        config.maxFootprintArea = 1000
-        config.maxNumberOfPeaks = 4
-        config.catchFailures = False
+        if doDetect:
+            # Generate a detection catalog
+            detectionResult = detectionTask.run(table, mCoadd["r"])
+            table = SourceCatalog.Table.make(schema)
+            catalog = SourceCatalog(table)
+            catalog.extend(detectionResult.sources, schemaMapper)
+            result.catalog = catalog
 
-        # Detect sources
-        detectionTask = SourceDetectionTask(schema=schema)
-        deblendTask = ScarletDeblendTask(schema=schema, config=config)
-        table = SourceCatalog.Table.make(schema)
-        detectionResult = detectionTask.run(table, self.coadds["r"])
-        catalog = detectionResult.sources
+        return result
 
-        # Deconvolve the coadds
+    def deconvolve(self, data: Struct):
         deconvolvedCoadds = []
-        deconvolveTask = DeconvolveExposureTask()
-        for coadd in self.coadds:
+        deconvolveTask = data.deconvolveTask
+        if deconvolveTask.config.useFootprints:
+            catalog = data.catalog
+        else:
+            catalog = None
+        for coadd in data.mCoadd:
             deconvolvedCoadd = deconvolveTask.run(coadd, catalog).deconvolved
             deconvolvedCoadds.append(deconvolvedCoadd)
         mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
+        return mDeconvolved
 
-        # TODO: Re-implement this test in DM-51672
-        # Add a footprint that is too large
-        # src = catalog.addNew()
-        # halfLength = int(np.ceil(np.sqrt(config.maxFootprintArea) + 1))
-        # ss = SpanSet.fromShape(halfLength, Stencil.BOX, offset=(50, 50))
-        # bigfoot = Footprint(ss)
-        # bigfoot.addPeak(50, 50, 100)
-        # src.setFootprint(bigfoot)
+    def test_default_deconvolve(self):
+        data = self.initialize_data(self.models)
+        deconvolved = self.deconvolve(data)
 
-        # Add a footprint with too many peaks
-        src = catalog.addNew()
-        ss = SpanSet.fromShape(10, Stencil.BOX, offset=(75, 20))
-        denseFoot = Footprint(ss)
-        for n in range(config.maxNumberOfPeaks + 1):
-            denseFoot.addPeak(70 + 2 * n, 15 + 2 * n, 10 * n)
-        src.setFootprint(denseFoot)
+        diff = data.deconvolved.data - deconvolved.image.array
+        # Due to peakiness of Sersic models the center has a sharp peak,
+        # so we ignore a 3x3 region around each source center
+        for model in self.models:
+            yc, xc = model.center
+            for x in (-1, 0, 1):
+                for y in (-1, 0, 1):
+                    diff[:, yc+y, xc+x] = 0
+        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
+        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
 
-        # Run the deblender
-        result = deblendTask.run(self.coadds, mDeconvolved, catalog)
+        context = mes.scarletDeblendTask.ScarletDeblendContext.build(
+            data.mCoadd,
+            deconvolved,
+            data.catalog,
+            data.deblendTask.ConfigClass()
+        )
 
-        # For debugging
-        self.deblendTask = deblendTask
-        return result, config
+        self.assertEqual(len(context.footprints), 4)
 
-    def test_deblend_task(self):
-        result, config = self._deblend()
+    def test_catalog_free_deconvolve(self):
+        config = DeconvolveExposureTask.ConfigClass()
+        config.useFootprints = False
+        data = self.initialize_data(self.models, deconvolveConfig=config)
+        deconvolved = self.deconvolve(data)
+
+        diff = data.deconvolved.data - deconvolved.image.array
+        # Due to peakiness of Sersic models the center has a sharp peak,
+        # so we ignore a 3x3 region around each source center
+        for model in self.models:
+            yc, xc = model.center
+            for x in (-1, 0, 1):
+                for y in (-1, 0, 1):
+                    diff[:, yc+y, xc+x] = 0
+        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
+        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
+
+    def test_footprints(self):
+        data = self.initialize_data(self.models)
+        nParents = len(data.catalog)
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
+
+        config = data.deblendTask.config
         catalog = result.deblendedCatalog
         modelData = result.scarletModelData
-        blendCatalog = result.objectParents
         observedPsf = modelData.metadata["psf"]
         modelPsf = modelData.metadata["model_psf"]
 
@@ -186,7 +267,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for useFlux in [False, True]:
             for band in self.bands:
                 bandIndex = self.bands.index(band)
-                coadd = self.coadds[band]
+                coadd = data.mCoadd[band]
 
                 if useFlux:
                     imageForRedistribution = coadd
@@ -313,58 +394,37 @@ class TestDeblend(lsst.utils.tests.TestCase):
             fp = src.getFootprint()
             self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
 
-        # For now I've removed this test.
-        # In order to test large footprints now,
-        # we need to to actually create a large footprint in the
-        # image, in the deconvolved space. So this will likely
-        # need to be a separate test and I don't think that creating
-        # it should hold up the rest of the deconovled deblender
-        # implementation ticket (DM-47738).
-        # TODO: Re-implement this test in DM-51672
+        # Check that the catalog matches the expected results
+        nModels = len(self.models)
+        self.assertEqual(len(catalog), nParents+nModels)
 
-        # Check that only the large footprint was flagged as too big
-        # largeFootprint = np.zeros(len(blendCatalog), dtype=bool)
-        # largeFootprint[2] = True
-        # np.testing.assert_array_equal(largeFootprint,
-        #     blendCatalog["deblend_parentTooBig"])
+    def test_skipped(self):
+        # Use tight configs to force skipping a 3 source footprint
+        # and "large" footprint
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxFootprintArea = 1000
+        config.maxNumberOfPeaks = 2
+        config.catchFailures = False
 
-        # Check that only the dense footprint was flagged as too dense
-        denseFootprint = np.zeros(len(blendCatalog), dtype=bool)
-        denseFootprint[2] = True
-        np.testing.assert_array_equal(denseFootprint, blendCatalog["deblend_tooManyPeaks"])
+        data = self.initialize_data(self.models, deblendConfig=config)
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
 
-        # Check that only the appropriate parents were skipped
-        skipped = denseFootprint
-        np.testing.assert_array_equal(skipped, blendCatalog["deblend_skipped"])
-
-    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
-        # Test that two ScarletBlendData objects are equal
-        # up to machine precision.
-        self.assertTupleEqual(blendData1.origin, blendData2.origin)
-        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
-
-        # Test that the two blends are equal up to machine precision
-        # once converted into scarlet lite Blend objects.
-        blend1 = blendData1.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        blend2 = blendData2.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
+        catalog = result.deblendedCatalog
+        parents = catalog[catalog["parent"] == 0]
+        self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
+        self.assertEqual(np.sum(parents["deblend_parentTooBig"]), 1)
+        self.assertEqual(np.sum(parents["deblend_tooManyPeaks"]), 1)
 
     def test_persistence(self):
         # Test that the model data is persisted correctly
-        result, _ = self._deblend()
+        data = self.initialize_data(self.models)
+        repo = self._setup_butler()
+        mDeconvolved = self.deconvolve(data)
+        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
         modelData = result.scarletModelData
         bands = modelData.metadata["bands"]
-        butler = makeTestCollection(self.repo, uniqueId="test_run1")
+        butler = makeTestCollection(repo, uniqueId="test_run1")
         butler.put(modelData, "scarlet_model_data", dataId={})
         modelData2 = butler.get("scarlet_model_data", dataId={})
         model_psf = modelData.metadata["model_psf"][None, :, :]
@@ -404,6 +464,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
     def test_legacy_model(self):
+        repo = self._setup_butler()
         storageClass = StorageClass(
             "ScarletModelData",
             pytype=scl.io.ScarletModelData,
@@ -412,7 +473,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
             "old_scarlet_model_data",
             dimensions=(),
             storageClass=storageClass,
-            universe=self.repo.dimensions,
+            universe=repo.dimensions,
         )
         ref = DatasetRef(
             datasetType,
@@ -426,8 +487,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         )
 
         # Ingest the legacy model into the butler
-        butler = makeTestCollection(self.repo, uniqueId="ingestion")
-        self.repo.registry.registerDatasetType(datasetType)
+        butler = makeTestCollection(repo, uniqueId="ingestion")
+        repo.registry.registerDatasetType(datasetType)
         butler.ingest(dataset)
 
         model = butler.get("old_scarlet_model_data", dataId={})
@@ -435,6 +496,247 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
+
+    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
+        # Test that two ScarletBlendData objects are equal
+        # up to machine precision.
+        self.assertTupleEqual(blendData1.origin, blendData2.origin)
+        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
+
+        # Test that the two blends are equal up to machine precision
+        # once converted into scarlet lite Blend objects.
+        blend1 = blendData1.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
+        blend2 = blendData2.minimal_data_to_blend(
+            model_psf,
+            psf,
+            bands,
+            dtype=np.float32,
+        )
+        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
+
+    def _setup_butler(self):
+        # Initialize a Butler to test persistence
+        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
+        config = Config()
+        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
+        repo = makeTestRepo(repo_dir.name, config=config)
+        storageClass = StorageClass(
+            "ScarletModelData",
+            pytype=scl.io.ScarletModelData,
+            parameters=('blend_id',),
+            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
+        )
+        datasetType = DatasetType(
+            "scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=repo.dimensions,
+        )
+        repo.registry.registerDatasetType(datasetType)
+        return repo
+
+
+class BadPsf(Psf):
+    def __init__(self, validPoint: Point2D, psf: GaussianPsf):
+        self.validPoint = validPoint
+        self.psf = psf
+        super().__init__()
+
+    def computeKernelImage(self, location: Point2D):
+        if location == self.validPoint:
+            return self.psf.computeKernelImage(location)
+        raise InvalidPsfError(f"Invalid PSF at location {location}")
+
+
+class TestUtils(lsst.utils.tests.TestCase):
+    def setUp(self):
+        self.bands = tuple("gri")
+
+    def test_box_transforms(self):
+        # Test scarlet Box to BBox
+        box = scl.Box((25, 30), (17, 5))
+        bbox = mes.utils.scarletBoxToBBox(box)
+        x0, y0 = bbox.getMin()
+        width = bbox.getWidth()
+        height = bbox.getHeight()
+        self.assertTupleEqual((y0, x0), box.origin)
+        self.assertTupleEqual((height, width), box.shape)
+
+        # Test back to scarlet Box
+        newBox = mes.utils.bboxToScarletBox(bbox)
+        self.assertTupleEqual(newBox.origin, box.origin)
+        self.assertTupleEqual(newBox.shape, box.shape)
+
+    def test_computeNearestPsfGood(self):
+        # Test that using a valid PSF works normally
+        psf, psfImage = self._generateGoodPsf()
+        coadd = self._generateCoadd(psf)
+
+        # Test that computing the PSF works
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, None, "g", Point2D(25, 25))
+        np.testing.assert_array_equal(derivedPsf.array, psfImage)
+        self.assertEqual(center, Point2D(25, 25))
+        self.assertEqual(dist, 0)
+
+    def test_computeNearestPsfRecoverable(self):
+        # Test that using a PSF not defined at the initial location
+        # will fallback to a valid location.
+        psf, psfImage = self._generateGoodPsf()
+        coadd = self._generateCoadd(BadPsf(Point2D(1, 1), psf))
+        catalog = self._generateCatalog(self.bands, [[(1, 1, 10)]])
+
+        # Test that computing the PSF works after finding a new location.
+        # Since the PSF above is *only* defined at (1, 1) it will fail to
+        # compute a PSF image at (4, 5) but should fall back to (1, 1).
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, catalog, None, Point2D(4, 5))
+        np.testing.assert_array_equal(derivedPsf.array, psfImage)
+        self.assertEqual(center, Point2I(1, 1))
+        self.assertEqual(dist, 5)
+
+    def test_computeNearestPsfBad(self):
+        # Test that a PSF that cannot find a matching location returns None
+        psf = self._generateGoodPsf()
+        coadd = self._generateCoadd(BadPsf(Point2D(1, 1), psf))
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that computing the PSF cannot generate a PSF
+        derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, catalog, None, Point2D(4, 5))
+        self.assertIsNone(derivedPsf)
+        self.assertIsNone(center)
+        self.assertIsNone(dist)
+
+    def test_computeNearestPsfMultiBandGood(self):
+        # Test that a valid PSF in every band works normally
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+
+        # Test that computing the PSF works
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), None)
+        np.testing.assert_array_equal(psfArray, psfImage)
+        self.assertTupleEqual(newCoadd.bands, bands)
+
+    def test_computeNearestPsfMultiBandRecoverable(self):
+        # Test that a Psf at a different location is still recoverable
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs[1] = BadPsf(Point2D(1, 1), psfs[1])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands, [[(1, 1, 10)]])
+
+        # Test that computing the PSF works because the catalog has a peak
+        # at the location of the BadPsf.
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        np.testing.assert_array_equal(psfArray, psfImage)
+        self.assertTupleEqual(newCoadd.bands, bands)
+
+    def test_computeNearestPsfMultiBandIncomplete(self):
+        # Test that missing a PSF in one band returns a PSF and
+        # an exposure that are missing bands.
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs[1] = BadPsf(Point2D(1, 1), psfs[1])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that computing the PSF works for the g- and i-band PSFs that
+        # are not BadPsf.
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        np.testing.assert_array_equal(psfArray, np.delete(psfImage, 1, axis=0))
+        self.assertTupleEqual(newCoadd.bands, tuple("gi"))
+
+    def test_computeNearestPsfMultiBandBad(self):
+        # Test that None is returned if none of the PSFs can be computed
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs = [BadPsf(Point2D(1, 1), psfs) for psf in psfs]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
+        self.assertIsNone(psfArray)
+        self.assertIsNone(newCoadd)
+
+    def test_buildObservationBadPsfs(self):
+        # Test that creating an observation with all bad PSFs
+        # raises NoWorkFound
+        modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        psfs = [BadPsf(Point2D(1, 1), psf) for psf in psfs]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(self.bands)
+
+        # Test that building the observation fails without a catalog
+        with self.assertRaises(NoWorkFound):
+            mes.utils.buildObservation(modelPsf, Point2I(25, 25), mCoadd)
+
+        # Test that building the observation fails even with a catalog
+        with self.assertRaises(NoWorkFound):
+            mes.utils.buildObservation(modelPsf, Point2I(25, 25), mCoadd, catalog=catalog)
+
+    def _generateGoodPsf(self, sigma: float = 1.0):
+        # Generate a PSF and Image of the PSF
+        psfRadius = 20
+        psfShape = (2 * psfRadius + 1, 2 * psfRadius + 1)
+        psf = GaussianPsf(psfShape[1], psfShape[0], sigma)
+        psfImage = psf.computeImage(psf.getAveragePosition()).array
+        return psf, psfImage
+
+    def _generateMultibandPsf(self, sigmas: list[float]):
+        # Generate a multiband PSF with a BadPsf for each None value in sigmas
+        psfs = []
+        psfImages = []
+        for sigma in sigmas:
+            psf, psfImage = self._generateGoodPsf(sigma)
+            psfs.append(psf)
+            psfImages.append(psfImage)
+        return psfs, np.asarray(psfImages)
+
+    def _generateCoadd(self, psf: Psf):
+        # Create an empty exposure
+        masked_image = afwImage.MaskedImage(Extent2I(50, 50), dtype=np.float32)
+        coadd = afwImage.Exposure(masked_image, dtype=np.float32)
+        coadd.setPsf(psf)
+        return coadd
+
+    def _generateMultibandCoadd(self, psfs: Psf, bands: list[str]):
+        # Create an empty multi-band exposure
+        coadds = []
+        for psf in psfs:
+            coadds.append(self._generateCoadd(psf))
+        return afwImage.MultibandExposure.fromExposures(bands, coadds)
+
+    def _generateCatalog(self, bands, footprints: list[list[tuple[int, int, int]]] | None = None):
+        # Generate a catalog with a source for each footprint
+        if footprints is None:
+            footprints = []
+        schema = SourceTable.makeMinimalSchema()
+        peakSchema = PeakTable.makeMinimalSchema()
+        for band in bands:
+            schema.addField(f"merge_footprint_{band}", type="Flag")
+            peakSchema.addField(f"merge_peak_{band}", type="Flag")
+
+        table = SourceTable.make(schema)
+        catalog = SourceCatalog(table)
+
+        for peaks in footprints:
+            src = catalog.addNew()
+            footprint = Footprint(SpanSet(), peakSchema)
+            for peak in peaks:
+                footprint.addPeak(*peak)
+            src.setFootprint(footprint)
+
+            for band in bands:
+                src[f"merge_footprint_{band}"] = True
+                footprint.peaks[f"merge_peak_{band}"] = True
+        return catalog
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
