@@ -347,7 +347,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
                         # Get the scarlet model for the source
                         source = next(
-                            src for src in blend.sources if src.record_id == child.getId()
+                            src for src in blend.sources if src.metadata["id"] == child.getId()
                         )
                         self.assertEqual(source.center[1], px)
                         self.assertEqual(source.center[0], py)
