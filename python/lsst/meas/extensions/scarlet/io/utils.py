@@ -49,12 +49,23 @@ from lsst.scarlet.lite import (
     FixedParameter,
 )
 
-from .metrics import setDeblenderMetrics
-from . import utils
-from .footprint import scarletModelToHeavy
+from ..metrics import setDeblenderMetrics
+from .. import utils
+from ..footprint import scarletModelToHeavy
+from .model_data import LsstModelData
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "monochromaticDataToScarlet",
+    "updateCatalogFootprints",
+    "buildMonochromaticObservation",
+    "calculateFootprintCoverage",
+    "updateBlendRecords",
+    "ScarletModelFormatter",
+    "ScarletModelDelegate",
+    "loadBlend",
+]
 
 # The name of the band in an monochome blend.
 # This is used as a placeholder since the band is not used in the
@@ -135,7 +146,7 @@ def monochromaticDataToScarlet(
 
 
 def updateCatalogFootprints(
-    modelData: scl.io.ScarletModelData,
+    modelData: LsstModelData,
     catalog: SourceCatalog,
     band: str,
     imageForRedistribution: MaskedImage | Exposure | None = None,
@@ -310,7 +321,7 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 
 def updateBlendRecords(
-    modelData: scl.io.ScarletModelData,
+    modelData: LsstModelData,
     bandIndex: int,
     parent: SourceRecord,
     catalog: SourceCatalog,
@@ -443,8 +454,8 @@ def updateBlendRecords(
             del modelData.blends[parent.getId()]
 
 
-def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
-    """Build a ScarletModelData instance from a dictionary of files.
+def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstModelData:
+    """Build a LsstModelData instance from a dictionary of files.
 
     Parameters
     ----------
@@ -454,7 +465,7 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
     Returns
     -------
     model :
-        ScarletModelData instance.
+        LsstModelData instance.
     """
     metadata = zip_dict.pop('metadata', None)
     if metadata is None:
@@ -467,14 +478,14 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> scl.io.ScarletModelData:
     blends = {}
     for key, value in zip_dict.items():
         blends[int(key)] = value
-    return scl.io.ScarletModelData.parse_obj({
+    return LsstModelData.parse_obj({
         'blends': blends,
         'metadata': metadata,
     })
 
 
-def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> scl.io.ScarletModelData:
-    """Read a zip file and return a ScarletModelData instance.
+def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> LsstModelData:
+    """Read a zip file and return a LsstModelData instance.
 
     Parameters
     ----------
@@ -487,7 +498,7 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
     Returns
     -------
     model :
-        ScarletModelData instance.
+        LsstModelData instance.
     """
 
     if blend_ids is not None:
@@ -515,16 +526,16 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
         return build_scarlet_model(unzipped_files)
 
 
-def scarlet_model_to_zip_json(model_data: scl.io.ScarletModelData) -> dict[str, Any]:
-    """Convert a ScarletModelData instance to a dictionary of files.
+def scarlet_model_to_zip_json(model_data: LsstModelData) -> dict[str, Any]:
+    """Convert a LsstModelData instance to a dictionary of files.
 
     This is required to convert the model data into a format that
     can be insterted into a zip archive.
 
     Parameters
     ----------
-    model_data : `lsst.scarelt.lite.io.ScarletModelData`
-        ScarletModelData instance.
+    model_data : `lsst.scarelt.lite.io.LsstModelData`
+        LsstModelData instance.
 
     Returns
     -------
@@ -550,13 +561,13 @@ def scarlet_model_to_zip_json(model_data: scl.io.ScarletModelData) -> dict[str, 
     return data
 
 
-def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: scl.io.ScarletModelData):
-    """Write a ScarletModelData instance to a zip file.
+def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstModelData):
+    """Write a LsstModelData instance to a zip file.
 
     Parameters
     ----------
-    model_data : `lsst.scarlet.lite.io.ScarletModelData`
-        ScarletModelData instance.
+    model_data : `lsst.scarlet.lite.io.LsstModelData`
+        LsstModelData instance.
 
     Returns
     -------
@@ -601,10 +612,10 @@ class ScarletModelFormatter(FormatterV2):
 
 
 class ScarletModelDelegate(StorageClassDelegate):
-    """Delegate to extract a blend from an in-memory ScarletModelData object.
+    """Delegate to extract a blend from an in-memory LsstModelData object.
     """
     def can_accept(self, inMemoryDataset: Any) -> bool:
-        return isinstance(inMemoryDataset, scl.io.ScarletModelData)
+        return isinstance(inMemoryDataset, LsstModelData)
 
     def getComponent(self, composite: Any, componentName: str) -> Any:
         raise AttributeError(f"Unsupported component: {componentName}")
