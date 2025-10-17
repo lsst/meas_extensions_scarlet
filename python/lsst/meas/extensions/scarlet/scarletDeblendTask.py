@@ -1224,7 +1224,8 @@ class ScarletDeblendTask(pipeBase.Task):
                 for scarletSource in blend.sources:
                     # Add all fields except the HeavyFootprint to the
                     # source record
-                    scarletSource.peak_id = scarletSource.detectedPeak.getId()
+                    scarletSource.metadata = {}
+                    scarletSource.metadata["peak_id"] = scarletSource.detectedPeak.getId()
                     sourceRecord = self._addDeblendedSource(
                         parent=parentRecord,
                         blendRecord=blendRecord,
@@ -1233,11 +1234,11 @@ class ScarletDeblendTask(pipeBase.Task):
                         scarletSource=scarletSource,
                         chi2=chi2,
                     )
-                    scarletSource.record_id = sourceRecord.getId()
+                    scarletSource.metadata["id"] = sourceRecord.getId()
                     sourceRecords.append(sourceRecord)
 
                 # Store the blend information so that it can be persisted
-                blendData = scl.io.ScarletBlendData.from_blend(blend)
+                blendData = blend.to_data()
                 parentBlends[blendRecord.getId()] = blendData
 
             # Calculate the reduced chi2 for the PSF parent

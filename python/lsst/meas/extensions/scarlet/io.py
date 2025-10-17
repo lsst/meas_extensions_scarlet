@@ -95,14 +95,12 @@ def monochromaticDataToScarlet(
         for componentData in sourceData.components:
             if componentData.component_type == "component":
                 bbox = Box(componentData.shape, origin=componentData.origin)
-                model = scl.io.Image(
+                model = scl.Image(
                     componentData.model[bandIndex][None, :, :], yx0=bbox.origin, bands=bands
                 )
-                component = scl.io.ComponentCube(
-                    bands=bands,
+                component = scl.ComponentCube(
                     model=model,
                     peak=tuple(componentData.peak[::-1]),
-                    bbox=bbox,
                 )
                 components.append(component)
             else:
@@ -121,18 +119,14 @@ def monochromaticDataToScarlet(
                     bg_rms=np.full((totalBands,), np.nan),
                 )
                 model = factorized.get_model().data[bandIndex][None, :, :]
-                model = scl.io.Image(model, yx0=bbox.origin, bands=bands)
+                model = scl.Image(model, yx0=bbox.origin, bands=bands)
                 component = scl.io.ComponentCube(
-                    bands=bands,
                     model=model,
                     peak=factorized.peak,
-                    bbox=factorized.bbox,
                 )
                 components.append(component)
 
-        source = scl.Source(components=components)
-        source.record_id = sourceId
-        source.peak_id = sourceData.peak_id
+        source = scl.Source(components=components, metadata=sourceData.metadata)
         sources.append(source)
 
     bbox = scl.Box(blendData.shape, origin=blendData.origin)
@@ -264,7 +258,7 @@ def buildMonochromaticObservation(
         if footprint is not None:
             weights *= footprint.spans.asArray()
 
-        observation = scl.io.Observation(
+        observation = scl.Observation(
             images=cutout.image.array[None, :, :],
             variance=cutout.variance.array[None, :, :],
             weights=weights[None, :, :],
@@ -275,7 +269,7 @@ def buildMonochromaticObservation(
             bbox=scarletBox,
         )
     else:
-        observation = scl.io.Observation.empty(
+        observation = scl.Observation.empty(
             bands=monochromaticBands,
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
@@ -383,10 +377,10 @@ def updateBlendRecords(
     # Update the HeavyFootprints for deblended sources
     # and update the band-dependent catalog columns.
     for source in blend.sources:
-        sourceRecord = catalog.find(source.record_id)
+        sourceRecord = catalog.find(source.metadata["id"])
 
         peaks = parent.getFootprint().peaks
-        peakIdx = np.where(peaks["id"] == source.peak_id)[0][0]
+        peakIdx = np.where(peaks["id"] == source.metadata["peak_id"])[0][0]
         source.detectedPeak = peaks[peakIdx]
         # Set the Footprint
         heavy = scarletModelToHeavy(
