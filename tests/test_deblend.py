@@ -266,7 +266,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         for sid, source in modelData.isolated.items():
             catalog_footprint = catalog.find(sid).getFootprint()
             isolated_array = catalog_footprint.spans.asArray()
-            np.testing.assert_array_equal(source.footprint, isolated_array)
+            np.testing.assert_array_equal(source.span_array, isolated_array)
 
             # Check that the origin is correct
             self.assertTupleEqual(source.origin[::-1], tuple(catalog_footprint.getBBox().getMin()))

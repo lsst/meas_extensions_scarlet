@@ -131,9 +131,9 @@ class IsolatedSource(scl.source.SourceBase):
         """
         from .io import IsolatedSourceData
 
-        footprint = np.any(self.model.data != 0, axis=0)
+        span_array = np.any(self.model.data != 0, axis=0)
         return IsolatedSourceData(
-            footprint=footprint,
+            span_array=span_array,
             origin=self.bbox.origin,
             peak=self.peak,
         )

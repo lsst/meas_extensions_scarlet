@@ -50,8 +50,8 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         The type of source data.
     version : str
         The schema version of the serialized data.
-    footprint : np.ndarray
-        The footprint mask of the source.
+    span_array : np.ndarray
+        The span mask of the source.
     origin : tuple[int, int]
         The (y, x) origin of the footprint in the observation.
     peak : tuple[int, int]
@@ -62,7 +62,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
     source_type: str = SOURCE_TYPE
     version: str = CURRENT_SCHEMA
-    footprint: np.ndarray
+    span_array: np.ndarray
     origin: tuple[int, int]
     peak: tuple[int, int]
 
@@ -76,9 +76,9 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         """
         result: dict[str, Any] = {
             "origin": tuple(int(o) for o in self.origin),
-            "shape": tuple(int(s) for s in self.footprint.shape),
+            "shape": tuple(int(s) for s in self.span_array.shape),
             "peak": tuple(float(p) for p in self.peak),
-            "footprint": tuple(self.footprint.flatten().astype(float)),
+            "span_array": tuple(self.span_array.flatten().astype(float)),
             "version": self.version,
         }
         if self.metadata is not None:
@@ -105,11 +105,11 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         data = scl.io.MigrationRegistry.migrate(SOURCE_TYPE, data)
         shape = tuple(int(s) for s in data["shape"])
         origin = tuple(int(o) for o in data["origin"])
-        footprint = np.array(data["footprint"], dtype=dtype).reshape(shape)
+        span_array = np.array(data["span_array"], dtype=dtype).reshape(shape)
         peak = tuple(int(p) for p in data["peak"])
         metadata = scl.io.utils.decode_metadata(data.get("metadata", None))
         return cls(
-            footprint=footprint,
+            span_array=span_array,
             origin=origin,
             peak=peak,
             metadata=metadata,
@@ -129,11 +129,11 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
             The scarlet Source object.
         """
         # Extract the image data that overlaps with the Footprint
-        bbox = scl.Box(self.footprint.shape, origin=self.origin)
+        bbox = scl.Box(self.span_array.shape, origin=self.origin)
         image_data = observation.images[:, bbox].data
 
-        # Mask the image data with the footprint
-        model_data = image_data * self.footprint[None, :, :]
+        # Mask the image data with the footprint spans
+        model_data = image_data * self.span_array[None, :, :]
 
         # Convert the array and bounding box into a scarlet Image
         model = scl.Image(
