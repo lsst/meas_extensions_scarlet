@@ -108,27 +108,12 @@ class LsstModelData(scl.io.ScarletModelData):
             The reconstructed object
         """
         data = scl.io.migration.MigrationRegistry.migrate(MODEL_TYPE, data)
-        blends: dict[int, scl.io.ScarletBlendBaseData] = {}
-        metadata = data.get("metadata", None)
-        for bid, blend in data.get("blends", {}).items():
-            if "blend_type" not in blend:
-                # Assume that this is a legacy model
-                blend["blend_type"] = "blend"
-            try:
-                blend_data = scl.io.ScarletBlendBaseData.from_dict(blend, dtype=dtype)
-            except KeyError:
-                raise ValueError(f"Unknown blend type: {blend['blend_type']} for blend ID: {bid}")
-            blends[int(bid)] = blend_data  # type: ignore
-
         isolated: dict[int, IsolatedSourceData] = {}
         for sid, source_data in data.get("isolated", {}).items():
             isolated[int(sid)] = IsolatedSourceData.from_dict(source_data, dtype=dtype)
-
-        return cls(
-            isolated=isolated,
-            blends=blends,
-            metadata=scl.io.utils.decode_metadata(metadata),
-        )
+        if "metadata" not in data:
+            data["metadata"] = None
+        return super().from_dict(data, dtype=dtype, isolated=isolated)
 
 
 @scl.io.migration.migration(MODEL_TYPE, scl.io.migration.PRE_SCHEMA)

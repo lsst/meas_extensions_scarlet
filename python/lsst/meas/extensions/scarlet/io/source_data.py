@@ -100,7 +100,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         Returns
         -------
         result : IsolatedSourceData
-            The reconstructed object
+            The reconstructed object.
         """
         data = scl.io.MigrationRegistry.migrate(SOURCE_TYPE, data)
         shape = tuple(int(s) for s in data["shape"])
