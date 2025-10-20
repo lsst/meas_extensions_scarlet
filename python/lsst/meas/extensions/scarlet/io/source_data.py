@@ -43,6 +43,21 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
     This is used to represent sources that were not blended with any
     other sources, and therefore do not have any deblending information.
+
+    Attributes
+    ----------
+    source_type : str
+        The type of source data.
+    version : str
+        The schema version of the serialized data.
+    footprint : np.ndarray
+        The footprint mask of the source.
+    origin : tuple[int, int]
+        The (y, x) origin of the footprint in the observation.
+    peak : tuple[int, int]
+        The (y, x) coordinates of the source peak in the observation.
+    metadata : dict | None
+        Additional metadata associated with the source.
     """
 
     source_type: str = SOURCE_TYPE
@@ -56,7 +71,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
         Returns
         -------
-        result :
+        result : dict[str, Any]
             The object encoded as a JSON-compatible dictionary.
         """
         result: dict[str, Any] = {
@@ -77,14 +92,14 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
         Parameters
         ----------
-        data :
+        data : dict
             Dictionary representation of the object
-        dtype :
+        dtype : DTypeLike
             Datatype of the resulting model.
 
         Returns
         -------
-        result :
+        result : IsolatedSourceData
             The reconstructed object
         """
         data = scl.io.MigrationRegistry.migrate(SOURCE_TYPE, data)
@@ -105,12 +120,12 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
         Parameters
         ----------
-        observation :
+        observation : scl.Observation
             The observation of the source.
 
         Returns
         -------
-        result :
+        result : IsolatedSourceData
             The scarlet Source object.
         """
         # Extract the image data that overlaps with the Footprint

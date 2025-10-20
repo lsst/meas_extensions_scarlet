@@ -49,9 +49,9 @@ class LsstModelData(scl.io.ScarletModelData):
 
     Attributes
     ----------
-    isolated :
+    isolated : dict[int, IsolatedSourceData]
         A mapping of isolated source IDs to their data.
-    version :
+    version : dict[int, scl.io.ScarletBlendBaseData]
         The schema version of the serialized data.
     """
     isolated: dict[int, IsolatedSourceData]
@@ -71,7 +71,7 @@ class LsstModelData(scl.io.ScarletModelData):
 
         Returns
         -------
-        result :
+        result : dict[str, Any]
             The object encoded as a JSON-compatible dictionary.
         """
         data = super().as_dict()
@@ -97,18 +97,18 @@ class LsstModelData(scl.io.ScarletModelData):
 
         Parameters
         ----------
-        data :
+        data : dict
             Dictionary representation of the object
-        dtype :
+        dtype : DTypeLike
             Datatype of the resulting model.
 
         Returns
         -------
-        result :
+        result : LsstScarletModelData
             The reconstructed object
         """
         data = scl.io.migration.MigrationRegistry.migrate(MODEL_TYPE, data)
-        blends: dict[int, scl.io.ScarletBlendBaseData] | None = {}
+        blends: dict[int, scl.io.ScarletBlendBaseData] = {}
         metadata = data.get("metadata", None)
         for bid, blend in data.get("blends", {}).items():
             if "blend_type" not in blend:
@@ -140,11 +140,11 @@ def _to_1_0_0(data: dict) -> dict:
 
     Parameters
     ----------
-    data :
+    data : dict
         The data to migrate.
     Returns
     -------
-    result :
+    result : dict
         The migrated data.
     """
     # Ensure that the model type and version are set and add an
