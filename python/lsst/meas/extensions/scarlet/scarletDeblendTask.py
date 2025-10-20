@@ -40,8 +40,9 @@ from scipy import ndimage
 from lsst.utils.logging import PeriodicLogger
 from lsst.utils.timer import timeMethod
 
-from . import utils
+from . import io, utils
 from .footprint import scarletFootprintToAfw
+from .source import IsolatedSource
 
 # Scarlet and proxmin have a different definition of log levels than the stack,
 # so even "warnings" occur far more often than we would like.
@@ -539,8 +540,12 @@ class ScarletDeblendConfig(pexConfig.Config):
         default=True, doc="Whether or not to save the SEDs and templates"
     )
     processSingles = pexConfig.Field[bool](
-        default=True,
+        default=False,
         doc="Whether or not to process isolated sources in the deblender",
+    )
+    persistIsolated = pexConfig.Field[bool](
+        default=True,
+        doc="Whether or not to persist isolated sources in the scarlet models",
     )
     convolutionType = pexConfig.Field[str](
         default="fft",
@@ -1120,11 +1125,22 @@ class ScarletDeblendTask(pipeBase.Task):
         nBands = len(context.observation.bands)
 
         # Initialize the persistable ScarletModelData object
-        modelData = scl.io.ScarletModelData(metadata={
+        modelData = io.LsstScarletModelData(metadata={
             "model_psf": context.observation.model_psf[0],
             "psf": context.observation.psfs,
             "bands": context.observation.bands,
         })
+
+        if self.config.persistIsolated:
+            # Add isolated sources to the model data
+            for source in catalog:
+                if len(source.getFootprint().peaks) == 1:
+                    isolated = IsolatedSource.from_footprint(
+                        footprint=source.getFootprint(),
+                        mCoadd=mExposure,
+                        dtype=np.float32,
+                    )
+                    modelData.isolated[source.getId()] = isolated.to_data()
 
         # Attach full image objects to the task to simplify the API
         # and use for debugging.

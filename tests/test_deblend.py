@@ -260,6 +260,17 @@ class TestDeblend(lsst.utils.tests.TestCase):
         observedPsf = modelData.metadata["psf"]
         modelPsf = modelData.metadata["model_psf"]
 
+        # Check that isolated sources are handled correctly
+        isolated = catalog[(catalog["parent"] == 0) & (catalog["deblend_nPeaks"] == 1)]
+        self.assertEqual(len(isolated), len(modelData.isolated))
+        for sid, source in modelData.isolated.items():
+            catalog_footprint = catalog.find(sid).getFootprint()
+            isolated_array = catalog_footprint.spans.asArray()
+            np.testing.assert_array_equal(source.span_array, isolated_array)
+
+            # Check that the origin is correct
+            self.assertTupleEqual(source.origin[::-1], tuple(catalog_footprint.getBBox().getMin()))
+
         # Attach the footprints in each band and compare to the full
         # data model. This is done in each band, both with and without
         # flux re-distribution to test all of the different possible
@@ -284,9 +295,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 )
 
                 # Check that the number of deblended children is consistent
-                parents = catalog[catalog["parent"] == 0]
+                parents = catalog[(catalog["parent"] == 0) & (catalog["deblend_nPeaks"] > 1)]
                 self.assertEqual(
-                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents)
+                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents) - len(isolated)
                 )
 
                 for parent in parents:
@@ -396,7 +407,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
         # Check that the catalog matches the expected results
         nModels = len(self.models)
-        self.assertEqual(len(catalog), nParents+nModels)
+        self.assertEqual(len(catalog), nParents+nModels-len(isolated))
 
     def test_skipped(self):
         # Use tight configs to force skipping a 3 source footprint
@@ -452,9 +463,9 @@ class TestDeblend(lsst.utils.tests.TestCase):
             self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
         # Test extracting two blends
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [1, 2]})
+        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [2, 3]})
         self.assertEqual(len(modelData2.blends), 2)
-        for parentId in [1, 2]:
+        for parentId in [2, 3]:
             parentData1 = modelData.blends[parentId]
             parentData2 = modelData2.blends[parentId]
             self.assertEqual(len(parentData1.children), len(parentData2.children))
@@ -466,8 +477,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
     def test_legacy_model(self):
         repo = self._setup_butler()
         storageClass = StorageClass(
-            "ScarletModelData",
-            pytype=scl.io.ScarletModelData,
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
         )
         datasetType = DatasetType(
             "old_scarlet_model_data",
@@ -527,8 +538,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
         repo = makeTestRepo(repo_dir.name, config=config)
         storageClass = StorageClass(
-            "ScarletModelData",
-            pytype=scl.io.ScarletModelData,
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
             parameters=('blend_id',),
             delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
         )
