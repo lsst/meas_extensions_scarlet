@@ -1125,7 +1125,7 @@ class ScarletDeblendTask(pipeBase.Task):
         nBands = len(context.observation.bands)
 
         # Initialize the persistable ScarletModelData object
-        modelData = io.LsstModelData(metadata={
+        modelData = io.LsstScarletModelData(metadata={
             "model_psf": context.observation.model_psf[0],
             "psf": context.observation.psfs,
             "bands": context.observation.bands,

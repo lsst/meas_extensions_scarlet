@@ -44,7 +44,7 @@ if scl.io.model_data.CURRENT_SCHEMA != SCARLET_LITE_SCHEMA:
     )
 
 
-class LsstModelData(scl.io.ScarletModelData):
+class LsstScarletModelData(scl.io.ScarletModelData):
     """A ScarletModelData that includes isolated sources.
 
     Attributes
@@ -92,8 +92,8 @@ class LsstModelData(scl.io.ScarletModelData):
         return data
 
     @classmethod
-    def from_dict(cls, data: dict, dtype: DTypeLike = np.float32) -> LsstModelData:
-        """Reconstruct `LsstModelData` from JSON compatible dict.
+    def from_dict(cls, data: dict, dtype: DTypeLike = np.float32) -> LsstScarletModelData:
+        """Reconstruct `LsstScarletModelData` from JSON compatible dict.
 
         Parameters
         ----------

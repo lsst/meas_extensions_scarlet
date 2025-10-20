@@ -52,7 +52,7 @@ from lsst.scarlet.lite import (
 from ..metrics import setDeblenderMetrics
 from .. import utils
 from ..footprint import scarletModelToHeavy
-from .model_data import LsstModelData
+from .model_data import LsstScarletModelData
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ def monochromaticDataToScarlet(
 
 
 def updateCatalogFootprints(
-    modelData: LsstModelData,
+    modelData: LsstScarletModelData,
     catalog: SourceCatalog,
     band: str,
     imageForRedistribution: MaskedImage | Exposure | None = None,
@@ -321,7 +321,7 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 
 def updateBlendRecords(
-    modelData: LsstModelData,
+    modelData: LsstScarletModelData,
     bandIndex: int,
     parent: SourceRecord,
     catalog: SourceCatalog,
@@ -454,8 +454,8 @@ def updateBlendRecords(
             del modelData.blends[parent.getId()]
 
 
-def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstModelData:
-    """Build a LsstModelData instance from a dictionary of files.
+def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
+    """Build a LsstScarletModelData instance from a dictionary of files.
 
     Parameters
     ----------
@@ -465,7 +465,7 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstModelData:
     Returns
     -------
     model :
-        LsstModelData instance.
+        LsstScarletModelData instance.
     """
     metadata = zip_dict.pop('metadata', None)
     if metadata is None:
@@ -478,14 +478,14 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstModelData:
     blends = {}
     for key, value in zip_dict.items():
         blends[int(key)] = value
-    return LsstModelData.parse_obj({
+    return LsstScarletModelData.parse_obj({
         'blends': blends,
         'metadata': metadata,
     })
 
 
-def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> LsstModelData:
-    """Read a zip file and return a LsstModelData instance.
+def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> LsstScarletModelData:
+    """Read a zip file and return a LsstScarletModelData instance.
 
     Parameters
     ----------
@@ -498,7 +498,7 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
     Returns
     -------
     model :
-        LsstModelData instance.
+        LsstScarletModelData instance.
     """
 
     if blend_ids is not None:
@@ -526,16 +526,16 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
         return build_scarlet_model(unzipped_files)
 
 
-def scarlet_model_to_zip_json(model_data: LsstModelData) -> dict[str, Any]:
-    """Convert a LsstModelData instance to a dictionary of files.
+def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any]:
+    """Convert a LsstScarletModelData instance to a dictionary of files.
 
     This is required to convert the model data into a format that
     can be insterted into a zip archive.
 
     Parameters
     ----------
-    model_data : `lsst.scarelt.lite.io.LsstModelData`
-        LsstModelData instance.
+    model_data : `lsst.scarelt.lite.io.LsstScarletModelData`
+        LsstScarletModelData instance.
 
     Returns
     -------
@@ -561,13 +561,13 @@ def scarlet_model_to_zip_json(model_data: LsstModelData) -> dict[str, Any]:
     return data
 
 
-def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstModelData):
-    """Write a LsstModelData instance to a zip file.
+def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstScarletModelData):
+    """Write a LsstScarletModelData instance to a zip file.
 
     Parameters
     ----------
-    model_data : `lsst.scarlet.lite.io.LsstModelData`
-        LsstModelData instance.
+    model_data : `lsst.scarlet.lite.io.LsstScarletModelData`
+        LsstScarletModelData instance.
 
     Returns
     -------
@@ -612,10 +612,11 @@ class ScarletModelFormatter(FormatterV2):
 
 
 class ScarletModelDelegate(StorageClassDelegate):
-    """Delegate to extract a blend from an in-memory LsstModelData object.
+    """Delegate to extract a blend from an in-memory
+    LsstScarletModelData object.
     """
     def can_accept(self, inMemoryDataset: Any) -> bool:
-        return isinstance(inMemoryDataset, LsstModelData)
+        return isinstance(inMemoryDataset, LsstScarletModelData)
 
     def getComponent(self, composite: Any, componentName: str) -> Any:
         raise AttributeError(f"Unsupported component: {componentName}")

@@ -477,8 +477,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
     def test_legacy_model(self):
         repo = self._setup_butler()
         storageClass = StorageClass(
-            "LsstModelData",
-            pytype=mes.io.LsstModelData,
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
         )
         datasetType = DatasetType(
             "old_scarlet_model_data",
@@ -538,8 +538,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
         repo = makeTestRepo(repo_dir.name, config=config)
         storageClass = StorageClass(
-            "LsstModelData",
-            pytype=mes.io.LsstModelData,
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
             parameters=('blend_id',),
             delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
         )
