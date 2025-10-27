@@ -31,7 +31,8 @@ import numpy as np
 from lsst.afw.detection import Footprint, GaussianPsf, InvalidPsfError, PeakTable, Psf
 from lsst.afw.geom import SpanSet
 from lsst.afw.table import SourceCatalog, SourceTable, SchemaMapper
-from lsst.daf.butler import Config, DatasetType, StorageClass, FileDataset, DatasetRef
+import lsst.daf.butler
+from lsst.daf.butler import Butler, Config, DatasetType, StorageClass, FileDataset, DatasetRef
 from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
 from lsst.geom import Extent2I, Point2D, Point2I
 from lsst.meas.algorithms import SourceDetectionTask
@@ -508,6 +509,57 @@ class TestDeblend(lsst.utils.tests.TestCase):
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
 
+    def test_older_legacy_model(self):
+        repo = self._setup_butler()
+        oldStorageClass = StorageClass(
+            "ScarletModelData",
+            pytype=lsst.scarlet.lite.io.ScarletModelData,
+        )
+        oldDatasetType = DatasetType(
+            "old_scarlet_model_data",
+            dimensions=(),
+            storageClass=oldStorageClass,
+            universe=repo.dimensions,
+        )
+        ref = DatasetRef(
+            oldDatasetType,
+            run="test_ingestion",
+            dataId={},
+        )
+        dataset = FileDataset(
+            path=os.path.join(TESTDIR, "data", "v29_models.json"),
+            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
+            refs=[ref],
+        )
+
+        # Ingest the legacy model into the butler
+        butler = makeTestCollection(repo, uniqueId="ingestion")
+        repo.registry.registerDatasetType(oldDatasetType)
+        butler.ingest(dataset)
+
+        # Load the base repo config from the repository
+        base_config = Config(os.path.join(self.repo_dir, "butler.yaml"))
+
+        # Load the storage class override config
+        override_path = os.path.join(
+            os.path.dirname(lsst.daf.butler.__file__),
+            "configs",
+            "storageClasses.yaml"
+        )
+        override_config = Config(override_path)
+
+        # Merge the configs (update base with override)
+        base_config.update(override_config)
+
+        # Create Butler with the merged config
+        # The config now contains both the repo info and
+        # the storage class overrides
+        newButler = Butler.from_config(base_config, collections=butler.collections)
+
+        model = newButler.get("old_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData")
+        self.assertEqual(len(model.blends), 2)
+        self.assertEqual(len(model.isolated), 0)
+
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal
         # up to machine precision.
@@ -533,6 +585,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
     def _setup_butler(self):
         # Initialize a Butler to test persistence
         repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.repo_dir = repo_dir.name
         self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
         config = Config()
         config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
