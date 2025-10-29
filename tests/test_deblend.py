@@ -414,7 +414,7 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Use tight configs to force skipping a 3 source footprint
         # and "large" footprint
         config = ScarletDeblendTask.ConfigClass()
-        config.maxFootprintArea = 1000
+        config.maxFootprintArea = 2000
         config.maxNumberOfPeaks = 2
         config.catchFailures = False
 
