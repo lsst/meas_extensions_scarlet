@@ -580,6 +580,25 @@ def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstScarletM
             zf.writestr(filename, data)
 
 
+def scarlet_model_to_lsst_scarlet_model(model_data: scl.io.ScarletModelData) -> LsstScarletModelData:
+    """Convert a scarlet ModelData instance to a LsstScarletModelData instance.
+
+    Parameters
+    ----------
+    model_data : `scarlet.lite.io.ScarletModelData`
+        Scarlet ModelData instance.
+
+    Returns
+    -------
+    result : `lsst.scarlet.lite.io.LsstScarletModelData`
+        LsstScarletModelData instance.
+    """
+    return LsstScarletModelData(
+        blends=model_data.blends,
+        metadata=None,
+    )
+
+
 class ScarletModelFormatter(FormatterV2):
     """Read and write scarlet models.
     """
