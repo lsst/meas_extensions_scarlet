@@ -1219,6 +1219,12 @@ class ScarletDeblendTask(pipeBase.Task):
             sourceRecords = []
             parentBlends = {}
             for blendRecord in blendRecords:
+                # Log a message if it has been a while since the last log.
+                periodicLog.log(
+                    "Deblended %d out of %d parents",
+                    parentIndex,
+                    nParents,
+                )
                 try:
                     blend, blendModel, chi2 = self._deblendParent(blendRecord)
                 except DeblenderSkippedError as e:
@@ -1435,7 +1441,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         if (
             self.config.maxFootprintArea > 0
-            and footprint.getArea() > self.config.maxFootprintArea
+            and footprint.getBBox().getArea() > self.config.maxFootprintArea
         ):
             return True
         if self.config.maxFootprintSize > 0:
