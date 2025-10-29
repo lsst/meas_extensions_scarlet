@@ -1435,7 +1435,7 @@ class ScarletDeblendTask(pipeBase.Task):
         """
         if (
             self.config.maxFootprintArea > 0
-            and footprint.getArea() > self.config.maxFootprintArea
+            and footprint.getBBox().getArea() > self.config.maxFootprintArea
         ):
             return True
         if self.config.maxFootprintSize > 0:
