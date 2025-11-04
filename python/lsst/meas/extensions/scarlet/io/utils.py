@@ -176,7 +176,12 @@ def updateCatalogFootprints(
     # All of the blends should have the same PSF,
     # so we extract it from the first blend data.
     if len(modelData.blends) == 0:
-        raise ValueError("Scarlet model data is empty")
+        if len(modelData.isolated) == 0:
+            return NoWorkFound("Scarlet model data is empty")
+        # All of the sources must have been isolated so there is nothing
+        # to do in this function. This is rare but it does occasionally
+        # happen in fields that only have u-band images.
+        return
     if modelData.metadata is None:
         raise ValueError("Scarlet model data does not contain metadata")
     bands = modelData.metadata["bands"]
@@ -468,6 +473,7 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
         LsstScarletModelData instance.
     """
     metadata = zip_dict.pop('metadata', None)
+    version = zip_dict.pop('version', scl.io.migration.PRE_SCHEMA)
     if metadata is None:
         model_psf = zip_dict.pop('psf')
         psf_shape = zip_dict.pop('psf_shape')
@@ -476,9 +482,20 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
             'psfShape': psf_shape,
         }
     blends = {}
+    isolated = {}
     for key, value in zip_dict.items():
-        blends[int(key)] = value
+        if "blend_type" in value:
+            blends[int(key)] = value
+        elif "source_type" in value:
+            if value["source_type"] != "isolated":
+                raise ValueError("Found unknown source type in scarlet model data isolated sources")
+            isolated[int(key)] = value
+        else:
+            raise ValueError(f"Found unknown file '{value}' in scarlet model data")
+
     return LsstScarletModelData.parse_obj({
+        'version': version,
+        'isolated': isolated,
         'blends': blends,
         'metadata': metadata,
     })
@@ -519,6 +536,14 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
             # The metadata file is not present, so we will
             # assume that the model is in the legacy format.
             filenames += ['psf', 'psf_shape']
+        try:
+            with zip_file.open('version') as f:
+                version = from_json(f.read())
+                unzipped_files['version'] = version
+        except KeyError:
+            # The version file is not present.
+            pass
+
         for filename in filenames:
             with zip_file.open(filename) as f:
                 unzipped_files[filename] = from_json(f.read())
@@ -548,6 +573,11 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
         str(blend_id): json.dumps(blend_data)
         for blend_id, blend_data in json_model['blends'].items()
     }
+
+    data.update({
+        str(source_id): json.dumps(source_data)
+        for source_id, source_data in json_model['isolated'].items()
+    })
     # Support for legacy models
     if 'psf' in json_model:
         data.update({
@@ -557,6 +587,7 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
     else:
         data.update({
             'metadata': json.dumps(json_model['metadata']),
+            'version': json.dumps(json_model['version']),
         })
     return data
 

@@ -80,6 +80,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
             "peak": tuple(float(p) for p in self.peak),
             "span_array": tuple(self.span_array.flatten().astype(float)),
             "version": self.version,
+            "source_type": self.source_type,
         }
         if self.metadata is not None:
             result["metadata"] = scl.io.utils.encode_metadata(self.metadata)
@@ -102,7 +103,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         result : IsolatedSourceData
             The reconstructed object.
         """
-        data = scl.io.MigrationRegistry.migrate(SOURCE_TYPE, data)
+        data = scl.io.migration.MigrationRegistry.migrate(SOURCE_TYPE, data)
         shape = tuple(int(s) for s in data["shape"])
         origin = tuple(int(o) for o in data["origin"])
         span_array = np.array(data["span_array"], dtype=dtype).reshape(shape)
