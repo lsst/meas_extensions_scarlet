@@ -30,18 +30,33 @@ import lsst.scarlet.lite as scl
 
 from .source_data import IsolatedSourceData
 
-CURRENT_SCHEMA = "1.0.0"
+CURRENT_SCHEMA = "1.0.1"
 SCARLET_LITE_SCHEMA = "1.0.0"
 MODEL_TYPE = "lsst"
 scl.io.migration.MigrationRegistry.set_current(MODEL_TYPE, CURRENT_SCHEMA)
 
 # Ensure that the ScarletModelData from scarlet lite hasn't changed.
 if scl.io.model_data.CURRENT_SCHEMA != SCARLET_LITE_SCHEMA:
-    raise RuntimeError(
-        "Version mismatch between meas_extensions_scarlet and scarlet lite. "
-        "This requires updating SCARLET_LITE_SCHEMA, CURRENT_SCHEMA, and a migration step "
-        f"to match the ScarletModelData schema version {scl.io.model_data.CURRENT_SCHEMA}."
-    )
+    scarletVersion = SCARLET_LITE_SCHEMA.split("."), scl.io.model_data.CURRENT_SCHEMA.split(".")
+    lsstVersion = CURRENT_SCHEMA.split(".")
+
+    outdated = False
+    if scarletVersion[0] != lsstVersion[0]:
+        if int(scarletVersion[0]) > int(lsstVersion[0]):
+            outdated = True
+    elif scarletVersion[1] != lsstVersion[1]:
+        if int(scarletVersion[1]) > int(lsstVersion[1]):
+            outdated = True
+    elif scarletVersion[2] != lsstVersion[2]:
+        if int(scarletVersion[2]) > int(lsstVersion[2]):
+            outdated = True
+
+    if outdated:
+        raise RuntimeError(
+            "Version mismatch between meas_extensions_scarlet and scarlet lite. "
+            "This requires updating SCARLET_LITE_SCHEMA, CURRENT_SCHEMA, and a migration step "
+            f"to match the ScarletModelData schema version {scl.io.model_data.CURRENT_SCHEMA}."
+        )
 
 
 class LsstScarletModelData(scl.io.ScarletModelData):
@@ -54,6 +69,7 @@ class LsstScarletModelData(scl.io.ScarletModelData):
     version : dict[int, scl.io.ScarletBlendBaseData]
         The schema version of the serialized data.
     """
+    model_type: str = MODEL_TYPE
     isolated: dict[int, IsolatedSourceData]
     version: str = CURRENT_SCHEMA
 
@@ -75,16 +91,9 @@ class LsstScarletModelData(scl.io.ScarletModelData):
             The object encoded as a JSON-compatible dictionary.
         """
         data = super().as_dict()
-        # Ensure that the we are not trying to serialize with an
-        # incompatible schema.
-        if data["version"] != SCARLET_LITE_SCHEMA:
-            raise RuntimeError(
-                f"Cannot serialize scarlet model with schema {data['version']}, "
-                f"expected {SCARLET_LITE_SCHEMA}. "
-                "This requires updating SCARLET_LITE_SCHEMA, CURRENT_SCHEMA, and a migration step."
-            )
         data.update(
             {
+                "model_type": MODEL_TYPE,
                 "isolated": {k: v.as_dict() for k, v in self.isolated.items()},
                 "version": self.version,
             }
@@ -138,4 +147,25 @@ def _to_1_0_0(data: dict) -> dict:
         data["model_type"] = MODEL_TYPE
     data["isolated"] = {}
     data["version"] = "1.0.0"
+    return data
+
+
+@scl.io.migration.migration(MODEL_TYPE, "1.0.0")
+def _to_1_0_1(data: dict) -> dict:
+    """Migrate a schema version 1.0.0 model to schema version 1.0.1
+
+    There were no changes to this data model in v1.0.1 but we need
+    to provide a way to migrate 1.0.0 data.
+
+    Parameters
+    ----------
+    data : dict
+        The data to migrate.
+    Returns
+    -------
+    result : dict
+        The migrated data.
+    """
+    data["version"] = "1.0.1"
+    data.setdefault("metadata", {}).setdefault("footprint", None)
     return data
