@@ -455,6 +455,15 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 blendData2 = modelData2.blends[parentId].children[blendId]
                 self._test_blend(blendData1, blendData2, model_psf, psf, bands)
 
+        for sourceId in modelData.isolated.keys():
+            isolatedData1 = modelData.isolated[sourceId]
+            isolatedData2 = modelData2.isolated[sourceId]
+            self.assertTupleEqual(isolatedData1.origin, isolatedData2.origin)
+            np.testing.assert_array_equal(
+                isolatedData1.span_array,
+                isolatedData2.span_array,
+            )
+
         # Test extracting a single blend
         modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": parentId})
         self.assertEqual(len(modelData2.blends), 1)
