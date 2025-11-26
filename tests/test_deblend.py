@@ -423,8 +423,8 @@ class TestDeblend(lsst.utils.tests.TestCase):
         catalog = result.objectParents
         parents = catalog[catalog["parent"] == 0]
         self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
-        self.assertEqual(np.sum(parents["deblend_parentTooBig"]), 1)
-        self.assertEqual(np.sum(parents["deblend_tooManyPeaks"]), 1)
+        self.assertEqual(np.sum(parents["deblend_skipped_parentTooBig"]), 1)
+        self.assertEqual(np.sum(parents["deblend_skipped_tooManyPeaks"]), 1)
 
     def test_persistence(self):
         # Test that the model data is persisted correctly

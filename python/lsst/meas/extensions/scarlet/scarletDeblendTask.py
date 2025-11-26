@@ -832,28 +832,28 @@ class ScarletDeblendTask(pipeBase.Task):
             "deblend_skipped", type="Flag", doc="Deblender skipped this source"
         )
         schema.addField(
-            "deblend_isolatedParent",
+            "deblend_skipped_isolatedParent",
             type="Flag",
             doc="The source has only a single peak " "and was not deblended",
         )
         schema.addField(
-            "deblend_isPseudo",
+            "deblend_skipped_isPseudo",
             type="Flag",
             doc='The source is identified as a "pseudo" source and '
             "was not deblended",
         )
         schema.addField(
-            "deblend_tooManyPeaks",
+            "deblend_skipped_tooManyPeaks",
             type="Flag",
             doc="Source had too many peaks; " "only the brightest were included",
         )
         schema.addField(
-            "deblend_parentTooBig",
+            "deblend_skipped_parentTooBig",
             type="Flag",
             doc="Parent footprint covered too many pixels",
         )
         schema.addField(
-            "deblend_masked",
+            "deblend_skipped_masked",
             type="Flag",
             doc="Parent footprint had too many masked pixels",
         )
@@ -1604,14 +1604,14 @@ class ScarletDeblendTask(pipeBase.Task):
         if isPseudoSource(parent, self.config.pseudoColumns):
             # We also skip pseudo sources, like sky objects, which
             # are intended to be skipped.
-            skipKey = "deblend_isPseudo"
+            skipKey = "deblend_skipped_isPseudo"
         elif self._isLargeFootprint(footprint):
             # The footprint is above the maximum footprint size limit
-            skipKey = "deblend_parentTooBig"
+            skipKey = "deblend_skipped_parentTooBig"
             skipMessage = f"Parent {parent.getId()}: skipping large footprint"
         elif self._isMasked(footprint, mExposure):
             # The footprint exceeds the maximum number of masked pixels
-            skipKey = "deblend_masked"
+            skipKey = "deblend_skipped_masked"
             skipMessage = f"Parent {parent.getId()}: skipping masked footprint"
         elif (
             self.config.maxNumberOfPeaks > 0
@@ -1621,7 +1621,7 @@ class ScarletDeblendTask(pipeBase.Task):
             # if the number of peaks exceeds max peaks, since neglecting
             # to model any peaks often results in catastrophic failure
             # of scarlet to generate models for the brighter sources.
-            skipKey = "deblend_tooManyPeaks"
+            skipKey = "deblend_skipped_tooManyPeaks"
             skipMessage = f"Parent {parent.getId()}: skipping blend with too many peaks"
         if skipKey is not None:
             return (cast(afwTable.Key, skipKey), skipMessage)
