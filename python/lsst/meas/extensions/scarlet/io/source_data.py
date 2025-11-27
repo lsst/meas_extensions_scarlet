@@ -79,8 +79,8 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
             "shape": tuple(int(s) for s in self.span_array.shape),
             "peak": tuple(float(p) for p in self.peak),
             "span_array": tuple(self.span_array.flatten().astype(float)),
-            "version": self.version,
             "source_type": self.source_type,
+            "version": self.version,
         }
         if self.metadata is not None:
             result["metadata"] = scl.io.utils.encode_metadata(self.metadata)

@@ -251,18 +251,17 @@ class TestDeblend(lsst.utils.tests.TestCase):
 
     def test_footprints(self):
         data = self.initialize_data(self.models)
-        nParents = len(data.catalog)
         mDeconvolved = self.deconvolve(data)
         result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
 
-        config = data.deblendTask.config
         catalog = result.deblendedCatalog
+        objectParents = result.objectParents
         modelData = result.scarletModelData
         observedPsf = modelData.metadata["psf"]
         modelPsf = modelData.metadata["model_psf"]
 
         # Check that isolated sources are handled correctly
-        isolated = catalog[(catalog["parent"] == 0) & (catalog["deblend_nPeaks"] == 1)]
+        isolated = catalog[(catalog["parent"] == 0)]
         self.assertEqual(len(isolated), len(modelData.isolated))
         for sid, source in modelData.isolated.items():
             catalog_footprint = catalog.find(sid).getFootprint()
@@ -296,19 +295,14 @@ class TestDeblend(lsst.utils.tests.TestCase):
                 )
 
                 # Check that the number of deblended children is consistent
-                parents = catalog[(catalog["parent"] == 0) & (catalog["deblend_nPeaks"] > 1)]
+                parents = objectParents[
+                    (objectParents["parent"] == 0) & (objectParents["deblend_nPeaks"] > 1)]
                 self.assertEqual(
-                    np.sum(catalog["deblend_nChild"]), len(catalog) - len(parents) - len(isolated)
+                    np.sum(parents["deblend_nChild"]), len(catalog) - len(isolated)
                 )
 
                 for parent in parents:
                     children = catalog[catalog["parent"] == parent.get("id")]
-                    # Check that nChild is set correctly
-                    self.assertEqual(len(children), parent.get("deblend_nChild"))
-                    for parentCol, childCol in config.columnInheritance.items():
-                        np.testing.assert_array_equal(
-                            parent.get(parentCol), children[childCol]
-                        )
 
                     # Extract the parent blend data
                     parentBlendData = modelData.blends[parent.getId()]
@@ -331,8 +325,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
                         py = child.get("deblend_peak_center_y")
                         flux = img[Point2I(px, py)]
                         self.assertEqual(flux, child.get("deblend_peak_instFlux"))
-
-                        self.assertEqual(child.get("deblend_nPeaks"), len(fp.peaks))
 
                         # Check that the peak positions match the catalog entry
                         peaks = fp.getPeaks()
@@ -402,13 +394,19 @@ class TestDeblend(lsst.utils.tests.TestCase):
                             np.testing.assert_almost_equal(img.array, model)
 
         # Check that all sources have the correct number of peaks
+        maxId = np.max(objectParents["id"])
         for src in catalog:
             fp = src.getFootprint()
-            self.assertEqual(len(fp.peaks), src.get("deblend_nPeaks"))
+            self.assertEqual(len(fp.peaks), 1)
+            if src["parent"] > 0:
+                # Check that source IDs are greater than the max parent ID
+                self.assertGreater(src["id"], maxId)
+
+        # Ensure that sources are sorted by parent ID
+        np.testing.assert_array_equal(sorted(catalog["parent"]), catalog["parent"])
 
         # Check that the catalog matches the expected results
-        nModels = len(self.models)
-        self.assertEqual(len(catalog), nParents+nModels-len(isolated))
+        self.assertEqual(len(catalog), len(self.models))
 
     def test_skipped(self):
         # Use tight configs to force skipping a 3 source footprint
@@ -422,11 +420,11 @@ class TestDeblend(lsst.utils.tests.TestCase):
         mDeconvolved = self.deconvolve(data)
         result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
 
-        catalog = result.deblendedCatalog
+        catalog = result.objectParents
         parents = catalog[catalog["parent"] == 0]
         self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
-        self.assertEqual(np.sum(parents["deblend_parentTooBig"]), 1)
-        self.assertEqual(np.sum(parents["deblend_tooManyPeaks"]), 1)
+        self.assertEqual(np.sum(parents["deblend_skipped_parentTooBig"]), 1)
+        self.assertEqual(np.sum(parents["deblend_skipped_tooManyPeaks"]), 1)
 
     def test_persistence(self):
         # Test that the model data is persisted correctly

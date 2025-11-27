@@ -147,13 +147,10 @@ def scarletModelToHeavy(
     valid = Mask(valid.astype(np.int32), xy0=xy0)
     spans = SpanSet.fromMask(valid)
 
-    # Add the location of the source to the peak catalog
-    peakCat = PeakCatalog(source.detectedPeak.table)
-    peakCat.append(source.detectedPeak)
-
-    # Create the MultibandHeavyFootprint
+    # Create the MultibandHeavyFootprint and
+    # add the location of the source to the peak catalog.
     foot = afwFootprint(spans)
-    foot.setPeakCatalog(peakCat)
+    foot.addPeak(source.center[1], source.center[0], np.max(model.data))
     if model.n_bands == 1:
         image = afwImage(
             array=model.data[0], xy0=valid.getBBox().getMin(), dtype=model.dtype
