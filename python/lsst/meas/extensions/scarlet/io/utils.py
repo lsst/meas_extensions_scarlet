@@ -131,7 +131,7 @@ def monochromaticDataToScarlet(
                 )
                 model = factorized.get_model().data[bandIndex][None, :, :]
                 model = scl.Image(model, yx0=bbox.origin, bands=bands)
-                component = scl.io.ComponentCube(
+                component = scl.component.CubeComponent(
                     model=model,
                     peak=factorized.peak,
                 )
