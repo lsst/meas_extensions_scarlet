@@ -334,6 +334,7 @@ def buildObservation(
     # Use the inverse variance as the weights
     if useWeights:
         weights = 1 / mExposure.variance.array
+        weights[~np.isfinite(weights)] = 0
     else:
         weights = np.ones_like(mExposure.image.array)
 
@@ -348,8 +349,13 @@ def buildObservation(
         # Mask out the pixels outside the footprint
         weights *= footprint.spans.asArray()
 
+    # Mask out non-finite pixels
+    image = mExposure.image.array.copy()
+    weights[~np.isfinite(image)] = 0
+    image[~np.isfinite(image)] = 0
+
     return scl.Observation(
-        images=mExposure.image.array,
+        images=image,
         variance=mExposure.variance.array,
         weights=weights,
         psfs=psfModels,
