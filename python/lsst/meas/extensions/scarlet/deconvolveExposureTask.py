@@ -41,7 +41,11 @@ __all__ = [
 ]
 
 
-def calculate_update_step(observation: scl.Observation) -> float:
+def calculate_update_step(
+    observation: scl.Observation,
+    min_scale: float = 0.01,
+    default_scale: float = 0.1,
+) -> float:
     """Calculate the scale factor for the update step in deconvolution.
 
     For most images this will be 1.0 but for images with low SNR
@@ -53,6 +57,12 @@ def calculate_update_step(observation: scl.Observation) -> float:
     observation :
         Scarlet lite Observation.
 
+    min_scale :
+        Minimum allowed scale factor.
+
+    default_scale :
+        Default scale factor to return if noise level is non-finite.
+
     Returns
     -------
     scale : float
@@ -60,6 +70,9 @@ def calculate_update_step(observation: scl.Observation) -> float:
     """
     # Calculate sparsity as fraction of pixels significantly above noise
     noise_level = observation.noise_rms[0]
+    # Guard against non-finite or non-positive noise levels
+    if noise_level <= 0 or not np.isfinite(noise_level):
+        return default_scale
     signal_mask = observation.images.data > 3*noise_level
     signal_pixels = np.sum(signal_mask)
     sparsity = signal_pixels / observation.images.data.size
@@ -73,7 +86,7 @@ def calculate_update_step(observation: scl.Observation) -> float:
     # Scale factor that decreases with sparsity and increases with SNR
     scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
 
-    return max(0.01, scale)
+    return max(min_scale, scale)
 
 
 class DeconvolveExposureConnections(
@@ -265,7 +278,13 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         bands = (band,)
         model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 
-        image = coadd.image.array
+        # Give zero weight to non-finite pixels
+        weights = np.ones_like(coadd.image.array)
+        weights[~np.isfinite(coadd.image.array)] = 0
+
+        image = coadd.image.array.copy()
+        # Set non-finite pixels to zero
+        image[~np.isfinite(image)] = 0.0
         psfCenter = coadd.getBBox().getCenter()
         if catalog is not None:
             psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
@@ -277,14 +296,13 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         else:
             psf = coadd.getPsf().computeKernelImage(psfCenter).array
 
-        weights = np.ones_like(coadd.image.array)
         badPixelMasks = utils.defaultBadPixelMasks
         badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
         mask = coadd.mask.array & badPixels
         weights[mask > 0] = 0
 
         observation = scl.Observation(
-            images=image.copy()[None],
+            images=image[None],
             variance=coadd.variance.array.copy()[None],
             weights=weights[None],
             psfs=psf[None],
@@ -325,7 +343,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             update = observation.convolve(residual, grad=True)
             update.data[:] *= step
             model += update
-            model.data[model.data < 0] = 0
+            model.data[(model.data < 0) | ~np.isfinite(model.data)] = 0
             if catalog is not None:
                 # Ensure that the deconvolved model footprints fit
                 # inside of the original footprints by setting regions
