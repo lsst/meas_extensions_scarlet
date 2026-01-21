@@ -21,7 +21,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import DTypeLike
@@ -52,9 +53,19 @@ class IsolatedSource(scl.source.SourceBase):
         metadata :
             Optional metadata to store with the source.
         """
-        self.model = model
-        self.peak = peak
         self.metadata = metadata
+        self.components = [scl.component.CubeComponent(model=model, peak=peak)]
+
+    @property
+    def component(self) -> scl.component.CubeComponent:
+        """The single component of this isolated source.
+
+        Returns
+        -------
+        component :
+            The CubeComponent representing this isolated source.
+        """
+        return self.components[0]
 
     @staticmethod
     def from_footprint(
@@ -104,12 +115,17 @@ class IsolatedSource(scl.source.SourceBase):
     @property
     def bbox(self) -> scl.Box:
         """The bounding box of the source in the full Blend."""
-        return self.model.bbox
+        return self.component.bbox
 
     @property
     def bands(self) -> list[str]:
         """The ordered list of bands in the full source model."""
-        return self.model.bands
+        return self.component.bands
+
+    @property
+    def peak(self) -> tuple[int, int]:
+        """The (y, x) coordinates of the peak pixel within the model."""
+        return self.component.peak
 
     def get_model(self) -> scl.Image:
         """Get the full 3D (band, y, x) model of the source.
@@ -119,7 +135,7 @@ class IsolatedSource(scl.source.SourceBase):
         model :
             The 3D (band, y, x) model of the source.
         """
-        return self.model
+        return self.component._model
 
     def to_data(self) -> IsolatedSourceData:
         """Convert to a ScarletSourceData representation.
@@ -131,9 +147,72 @@ class IsolatedSource(scl.source.SourceBase):
         """
         from .io import IsolatedSourceData
 
-        span_array = np.any(self.model.data != 0, axis=0)
+        span_array = np.any(self.component._model.data != 0, axis=0)
         return IsolatedSourceData(
             span_array=span_array,
             origin=self.bbox.origin,
             peak=self.peak,
+        )
+
+    def __copy__(self) -> IsolatedSource:
+        """Create a copy of this IsolatedSource.
+
+        Returns
+        -------
+        source_copy :
+            A copy of this IsolatedSource.
+        """
+        return IsolatedSource(
+            model=self.component._model,
+            peak=self.component.peak,
+            metadata=self.metadata,
+        )
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> IsolatedSource:
+        """Create a deep copy of this IsolatedSource.
+
+        Parameters
+        ----------
+        memo : dict[int, Any]
+            A memoization dictionary used by `copy.deepcopy`.
+
+        Returns
+        -------
+        source :
+            A deep copy of this IsolatedSource.
+        """
+        if id(self) in memo:
+            return memo[id(self)]
+
+        source = IsolatedSource.__new__(IsolatedSource)
+        memo[id(self)] = source
+        source.__init__(  # type: ignore[misc]
+            model=deepcopy(self.component._model, memo),
+            peak=deepcopy(self.component.peak, memo),
+            metadata=deepcopy(self.metadata, memo),
+        )
+        return source
+
+    def __getitem__(self, indices: Any) -> IsolatedSource:
+        """Get a sub-source corresponding to the given indices.
+
+        Parameters
+        ----------
+        indices : Any
+            The indices to use to slice the source model.
+
+        Returns
+        -------
+        source :
+            A new IsolatedSource that is a sub-source of this one.
+        Raises
+        ------
+        IndexError :
+            If the index includes a `Box` or spatial indices.
+        """
+        component = self.component[indices]
+        return IsolatedSource(
+            model=component._model,
+            peak=component.peak,
+            metadata=self.metadata,
         )
