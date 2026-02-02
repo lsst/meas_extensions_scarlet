@@ -152,8 +152,8 @@ def _getDeconvolvedFootprints(
     """
     bbox = mDeconvolved.getBBox()
     xmin, ymin = bbox.getMin()
-    sigma = np.median(np.sqrt(mDeconvolved.variance.array), axis=(1, 2))
-    detect = np.sum(mDeconvolved.image.array/sigma[:, None, None], axis=0)
+    sigma = np.nanmedian(np.sqrt(mDeconvolved.variance.array), axis=(1, 2))
+    detect = np.nansum(mDeconvolved.image.array/sigma[:, None, None], axis=0)
 
     # We don't use the variance here because testing in DM-47738
     # has shown that we get better results without it
