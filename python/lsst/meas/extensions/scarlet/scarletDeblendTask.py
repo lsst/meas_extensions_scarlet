@@ -1731,6 +1731,7 @@ class ScarletDeblendTask(pipeBase.Task):
             if len(parentFoot.peaks) == 1:
                 # Isolated source and we are not processing singles
                 isolated.append(parent)
+                parent.set("deblend_skipped_isolatedParent", True)
                 continue
 
             # Find deconvolved footprints that intersect with the parent
