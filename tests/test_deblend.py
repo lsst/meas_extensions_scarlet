@@ -271,6 +271,13 @@ class TestDeblend(lsst.utils.tests.TestCase):
             # Check that the origin is correct
             self.assertTupleEqual(source.origin[::-1], tuple(catalog_footprint.getBBox().getMin()))
 
+        # Verify that the isolated parent flag is being set
+        isolatedParents = objectParents[
+            (objectParents["parent"] == 0)
+            & (objectParents["deblend_nPeaks"] == 1)
+        ]
+        self.assertEqual(np.sum(objectParents["deblend_skipped_isolatedParent"]), len(isolatedParents))
+
         # Attach the footprints in each band and compare to the full
         # data model. This is done in each band, both with and without
         # flux re-distribution to test all of the different possible
