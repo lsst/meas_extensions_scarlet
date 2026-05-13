@@ -317,9 +317,12 @@ Audit links: C-6, U-1; the rest pin existing behavior.
   equal expected values (overlap = 0, blendedness = 0).
 - **(New)** `test_setDeblenderMetrics_two_disjoint` — two
   non-overlapping sources; overlap metrics are zero.
-- **(New)** `test_setDeblenderMetrics_overlapping_psfs` — two PSFs
-  with overlap; assert metric values against an analytic expectation
-  (or freeze the current value as a regression baseline).
+- **(New)** `test_setDeblenderMetrics_overlapping_sources` — two
+  uniform-flux rectangular sources with a 3×3 overlap region;
+  assert metric values against an analytic expectation. (Originally
+  named `..._overlapping_psfs` for two PSF-shaped sources, but
+  uniform rectangles let every metric be derived in closed form
+  rather than frozen as a regression baseline.)
 
 Audit links: U-3, U-8 (type hint — not a runtime test),
 U-11 (algorithmic improvement — not a runtime test).
