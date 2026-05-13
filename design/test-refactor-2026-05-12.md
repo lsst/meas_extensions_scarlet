@@ -417,6 +417,12 @@ DB-12, DB-13, DB-18, DB-19, DB-20, DB-21.
 - **(New)** `test_isolated_source_data_roundtrip` — build a
   `IsolatedSourceData`, serialize to dict, parse back, assert
   equality of all fields.
+- **(New)** `test_isolated_source_data_roundtrip_no_metadata` —
+  when `metadata=None`, `as_dict` omits the `metadata` key
+  entirely (rather than emitting it as `null`); the round-tripped
+  object has `metadata is None`. Pins the encoding contract so a
+  downstream JSON reader that distinguishes "absent" from "null"
+  doesn't silently break.
 - **(New)** `test_span_array_roundtrip` — round-trip a non-trivial
   span_array; assert bit-exact recovery.
 
