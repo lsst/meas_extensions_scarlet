@@ -434,6 +434,11 @@ Audit links: IO-1, IO-4, IO-7.
   no `isolated` key; migration adds it as `{}`.
 - **(New)** `test_to_1_0_1_adds_footprint_metadata` — pre-1.0.1 data
   has no `metadata.footprint`; migration adds it.
+- **(New)** `test_to_1_0_1_preserves_existing_metadata` — when 1.0.0
+  data already carries a `metadata` dict (without a `footprint`
+  key), the migration adds `footprint: None` without clobbering the
+  other keys. Pins the `setdefault().setdefault()` contract — a
+  naive rewrite would silently drop pre-existing metadata.
 - **(New)** `test_schema_version_constants_match` — assert
   `SCARLET_LITE_SCHEMA` and `CURRENT_SCHEMA` are wired correctly.
 
