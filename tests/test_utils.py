@@ -28,6 +28,7 @@ import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
+import scipy.signal
 from lsst.afw.detection import Footprint, GaussianPsf, InvalidPsfError, PeakTable, Psf
 from lsst.afw.geom import SpanSet
 from lsst.afw.table import SourceCatalog, SourceTable
@@ -215,6 +216,71 @@ class TestUtils(lsst.utils.tests.TestCase):
                 src[f"merge_footprint_{band}"] = True
                 footprint.peaks[f"merge_peak_{band}"] = True
         return catalog
+
+
+class TestMultibandConvolve(lsst.utils.tests.TestCase):
+    """Tests for ``multiband_convolve`` in
+    ``lsst.meas.extensions.scarlet.utils``.
+
+    ``multiband_convolve`` iterates over ``zip(images, psfs, strict=True)``
+    and calls ``scipy.signal.convolve(..., mode="same")`` per band. Both
+    arguments must be 3-D ``(bands, h, w)`` — the function does *not*
+    broadcast a 2-D PSF across bands; the caller is responsible for
+    that (see ``tests/utils.py::DeblenderTestModel.render``).
+    """
+
+    def test_multiband_convolve_per_band_psf(self):
+        """Each band is convolved with its own PSF.
+
+        Passes three distinct Gaussian PSFs (sigma = 0.8, 1.2, 1.6) and
+        verifies that ``result[b]`` equals
+        ``scipy.signal.convolve(images[b], psfs[b], mode="same")``
+        computed independently for each band. A regression that
+        cross-routed bands (e.g. always using ``psfs[0]``) would fail.
+        """
+        rng = np.random.RandomState(0)
+        images = rng.rand(3, 21, 21).astype(np.float32)
+        psfs = np.stack([
+            scl.utils.integrated_circular_gaussian(sigma=s).astype(np.float32)
+            for s in (0.8, 1.2, 1.6)
+        ])
+
+        result = mes.utils.multiband_convolve(images, psfs)
+
+        self.assertEqual(result.shape, images.shape)
+        for b in range(3):
+            expected = scipy.signal.convolve(images[b], psfs[b], mode="same")
+            np.testing.assert_allclose(result[b], expected, atol=1e-6)
+
+    def test_multiband_convolve_identity_psf(self):
+        """A centered delta PSF returns the input unchanged.
+
+        Pins the ``mode="same"`` contract: with a 3×3 PSF that is zero
+        everywhere except a 1 at the center, the per-band convolution
+        is an identity transformation. Any shape or centering bug in
+        the wrapper would shift or truncate the output.
+        """
+        rng = np.random.RandomState(1)
+        images = rng.rand(3, 11, 11).astype(np.float32)
+        psfs = np.zeros((3, 3, 3), dtype=np.float32)
+        psfs[:, 1, 1] = 1.0
+
+        result = mes.utils.multiband_convolve(images, psfs)
+
+        np.testing.assert_allclose(result, images, atol=1e-6)
+
+    def test_multiband_convolve_shape_mismatch_raises(self):
+        """Mismatched band counts raise ``ValueError``.
+
+        Pins the ``zip(images, psfs, strict=True)`` contract; a
+        regression that drops ``strict=True`` would silently broadcast
+        or truncate.
+        """
+        images = np.zeros((3, 11, 11), dtype=np.float32)
+        psfs = np.zeros((2, 5, 5), dtype=np.float32)
+
+        with self.assertRaises(ValueError):
+            mes.utils.multiband_convolve(images, psfs)
 
 
 if __name__ == "__main__":

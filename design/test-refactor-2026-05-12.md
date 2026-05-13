@@ -127,7 +127,7 @@ tests/
   # one file per source module
   test_box_conversions.py          # utils.scarletBoxToBBox/bboxToScarletBox round-trips
   test_footprint_conversions.py    # footprint.py: afwFootprintToScarlet, peak conventions
-  test_psf_utilities.py            # utils.computeNearestPsf*, buildObservation, multiband_convolve
+  test_utils.py                    # utils.computeNearestPsf*, buildObservation, multiband_convolve
   test_metrics.py                  # metrics.setDeblenderMetrics
   test_source.py                   # source.IsolatedSource (subsumes test_isolated_source.py)
   test_deconvolve_task.py          # DeconvolveExposureTask
@@ -296,17 +296,31 @@ already discussed and discarded but the new tests pin it down).
 
 Audit links: C-10 (discarded), U-10 (round-trip gap).
 
-### 4.3 `test_psf_utilities.py`
+### 4.3 `test_utils.py`
+
+Renamed from the originally proposed `test_psf_utilities.py`:
+`mes.utils` covers PSF helpers, box conversions, and
+`multiband_convolve` / `calcChi2`, so the test file should mirror the
+source module name rather than narrow to "PSF utilities". The
+`_generate*` helpers stay as methods on `TestUtils` (not lifted into
+`pipeline.py`) since they're PSF/coadd-construction primitives and
+have no callers outside this class.
 
 - **(Existing)** `test_computeNearestPsfGood`,
   `test_computeNearestPsfRecoverable`, `test_computeNearestPsfBad`.
 - **(Existing)** `test_computeNearestPsfMultiBandGood`,
   `..._Recoverable`, `..._Incomplete`, `..._Bad`.
 - **(Existing)** `test_buildObservationBadPsfs`.
-- **(New)** `test_multiband_convolve_2d_psf_broadcasts` — verify that
-  a 2-D PSF passed in gets broadcast across bands correctly.
-- **(New)** `test_multiband_convolve_per_band_psf` — different PSFs per
-  band produce different convolved outputs.
+- **(New)** `test_multiband_convolve_per_band_psf` — three distinct
+  Gaussian PSFs (sigma = 0.8, 1.2, 1.6); each band's output equals
+  `scipy.signal.convolve(images[b], psfs[b], mode="same")` computed
+  independently. Pins the `zip(strict=True)` per-band routing.
+- **(New)** `test_multiband_convolve_identity_psf` — a centered
+  delta PSF returns the input unchanged. Pins the `mode="same"`
+  centering / shape contract.
+- **(New)** `test_multiband_convolve_shape_mismatch_raises` —
+  passing a different number of band-PSFs than band-images raises
+  `ValueError`. Pins the `strict=True` choice.
 
 Audit links: C-6, U-1; the rest pin existing behavior.
 
