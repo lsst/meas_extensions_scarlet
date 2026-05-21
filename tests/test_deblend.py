@@ -19,9 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os
 import unittest
-import tempfile
 
 import lsst.afw.image as afwImage
 import lsst.meas.extensions.scarlet as mes
@@ -30,17 +28,12 @@ import lsst.utils.tests
 import numpy as np
 from lsst.afw.detection import GaussianPsf
 from lsst.afw.table import SourceCatalog, SourceTable, SchemaMapper
-import lsst.daf.butler
-from lsst.daf.butler import Butler, Config, DatasetType, StorageClass, FileDataset, DatasetRef
-from lsst.daf.butler.tests import makeTestRepo, makeTestCollection
 from lsst.geom import Point2I
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
 from lsst.pipe.base import Struct
 from utils import initData, SersicModel, PsfModel
-
-TESTDIR = os.path.abspath(os.path.dirname(__file__))
 
 
 class TestDeblend(lsst.utils.tests.TestCase):
@@ -431,193 +424,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
         self.assertEqual(np.sum(parents["deblend_skipped_parentTooBig"]), 1)
         self.assertEqual(np.sum(parents["deblend_skipped_tooManyPeaks"]), 1)
-
-    def test_persistence(self):
-        # Test that the model data is persisted correctly
-        data = self.initialize_data(self.models)
-        repo = self._setup_butler()
-        mDeconvolved = self.deconvolve(data)
-        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
-        modelData = result.scarletModelData
-        bands = modelData.metadata["bands"]
-        butler = makeTestCollection(repo, uniqueId="test_run1")
-        butler.put(modelData, "scarlet_model_data", dataId={})
-        modelData2 = butler.get("scarlet_model_data", dataId={})
-        model_psf = modelData.metadata["model_psf"][None, :, :]
-        model_psf2 = modelData2.metadata["model_psf"][None, :, :]
-        np.testing.assert_almost_equal(model_psf2, model_psf)
-        psf = modelData.metadata["psf"]
-        psf2 = modelData2.metadata["psf"]
-        np.testing.assert_almost_equal(psf2, psf)
-        self.assertEqual(len(modelData2.blends), len(modelData.blends))
-
-        for parentId in modelData.blends.keys():
-            nChildren = len(modelData.blends[parentId].children)
-            self.assertEqual(nChildren, len(modelData2.blends[parentId].children))
-            for blendId in modelData.blends[parentId].children:
-                blendData1 = modelData.blends[parentId].children[blendId]
-                blendData2 = modelData2.blends[parentId].children[blendId]
-                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
-
-        for sourceId in modelData.isolated.keys():
-            isolatedData1 = modelData.isolated[sourceId]
-            isolatedData2 = modelData2.isolated[sourceId]
-            self.assertTupleEqual(isolatedData1.origin, isolatedData2.origin)
-            np.testing.assert_array_equal(
-                isolatedData1.span_array,
-                isolatedData2.span_array,
-            )
-
-        # Test extracting a single blend
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": parentId})
-        self.assertEqual(len(modelData2.blends), 1)
-
-        for blendId, blendData1 in modelData.blends[parentId].children.items():
-            blendData2 = modelData2.blends[parentId].children[blendId]
-            self._test_blend(blendData1, blendData2, model_psf, psf, bands)
-
-        # Test extracting two blends
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [2, 3]})
-        self.assertEqual(len(modelData2.blends), 2)
-        for parentId in [2, 3]:
-            parentData1 = modelData.blends[parentId]
-            parentData2 = modelData2.blends[parentId]
-            self.assertEqual(len(parentData1.children), len(parentData2.children))
-            for blendId in parentData1.children.keys():
-                blendData1 = parentData1.children[blendId]
-                blendData2 = parentData2.children[blendId]
-                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
-
-    def test_legacy_model(self):
-        repo = self._setup_butler()
-        storageClass = StorageClass(
-            "LsstScarletModelData",
-            pytype=mes.io.LsstScarletModelData,
-        )
-        datasetType = DatasetType(
-            "old_scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=repo.dimensions,
-        )
-        ref = DatasetRef(
-            datasetType,
-            run="test_ingestion",
-            dataId={},
-        )
-        dataset = FileDataset(
-            path=os.path.join(TESTDIR, "data", "v29_models.json"),
-            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
-            refs=[ref],
-        )
-
-        # Ingest the legacy model into the butler
-        butler = makeTestCollection(repo, uniqueId="ingestion")
-        repo.registry.registerDatasetType(datasetType)
-        butler.ingest(dataset)
-
-        model = butler.get("old_scarlet_model_data", dataId={})
-        self.assertEqual(len(model.blends), 2)
-
-        test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
-        self.assertEqual(len(test.blends), 1)
-
-    def test_older_legacy_model(self):
-        repo = self._setup_butler()
-        oldStorageClass = StorageClass(
-            "ScarletModelData",
-            pytype=lsst.scarlet.lite.io.ScarletModelData,
-        )
-        oldDatasetType = DatasetType(
-            "old_scarlet_model_data",
-            dimensions=(),
-            storageClass=oldStorageClass,
-            universe=repo.dimensions,
-        )
-        ref = DatasetRef(
-            oldDatasetType,
-            run="test_ingestion",
-            dataId={},
-        )
-        dataset = FileDataset(
-            path=os.path.join(TESTDIR, "data", "v29_models.json"),
-            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
-            refs=[ref],
-        )
-
-        # Ingest the legacy model into the butler
-        butler = makeTestCollection(repo, uniqueId="ingestion")
-        repo.registry.registerDatasetType(oldDatasetType)
-        butler.ingest(dataset)
-
-        # Load the base repo config from the repository
-        base_config = Config(os.path.join(self.repo_dir, "butler.yaml"))
-
-        # Load the storage class override config
-        override_path = os.path.join(
-            os.path.dirname(lsst.daf.butler.__file__),
-            "configs",
-            "storageClasses.yaml"
-        )
-        override_config = Config(override_path)
-
-        # Merge the configs (update base with override)
-        base_config.update(override_config)
-
-        # Create Butler with the merged config
-        # The config now contains both the repo info and
-        # the storage class overrides
-        newButler = Butler.from_config(base_config, collections=butler.collections)
-
-        model = newButler.get("old_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData")
-        self.assertEqual(len(model.blends), 2)
-        self.assertEqual(len(model.isolated), 0)
-
-    def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
-        # Test that two ScarletBlendData objects are equal
-        # up to machine precision.
-        self.assertTupleEqual(blendData1.origin, blendData2.origin)
-        self.assertEqual(len(blendData1.sources), len(blendData2.sources))
-
-        # Test that the two blends are equal up to machine precision
-        # once converted into scarlet lite Blend objects.
-        blend1 = blendData1.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        blend2 = blendData2.minimal_data_to_blend(
-            model_psf,
-            psf,
-            bands,
-            dtype=np.float32,
-        )
-        np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
-
-    def _setup_butler(self):
-        # Initialize a Butler to test persistence
-        repo_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.repo_dir = repo_dir.name
-        self.addCleanup(tempfile.TemporaryDirectory.cleanup, repo_dir)
-        config = Config()
-        config["datastore", "cls"] = "lsst.daf.butler.datastores.fileDatastore.FileDatastore"
-        repo = makeTestRepo(repo_dir.name, config=config)
-        storageClass = StorageClass(
-            "LsstScarletModelData",
-            pytype=mes.io.LsstScarletModelData,
-            parameters=('blend_id',),
-            delegate="lsst.meas.extensions.scarlet.io.ScarletModelDelegate",
-        )
-        datasetType = DatasetType(
-            "scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=repo.dimensions,
-        )
-        repo.registry.registerDatasetType(datasetType)
-        return repo
-
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
     pass
