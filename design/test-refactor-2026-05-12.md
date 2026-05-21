@@ -361,8 +361,13 @@ Audit links: U-4, U-9, U-12, U-13, U-14 (cleanup-only).
   noise tolerance.
 - **(Existing)** `test_catalog_free_deconvolve` — same, with
   `useFootprints=False`.
-- **(New)** `test_deconvolve_one_isolated_psf` — minimal scene, exact
-  pixel-level expectation.
+- **(New)** `test_deconvolve_one_isolated_psf` — minimal scene
+  (one isolated PSF source). Asserts the integrated flux in a 5×5
+  box around the source center matches the truth within 2σ of
+  expected sum-of-noise. Originally framed as pixel-level recovery,
+  but the deconvolver leaves a per-pixel peak-amplitude residual
+  larger than noise (see audit DC-1 developer comment); flux
+  conservation is the cleaner contract to pin.
 - **(New)** `test_deconvolve_preserves_image_metadata` — output
   exposure has the right PSF, WCS, dimensions.
 - **(New)** `test_deconvolve_with_nan_input` — input image with a
