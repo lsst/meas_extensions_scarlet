@@ -60,37 +60,53 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
     ``lsst.meas.extensions.scarlet.io``.
     """
 
-    def test_persistence(self):
-        # Test that the model data is persisted correctly
+    def _persist_modelData(self):
+        # Set up a butler with the multi-blend modelData written into
+        # it. Sets ``self.modelData``, ``self.model_psf``, ``self.psf``,
+        # ``self.bands``, and ``self.butler`` for use by the three
+        # put/get tests below. ``pipeline.deblend`` is memoized per
+        # scene + config, so the deblend itself is computed once per
+        # process even though this helper runs per test.
         bundle = pipeline.deblend(
             pipeline.deconvolve(
                 pipeline.detect(pipeline.build_image(SCENES["multi-blend"]))
             )
         )
-        modelData = bundle.result.scarletModelData
+        self.modelData = bundle.result.scarletModelData
+        self.bands = self.modelData.metadata["bands"]
+        self.model_psf = self.modelData.metadata["model_psf"][None, :, :]
+        self.psf = self.modelData.metadata["psf"]
         repo = self._setup_butler()
-        bands = modelData.metadata["bands"]
-        butler = makeTestCollection(repo, uniqueId="test_run1")
-        butler.put(modelData, "scarlet_model_data", dataId={})
-        modelData2 = butler.get("scarlet_model_data", dataId={})
-        model_psf = modelData.metadata["model_psf"][None, :, :]
-        model_psf2 = modelData2.metadata["model_psf"][None, :, :]
-        np.testing.assert_almost_equal(model_psf2, model_psf)
-        psf = modelData.metadata["psf"]
-        psf2 = modelData2.metadata["psf"]
-        np.testing.assert_almost_equal(psf2, psf)
-        self.assertEqual(len(modelData2.blends), len(modelData.blends))
+        self.butler = makeTestCollection(repo, uniqueId="test_run1")
+        self.butler.put(self.modelData, "scarlet_model_data", dataId={})
 
-        for parentId in modelData.blends.keys():
-            nChildren = len(modelData.blends[parentId].children)
+    def test_butler_put_get_roundtrip(self):
+        """A butler ``put`` then ``get`` (no parameters) preserves
+        the full ``LsstScarletModelData``.
+
+        Checks ``model_psf`` and ``psf`` metadata, the blend count
+        and per-blend children (compared via ``_test_blend``), and the
+        isolated-source origins and span arrays.
+        """
+        self._persist_modelData()
+        modelData2 = self.butler.get("scarlet_model_data", dataId={})
+
+        np.testing.assert_almost_equal(
+            modelData2.metadata["model_psf"][None, :, :], self.model_psf
+        )
+        np.testing.assert_almost_equal(modelData2.metadata["psf"], self.psf)
+        self.assertEqual(len(modelData2.blends), len(self.modelData.blends))
+
+        for parentId in self.modelData.blends.keys():
+            nChildren = len(self.modelData.blends[parentId].children)
             self.assertEqual(nChildren, len(modelData2.blends[parentId].children))
-            for blendId in modelData.blends[parentId].children:
-                blendData1 = modelData.blends[parentId].children[blendId]
+            for blendId in self.modelData.blends[parentId].children:
+                blendData1 = self.modelData.blends[parentId].children[blendId]
                 blendData2 = modelData2.blends[parentId].children[blendId]
-                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
+                self._test_blend(blendData1, blendData2, self.model_psf, self.psf, self.bands)
 
-        for sourceId in modelData.isolated.keys():
-            isolatedData1 = modelData.isolated[sourceId]
+        for sourceId in self.modelData.isolated.keys():
+            isolatedData1 = self.modelData.isolated[sourceId]
             isolatedData2 = modelData2.isolated[sourceId]
             self.assertTupleEqual(isolatedData1.origin, isolatedData2.origin)
             np.testing.assert_array_equal(
@@ -98,25 +114,50 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
                 isolatedData2.span_array,
             )
 
-        # Test extracting a single blend
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": parentId})
+    def test_butler_get_single_blend_parameter(self):
+        """``parameters={'blend_id': id}`` returns exactly that one blend.
+
+        The returned modelData contains only the requested parent and
+        its children are bit-identical (via ``_test_blend``) to the
+        original.
+        """
+        self._persist_modelData()
+        parentId = next(iter(self.modelData.blends))
+
+        modelData2 = self.butler.get(
+            "scarlet_model_data", dataId={}, parameters={"blend_id": parentId}
+        )
+
         self.assertEqual(len(modelData2.blends), 1)
-
-        for blendId, blendData1 in modelData.blends[parentId].children.items():
+        self.assertIn(parentId, modelData2.blends)
+        for blendId, blendData1 in self.modelData.blends[parentId].children.items():
             blendData2 = modelData2.blends[parentId].children[blendId]
-            self._test_blend(blendData1, blendData2, model_psf, psf, bands)
+            self._test_blend(blendData1, blendData2, self.model_psf, self.psf, self.bands)
 
-        # Test extracting two blends
-        modelData2 = butler.get("scarlet_model_data", dataId={}, parameters={"blend_id": [2, 3]})
-        self.assertEqual(len(modelData2.blends), 2)
-        for parentId in [2, 3]:
-            parentData1 = modelData.blends[parentId]
+    def test_butler_get_multiple_blend_parameter(self):
+        """``parameters={'blend_id': [...]}`` returns exactly the listed
+        blends.
+
+        Picks the first two parent IDs from the multi-blend scene so the
+        test does not hardcode specific catalog IDs (which depend on
+        detection ordering).
+        """
+        self._persist_modelData()
+        blendIds = list(self.modelData.blends.keys())[:2]
+
+        modelData2 = self.butler.get(
+            "scarlet_model_data", dataId={}, parameters={"blend_id": blendIds}
+        )
+
+        self.assertEqual(len(modelData2.blends), len(blendIds))
+        for parentId in blendIds:
+            parentData1 = self.modelData.blends[parentId]
             parentData2 = modelData2.blends[parentId]
             self.assertEqual(len(parentData1.children), len(parentData2.children))
             for blendId in parentData1.children.keys():
                 blendData1 = parentData1.children[blendId]
                 blendData2 = parentData2.children[blendId]
-                self._test_blend(blendData1, blendData2, model_psf, psf, bands)
+                self._test_blend(blendData1, blendData2, self.model_psf, self.psf, self.bands)
 
     def test_legacy_model(self):
         repo = self._setup_butler()
