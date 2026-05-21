@@ -41,11 +41,67 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
     ``lsst.meas.extensions.scarlet.scarletDeblendTask``.
     """
 
-    def test_skipped(self):
-        # Use tight configs to force skipping a 3 source footprint
-        # and "large" footprint
+    def test_skip_too_big(self):
+        """A parent footprint exceeding ``maxFootprintArea`` is skipped
+        with the ``deblend_skipped_parentTooBig`` flag set.
+
+        Uses the ``large_two_sersic`` scene (single parent, two large
+        overlapping Sersics) with ``maxFootprintArea=2000``; the
+        deconvolved footprint exceeds that limit so the parent is
+        skipped.
+        """
         config = ScarletDeblendTask.ConfigClass()
         config.maxFootprintArea = 2000
+        config.catchFailures = False
+
+        image = pipeline.build_image(SCENES["large_two_sersic"])
+        detection = pipeline.detect(image)
+        deconv = pipeline.deconvolve(detection)
+        bundle = pipeline.deblend(deconv, config=config)
+
+        catalog = bundle.result.objectParents
+        parents = catalog[catalog["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+        self.assertTrue(parent.get("deblend_skipped"))
+        self.assertTrue(parent.get("deblend_skipped_parentTooBig"))
+        self.assertFalse(parent.get("deblend_skipped_tooManyPeaks"))
+
+    def test_skip_too_many_peaks(self):
+        """A parent with more than ``maxNumberOfPeaks`` peaks is
+        skipped with the ``deblend_skipped_tooManyPeaks`` flag set.
+
+        Uses the ``three_source_blend`` scene (single parent, three
+        peaks) with ``maxNumberOfPeaks=2``.
+        """
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxNumberOfPeaks = 2
+        config.catchFailures = False
+
+        image = pipeline.build_image(SCENES["three_source_blend"])
+        detection = pipeline.detect(image)
+        deconv = pipeline.deconvolve(detection)
+        bundle = pipeline.deblend(deconv, config=config)
+
+        catalog = bundle.result.objectParents
+        parents = catalog[catalog["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+        self.assertTrue(parent.get("deblend_skipped"))
+        self.assertTrue(parent.get("deblend_skipped_tooManyPeaks"))
+        self.assertFalse(parent.get("deblend_skipped_parentTooBig"))
+
+    def test_skip_doesnt_affect_other_parents(self):
+        """One parent being skipped does not affect deblending of
+        other parents.
+
+        The ``multi-blend`` scene detects four parents; with
+        ``maxNumberOfPeaks=2`` exactly one (the three-peak blend) is
+        skipped. The remaining three parents are not skipped, and
+        each non-isolated one produces ``nChild == nPeaks`` children
+        — the deblend invariant.
+        """
+        config = ScarletDeblendTask.ConfigClass()
         config.maxNumberOfPeaks = 2
         config.catchFailures = False
 
@@ -56,9 +112,17 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
 
         catalog = bundle.result.objectParents
         parents = catalog[catalog["parent"] == 0]
-        self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
-        self.assertEqual(np.sum(parents["deblend_skipped_parentTooBig"]), 1)
-        self.assertEqual(np.sum(parents["deblend_skipped_tooManyPeaks"]), 1)
+        self.assertEqual(np.sum(parents["deblend_skipped"]), 1)
+
+        skipped = parents[parents["deblend_skipped"]]
+        self.assertTrue(skipped[0].get("deblend_skipped_tooManyPeaks"))
+
+        non_skipped = parents[~parents["deblend_skipped"]]
+        self.assertEqual(len(non_skipped), 3)
+        blend_parents = non_skipped[~non_skipped["deblend_skipped_isolatedParent"]]
+        self.assertEqual(len(blend_parents), 2)
+        for p in blend_parents:
+            self.assertEqual(p.get("deblend_nChild"), p.get("deblend_nPeaks"))
 
 
 if __name__ == "__main__":
