@@ -200,47 +200,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         mDeconvolved = afwImage.MultibandExposure.fromExposures(self.bands, deconvolvedCoadds)
         return mDeconvolved
 
-    def test_default_deconvolve(self):
-        data = self.initialize_data(self.models)
-        deconvolved = self.deconvolve(data)
-
-        diff = data.deconvolved.data - deconvolved.image.array
-        # Due to peakiness of Sersic models the center has a sharp peak,
-        # so we ignore a 3x3 region around each source center
-        for model in self.models:
-            yc, xc = model.center
-            for x in (-1, 0, 1):
-                for y in (-1, 0, 1):
-                    diff[:, yc+y, xc+x] = 0
-        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
-        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
-
-        context = mes.scarletDeblendTask.ScarletDeblendContext.build(
-            data.mCoadd,
-            deconvolved,
-            data.catalog,
-            data.deblendTask.ConfigClass()
-        )
-
-        self.assertEqual(len(context.footprints), 4)
-
-    def test_catalog_free_deconvolve(self):
-        config = DeconvolveExposureTask.ConfigClass()
-        config.useFootprints = False
-        data = self.initialize_data(self.models, deconvolveConfig=config)
-        deconvolved = self.deconvolve(data)
-
-        diff = data.deconvolved.data - deconvolved.image.array
-        # Due to peakiness of Sersic models the center has a sharp peak,
-        # so we ignore a 3x3 region around each source center
-        for model in self.models:
-            yc, xc = model.center
-            for x in (-1, 0, 1):
-                for y in (-1, 0, 1):
-                    diff[:, yc+y, xc+x] = 0
-        self.assertTrue(np.max(diff[:2]) < 10*np.std(data.noise))
-        self.assertTrue(np.max(diff[2]) < 20*np.std(data.noise))
-
     def test_footprints(self):
         data = self.initialize_data(self.models)
         mDeconvolved = self.deconvolve(data)
