@@ -452,8 +452,12 @@ def deblend(
     if key in _deblend_cache:
         return _deblend_cache[key]
 
+    # ``ScarletDeblendTask.__init__`` adds deblend_* fields to the
+    # schema it receives. Clone the cached detection schema so a
+    # second call with a different config does not collide on the
+    # fields that the first call already added.
     deblendTask = ScarletDeblendTask(
-        schema=deconvolved.detection.schema, config=config
+        schema=Schema(deconvolved.detection.schema), config=config
     )
     result = deblendTask.run(
         deconvolved.image.mCoadd,
