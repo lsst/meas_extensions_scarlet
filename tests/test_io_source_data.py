@@ -111,5 +111,14 @@ class TestIsolatedSourceData(lsst.utils.tests.TestCase):
         self.assertEqual(roundtripped.span_array.dtype, span.dtype)
 
 
+def setup_module(module):
+    lsst.utils.tests.init()
+
+
+class MemoryTester(lsst.utils.tests.MemoryTestCase):
+    pass
+
+
 if __name__ == "__main__":
+    lsst.utils.tests.init()
     unittest.main()

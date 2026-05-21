@@ -137,5 +137,14 @@ class TestBoxConversions(lsst.utils.tests.TestCase):
         self.assertTupleEqual(newBox.shape, box.shape)
 
 
+def setup_module(module):
+    lsst.utils.tests.init()
+
+
+class MemoryTester(lsst.utils.tests.MemoryTestCase):
+    pass
+
+
 if __name__ == "__main__":
+    lsst.utils.tests.init()
     unittest.main()

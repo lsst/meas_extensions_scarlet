@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from unittest import TestCase
+import unittest
 
 import numpy as np
 
@@ -27,11 +27,12 @@ import lsst.afw.image as afwImage
 import lsst.geom as geom
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
+import lsst.utils.tests
 from lsst.afw.detection import Footprint, PeakTable
 from lsst.afw.geom import SpanSet
 
 
-class ScarletTestCase(TestCase):
+class ScarletTestCase(lsst.utils.tests.TestCase):
     """A base TestCase for scarlet tests.
     """
     def setUp(self) -> None:
@@ -251,3 +252,16 @@ class ScarletTestCase(TestCase):
         self.assertTupleEqual(source2.peak, peak)
         self.assertTupleEqual(source2.bbox.origin, bbox.origin)
         np.testing.assert_array_equal(source2.get_model().data, model_data)
+
+
+def setup_module(module):
+    lsst.utils.tests.init()
+
+
+class MemoryTester(lsst.utils.tests.MemoryTestCase):
+    pass
+
+
+if __name__ == "__main__":
+    lsst.utils.tests.init()
+    unittest.main()

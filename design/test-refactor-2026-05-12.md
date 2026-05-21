@@ -119,7 +119,6 @@ tests/
   SConscript                       # unchanged
   data/                            # unchanged (v29_models.json + future fixtures)
     v29_models.json
-  conftest.py                      # NEW: pytest discovery + shared autouse hooks
   scenes.py                        # NEW: named, parametrized model scenes
   pipeline.py                      # NEW: helpers that run stages (deconvolve, deblend, ...)
   utils.py                         # kept; lightly extended
@@ -245,15 +244,15 @@ from the in-process cache anyway.
 `pytest-xdist -n N`, each worker has its own cache. That's fine — we
 still amortize across tests within a worker.
 
-### 3.5 `conftest.py`
+### 3.5 Per-file memory leak checks
 
-- Calls `lsst.utils.tests.init()` once at collection time (replaces the
-  per-file `setup_module`).
-- Exposes a `--scene` option for ad-hoc developer use (`pytest -k "..."
-  --scene=one_isolated_psf` selects a scene at runtime in tests that
-  honor it).
-- Registers no autouse fixtures that hide behavior — the only
-  autouse-thing is the `lsst.utils.tests.init()` hook.
+No `conftest.py`. Each test file carries its own `setup_module`
+(calling `lsst.utils.tests.init()`) and `MemoryTester` subclass at
+the bottom — the established LSST pattern. This is necessary for
+per-file leak isolation: a single `conftest.py`-level `init()`
+would baseline file-descriptors at session start and let a leak
+introduced in file A surface in `MemoryTester` runs from every
+later file.
 
 ---
 

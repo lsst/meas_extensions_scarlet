@@ -412,5 +412,14 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                             np.testing.assert_almost_equal(img.array, model)
 
 
+def setup_module(module):
+    lsst.utils.tests.init()
+
+
+class MemoryTester(lsst.utils.tests.MemoryTestCase):
+    pass
+
+
 if __name__ == "__main__":
+    lsst.utils.tests.init()
     unittest.main()
