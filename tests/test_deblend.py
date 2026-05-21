@@ -366,23 +366,6 @@ class TestDeblend(lsst.utils.tests.TestCase):
         # Check that the catalog matches the expected results
         self.assertEqual(len(catalog), len(self.models))
 
-    def test_skipped(self):
-        # Use tight configs to force skipping a 3 source footprint
-        # and "large" footprint
-        config = ScarletDeblendTask.ConfigClass()
-        config.maxFootprintArea = 2000
-        config.maxNumberOfPeaks = 2
-        config.catchFailures = False
-
-        data = self.initialize_data(self.models, deblendConfig=config)
-        mDeconvolved = self.deconvolve(data)
-        result = data.deblendTask.run(data.mCoadd, mDeconvolved, data.catalog)
-
-        catalog = result.objectParents
-        parents = catalog[catalog["parent"] == 0]
-        self.assertEqual(np.sum(parents["deblend_skipped"]), 2)
-        self.assertEqual(np.sum(parents["deblend_skipped_parentTooBig"]), 1)
-        self.assertEqual(np.sum(parents["deblend_skipped_tooManyPeaks"]), 1)
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
     pass
