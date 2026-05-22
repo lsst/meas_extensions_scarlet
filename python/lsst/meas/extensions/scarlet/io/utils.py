@@ -179,7 +179,7 @@ def updateCatalogFootprints(
     # so we extract it from the first blend data.
     if len(modelData.blends) == 0:
         if len(modelData.isolated) == 0:
-            return NoWorkFound("Scarlet model data is empty")
+            raise NoWorkFound("Scarlet model data is empty")
         # All of the sources must have been isolated so there is nothing
         # to do in this function. This is rare but it does occasionally
         # happen in fields that only have u-band images.
