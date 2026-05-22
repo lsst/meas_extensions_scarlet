@@ -150,6 +150,11 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
 
         Uses the ``three_source_blend`` scene (single parent, three
         peaks) with ``maxNumberOfPeaks=2``.
+
+        Also pins that a skipped blend leaves
+        ``deblend_blendConvergenceFailedFlag`` unset: it was never fit,
+        so convergence does not apply (finding C-1 of the
+        ``audits/audit-2026-05-05.md`` audit).
         """
         config = ScarletDeblendTask.ConfigClass()
         config.maxNumberOfPeaks = 2
@@ -164,6 +169,7 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         self.assertTrue(parent.get("deblend_skipped"))
         self.assertTrue(parent.get("deblend_skipped_tooManyPeaks"))
         self.assertFalse(parent.get("deblend_skipped_parentTooBig"))
+        self.assertFalse(parent.get("deblend_blendConvergenceFailedFlag"))
 
     def test_skip_doesnt_affect_other_parents(self):
         """One parent being skipped does not affect deblending of
@@ -194,6 +200,50 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         self.assertEqual(len(blend_parents), 2)
         for p in blend_parents:
             self.assertEqual(p.get("deblend_nChild"), p.get("deblend_nPeaks"))
+
+    def test_convergence_flag_false_when_converged(self):
+        """``deblend_blendConvergenceFailedFlag`` is unset for a blend
+        that reaches convergence.
+
+        The ``three_source_blend`` parent converges in well under
+        ``maxIter`` iterations under the default config, so the flag —
+        documented as "at least one source in the blend failed to
+        converge" — must be `False`. Regression test for finding C-1
+        of the ``audits/audit-2026-05-05.md`` audit (the flag was
+        previously stored with inverted semantics, reporting a
+        converged blend as failed).
+        """
+        defaultMaxIter = ScarletDeblendTask.ConfigClass().maxIter
+        bundle = self._deblend(SCENES["three_source_blend"])
+        parents = bundle.result.objectParents
+        parents = parents[parents["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+        # The blend stopped because it converged, not because it hit
+        # the iteration cap.
+        self.assertLess(parent.get("deblend_iterations"), defaultMaxIter)
+        self.assertFalse(parent.get("deblend_blendConvergenceFailedFlag"))
+
+    def test_convergence_flag_true_when_not_converged(self):
+        """``deblend_blendConvergenceFailedFlag`` is set for a blend
+        that exhausts ``maxIter`` without converging.
+
+        Capping ``maxIter`` at 2 forces the ``three_source_blend``
+        parent to stop at the iteration limit before the relative-error
+        criterion is met, so the flag must be `True`. Regression test
+        for finding C-1 of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxIter = 2
+        config.catchFailures = False
+        bundle = self._deblend(SCENES["three_source_blend"], config=config)
+        parents = bundle.result.objectParents
+        parents = parents[parents["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+        # The blend stopped at the iteration cap, i.e. it did not converge.
+        self.assertEqual(parent.get("deblend_iterations"), config.maxIter)
+        self.assertTrue(parent.get("deblend_blendConvergenceFailedFlag"))
 
     def test_catalog_total_count(self):
         """The deblended catalog has one row per input model."""

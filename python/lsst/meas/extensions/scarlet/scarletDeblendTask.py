@@ -1288,7 +1288,8 @@ class ScarletDeblendTask(pipeBase.Task):
                     logL=np.nan,
                     chi2=np.nan,
                     spectrumInit=False,
-                    converged=False,
+                    # No blend was fit, so convergence does not apply.
+                    convergenceFailed=False,
                 )
                 continue
 
@@ -1310,7 +1311,7 @@ class ScarletDeblendTask(pipeBase.Task):
                     child["deblend_spectrumInitFlag"]
                     for child in blendRecords
                 ]),  # type: ignore
-                converged=np.all([
+                convergenceFailed=np.any([
                     child["deblend_blendConvergenceFailedFlag"]
                     for child in blendRecords
                 ]),  # type: ignore
@@ -1421,7 +1422,9 @@ class ScarletDeblendTask(pipeBase.Task):
             blend = deblend(self.context, footprint, self.config, spectrumInit)
             tf = time.monotonic()
             runtime = (tf - t0) * 1000
-            converged = _checkBlendConvergence(blend, self.config.relativeError)
+            convergenceFailed = not _checkBlendConvergence(
+                blend, self.config.relativeError
+            )
             # Store the number of components in the blend
             nComponents = len(blend.components)
             nChild = len(blend.sources)
@@ -1458,7 +1461,7 @@ class ScarletDeblendTask(pipeBase.Task):
             logL=blend.loss[-1],
             chi2=np.sum(chi2.data)/np.sum(blendFootprintImage),
             spectrumInit=spectrumInit,
-            converged=converged,
+            convergenceFailed=convergenceFailed,
         )
 
         return blend, blendModel, chi2
@@ -1558,7 +1561,9 @@ class ScarletDeblendTask(pipeBase.Task):
             logL=np.nan,
             chi2=np.nan,
             spectrumInit=False,
-            converged=False,
+            # A skipped blend was never fit, so convergence does not
+            # apply; leave the convergence-failure flag unset.
+            convergenceFailed=False,
         )
 
         # Mark the source as skipped by the deblender and
@@ -1638,7 +1643,7 @@ class ScarletDeblendTask(pipeBase.Task):
         logL: float,
         chi2: float,
         spectrumInit: bool,
-        converged: bool,
+        convergenceFailed: bool,
     ):
         """Update a parent record in all of the single band catalogs.
 
@@ -1672,9 +1677,12 @@ class ScarletDeblendTask(pipeBase.Task):
         spectrumInit :
             True when scarlet used `set_spectra` to initialize all
             sources with better initial intensities.
-        converged :
-            True when the optimizer reached convergence before
-            reaching the maximum number of iterations.
+        convergenceFailed :
+            True when the blend was fit but the optimizer reached the
+            maximum number of iterations without converging. False both
+            when the blend converged and when no fit was attempted
+            (skipped or isolated parents), so the flag never fires for
+            blends where convergence does not apply.
         """
         parentRecord.set("deblend_nPeaks", nPeaks)
         parentRecord.set("deblend_nChild", nChild)
@@ -1682,7 +1690,9 @@ class ScarletDeblendTask(pipeBase.Task):
         parentRecord.set("deblend_runtime", runtime)
         parentRecord.set("deblend_iterations", iterations)
         parentRecord.set("deblend_spectrumInitFlag", spectrumInit)
-        parentRecord.set("deblend_blendConvergenceFailedFlag", converged)
+        parentRecord.set(
+            "deblend_blendConvergenceFailedFlag", convergenceFailed
+        )
         parentRecord.set("deblend_chi2", chi2)
 
     def _initializeCatalogs(
@@ -1954,7 +1964,8 @@ class ScarletDeblendTask(pipeBase.Task):
             logL=np.nan,
             chi2=np.nan,
             spectrumInit=False,
-            converged=True,
+            # An isolated source is not fit, so convergence does not apply.
+            convergenceFailed=False,
         )
 
         # Persist parent columns to the isolated source
