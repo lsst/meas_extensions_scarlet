@@ -506,7 +506,7 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
             with zip_file.open('metadata') as f:
                 metadata = from_json(f.read())
                 unzipped_files['metadata'] = metadata
-        except ValueError:
+        except KeyError:
             # The metadata file is not present, so we will
             # assume that the model is in the legacy format.
             filenames += ['psf', 'psf_shape']

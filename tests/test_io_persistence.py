@@ -29,9 +29,12 @@ stages in ``pipeline.py`` so that this file does not depend on
 ``test_deblend.py``'s ad-hoc setup.
 """
 
+import io
+import json
 import os
 import tempfile
 import unittest
+import zipfile
 
 import lsst.daf.butler
 import lsst.meas.extensions.scarlet as mes
@@ -243,6 +246,40 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         model = newButler.get("old_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData")
         self.assertEqual(len(model.blends), 2)
         self.assertEqual(len(model.isolated), 0)
+
+    def test_read_legacy_zip_without_metadata(self):
+        """``read_scarlet_model`` reads a legacy-format zip that has no
+        ``metadata`` entry.
+
+        Legacy archives store the model PSF as top-level ``psf`` /
+        ``psf_shape`` entries instead of a ``metadata`` entry.
+        ``zipfile.ZipFile.open`` raises ``KeyError`` (not ``ValueError``)
+        for a missing entry, so the legacy fallback was unreachable and
+        such archives crashed on read. Regression test for finding C-3
+        of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        bundle = pipeline.deblend(
+            pipeline.deconvolve(
+                pipeline.detect(pipeline.build_image(SCENES["multi-blend"]))
+            )
+        )
+        jm = bundle.result.scarletModelData.as_dict()
+
+        # Repackage the model in the legacy layout: one entry per blend
+        # plus a top-level model PSF, and crucially no ``metadata`` entry.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for blendId, blendData in jm["blends"].items():
+                zf.writestr(str(blendId), json.dumps(blendData))
+            model_psf = jm["metadata"]["model_psf"]
+            zf.writestr("psf", json.dumps(model_psf))
+            zf.writestr(
+                "psf_shape", json.dumps(list(np.asarray(model_psf).shape))
+            )
+        buf.seek(0)
+
+        model = mes.io.utils.read_scarlet_model(buf)
+        self.assertEqual(len(model.blends), len(jm["blends"]))
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal
