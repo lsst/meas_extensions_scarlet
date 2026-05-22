@@ -29,13 +29,19 @@ against targeted single-blend scenes.
 
 import unittest
 
+import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
+from lsst.afw.detection import PeakTable
 from lsst.geom import Point2I
-from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
+from lsst.meas.extensions.scarlet.scarletDeblendTask import (
+    ScarletDeblendContext,
+    ScarletDeblendTask,
+    deblend,
+)
 
 import pipeline
 from scenes import SCENES
@@ -244,6 +250,53 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         # The blend stopped at the iteration cap, i.e. it did not converge.
         self.assertEqual(parent.get("deblend_iterations"), config.maxIter)
         self.assertTrue(parent.get("deblend_blendConvergenceFailedFlag"))
+
+    def test_detected_peak_skips_pseudo_peaks(self):
+        """Each deblended source's ``detectedPeak`` is the real peak at
+        its own center, even when a pseudo peak precedes it in the
+        footprint's peak list.
+
+        ``deblend`` filters pseudo peaks (e.g. sky objects) out of the
+        list it initializes sources from, so the back-pointer to the
+        ``PeakRecord`` must be indexed in that *filtered* list. Indexing
+        the unfiltered ``footprint.peaks`` shifts every source's
+        ``detectedPeak`` by the number of preceding pseudo peaks.
+        Regression test for finding C-4 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        deconv = pipeline.deconvolve(
+            pipeline.detect(pipeline.build_image(SCENES["three_source_blend"]))
+        )
+        config = ScarletDeblendTask.ConfigClass()
+        context = ScarletDeblendContext.build(
+            deconv.image.mCoadd, deconv.mDeconvolved, deconv.detection.catalog, config
+        )
+
+        # Rebuild the (single, three-peak) parent footprint with a sky
+        # pseudo peak prepended ahead of the three real peaks.
+        origFootprint = deconv.detection.catalog[0].getFootprint()
+        peakSchema = PeakTable.makeMinimalSchema()
+        skyKey = peakSchema.addField(
+            "merge_peak_sky", type="Flag", doc="sky pseudo peak"
+        )
+        footprint = afwDet.Footprint(origFootprint.spans, peakSchema)
+        pseudoPeak = footprint.addPeak(12, 14, 1.0)
+        pseudoPeak.set(skyKey, True)
+        pseudoId = pseudoPeak.getId()
+        for peak in origFootprint.peaks:
+            footprint.addPeak(peak.getIx(), peak.getIy(), 10.0)
+
+        blend = deblend(context, footprint, config, spectrumInit=False)
+
+        self.assertEqual(len(blend.sources), len(origFootprint.peaks))
+        for source in blend.sources:
+            detectedPeak = source.detectedPeak
+            # The real peaks sit exactly on the source centers, so a
+            # correctly-mapped detectedPeak lands on its source's center
+            # (center is ordered (y, x)).
+            self.assertEqual(detectedPeak.getIy(), source.center[0])
+            self.assertEqual(detectedPeak.getIx(), source.center[1])
+            self.assertNotEqual(detectedPeak.getId(), pseudoId)
 
     def test_catalog_total_count(self):
         """The deblended catalog has one row per input model."""

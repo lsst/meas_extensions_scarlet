@@ -352,11 +352,19 @@ def deblend(
     # Mask the pixels outside of the footprint
     observation.weights.data[:] *= footprintData
 
+    # Drop pseudo peaks (e.g. sky objects) so that sources are
+    # initialized only for real detections. Keep the surviving peak
+    # records so the source-to-peak back-pointer below is indexed in
+    # the same filtered list that drives initialization.
+    non_pseudo_peaks = [
+        peak
+        for peak in footprint.peaks
+        if not isPseudoSource(peak, config.pseudoColumns)
+    ]
     # Convert the peaks into an array
     peaks = [
         np.array([peak.getIy(), peak.getIx()], dtype=int)
-        for peak in footprint.peaks
-        if not isPseudoSource(peak, config.pseudoColumns)
+        for peak in non_pseudo_peaks
     ]
 
     detect_image = np.sum(context.deconvolved[:, bbox].data, axis=0)
@@ -417,7 +425,7 @@ def deblend(
                 f"Misaligned center, expected {center} but got {sources[k].center}"
             )
         # Store the record for the peak with the appropriate source
-        sources[k].detectedPeak = footprint.peaks[k]
+        sources[k].detectedPeak = non_pseudo_peaks[k]
 
     return blend
 

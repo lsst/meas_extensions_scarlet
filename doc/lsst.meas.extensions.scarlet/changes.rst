@@ -43,3 +43,22 @@ blend failed to reach convergence, and unset (``False``) when it converged.
    blends report ``False``, and so do parents where no fit was attempted
    (isolated and skipped parents) — for those the flag no longer carries a
    spurious value that could contaminate convergence statistics.
+
+Deblended-source peak metadata corrected for blends with sky peaks
+------------------------------------------------------------------
+
+When a parent footprint contained a pseudo peak (a sky object, or any peak
+flagged by a ``pseudoColumns`` field) ordered before a real peak, each
+deblended child was assigned the wrong detection ``PeakRecord``. The
+affected children carried the wrong ``deblend_peakId``, the wrong
+``deblend_peak_center_x`` / ``deblend_peak_center_y``, and the wrong values
+for any peak-schema columns copied onto the child. The peak each child is
+matched to is now taken from the pseudo-filtered peak list, so this metadata
+is correct.
+
+.. warning::
+
+   Catalogs produced by an earlier version have shifted peak metadata for
+   the children of any blend whose footprint included a pseudo peak. The
+   source models themselves are unaffected — only the per-child peak columns
+   listed above. Re-run the deblender to obtain corrected values.
