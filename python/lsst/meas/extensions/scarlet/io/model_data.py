@@ -35,28 +35,42 @@ SCARLET_LITE_SCHEMA = "1.0.0"
 MODEL_TYPE = "lsst"
 scl.io.migration.MigrationRegistry.set_current(MODEL_TYPE, CURRENT_SCHEMA)
 
-# Ensure that the ScarletModelData from scarlet lite hasn't changed.
-if scl.io.model_data.CURRENT_SCHEMA != SCARLET_LITE_SCHEMA:
-    scarletVersion = SCARLET_LITE_SCHEMA.split("."), scl.io.model_data.CURRENT_SCHEMA.split(".")
-    lsstVersion = CURRENT_SCHEMA.split(".")
 
-    outdated = False
-    if scarletVersion[0] != lsstVersion[0]:
-        if int(scarletVersion[0]) > int(lsstVersion[0]):
-            outdated = True
-    elif scarletVersion[1] != lsstVersion[1]:
-        if int(scarletVersion[1]) > int(lsstVersion[1]):
-            outdated = True
-    elif scarletVersion[2] != lsstVersion[2]:
-        if int(scarletVersion[2]) > int(lsstVersion[2]):
-            outdated = True
+def _checkScarletLiteSchema(scarletSchema: str, pinnedSchema: str) -> None:
+    """Raise if the installed scarlet_lite schema is not the schema
+    this package was last verified against.
 
-    if outdated:
+    Bidirectional drift guard. Any mismatch means the IO layer
+    cannot be trusted to round-trip data: an older installed
+    scarlet may not emit the keys this package expects, and a
+    newer one may have changed them. Either way the user gets an
+    actionable error at import time instead of a confusing failure
+    deep inside a ``from_dict`` call.
+
+    Parameters
+    ----------
+    scarletSchema : str
+        Schema string from the installed
+        ``scl.io.model_data.CURRENT_SCHEMA``.
+    pinnedSchema : str
+        Schema string this package was last written against
+        (``SCARLET_LITE_SCHEMA``).
+
+    Raises
+    ------
+    RuntimeError
+        If ``scarletSchema`` differs from ``pinnedSchema``.
+    """
+    if scarletSchema != pinnedSchema:
         raise RuntimeError(
             "Version mismatch between meas_extensions_scarlet and scarlet lite. "
             "This requires updating SCARLET_LITE_SCHEMA, CURRENT_SCHEMA, and a migration step "
-            f"to match the ScarletModelData schema version {scl.io.model_data.CURRENT_SCHEMA}."
+            f"to match the ScarletModelData schema version {scarletSchema}."
         )
+
+
+# Ensure that the ScarletModelData from scarlet lite hasn't changed.
+_checkScarletLiteSchema(scl.io.model_data.CURRENT_SCHEMA, SCARLET_LITE_SCHEMA)
 
 
 class LsstScarletModelData(scl.io.ScarletModelData):

@@ -22,14 +22,18 @@
 """Tests for the LsstScarletModelData schema migrations."""
 
 import copy
+import importlib
 import unittest
+from unittest import mock
 
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
+from lsst.meas.extensions.scarlet.io import model_data as model_data_module
 from lsst.meas.extensions.scarlet.io.model_data import (
     CURRENT_SCHEMA,
     MODEL_TYPE,
     SCARLET_LITE_SCHEMA,
+    _checkScarletLiteSchema,
     _to_1_0_0,
     _to_1_0_1,
 )
@@ -116,6 +120,96 @@ class TestModelDataMigrations(lsst.utils.tests.TestCase):
             CURRENT_SCHEMA,
             scl.io.migration.MigrationRegistry.current[MODEL_TYPE],
         )
+
+
+class TestScarletLiteSchemaCheck(lsst.utils.tests.TestCase):
+    """Tests for the scarlet_lite schema-drift safety net.
+
+    Covers finding C-7 of the ``audits/audit-2026-05-05.md`` audit:
+    a stray trailing comma packed the version-comparison operands
+    into a tuple of lists, so the very mechanism designed to detect
+    schema drift raised ``TypeError`` instead of the intended
+    ``RuntimeError`` the first time
+    ``scl.io.model_data.CURRENT_SCHEMA`` ever differed from
+    ``SCARLET_LITE_SCHEMA``. The same block also compared the wrong
+    pair of versions (the meas_extensions schema against the pinned
+    scarlet schema, instead of the installed scarlet schema against
+    the pinned one), so even with the comma dropped the check did
+    not match what its error message claimed.
+
+    The fixed helper is a bidirectional drift guard: any mismatch
+    between installed and pinned schema strings fires, because an
+    older installed scarlet may not emit the keys this package
+    expects and a newer one may have changed them.
+    """
+
+    def test_matching_versions(self):
+        """Equal scarlet and pinned schemas → no raise."""
+        # Sanity check: the no-drift case must stay silent.
+        _checkScarletLiteSchema("1.0.0", "1.0.0")
+        _checkScarletLiteSchema("2.5.7", "2.5.7")
+
+    def test_drift_scarlet_newer_major(self):
+        """Installed scarlet ahead by a major version → RuntimeError."""
+        with self.assertRaises(RuntimeError) as cm:
+            _checkScarletLiteSchema("2.0.0", "1.5.9")
+        # Message names the installed scarlet version so the
+        # developer knows which schema to migrate to.
+        self.assertIn("2.0.0", str(cm.exception))
+
+    def test_drift_scarlet_newer_minor(self):
+        """Installed scarlet ahead by a minor version → RuntimeError."""
+        with self.assertRaises(RuntimeError) as cm:
+            _checkScarletLiteSchema("1.1.0", "1.0.5")
+        self.assertIn("1.1.0", str(cm.exception))
+
+    def test_drift_scarlet_newer_patch(self):
+        """Installed scarlet ahead by a patch version → RuntimeError."""
+        with self.assertRaises(RuntimeError) as cm:
+            _checkScarletLiteSchema("1.0.1", "1.0.0")
+        self.assertIn("1.0.1", str(cm.exception))
+
+    def test_drift_scarlet_older(self):
+        """Installed scarlet behind the pinned version → RuntimeError.
+
+        Pins the bidirectional semantics: an older installed
+        scarlet is just as much of a drift as a newer one, because
+        the keys this package's IO layer expects to read or write
+        may not exist yet in the older schema.
+        """
+        with self.assertRaises(RuntimeError) as cm:
+            _checkScarletLiteSchema("1.0.0", "1.0.1")
+        self.assertIn("1.0.0", str(cm.exception))
+        with self.assertRaises(RuntimeError):
+            _checkScarletLiteSchema("1.0.0", "1.1.0")
+        with self.assertRaises(RuntimeError):
+            _checkScarletLiteSchema("0.9.9", "1.0.0")
+
+    def test_check_wired_at_import(self):
+        """The check fires at module import on a real version drift.
+
+        Reproduces the dormant failure path of finding C-7 from the
+        ``audits/audit-2026-05-05.md`` audit. Patching
+        ``scl.io.model_data.CURRENT_SCHEMA`` to a newer value and
+        reloading the module re-runs the import-time check; the
+        original bug raised ``TypeError`` from the malformed
+        ``int(list)``, while the fix raises the actionable
+        ``RuntimeError`` that names the new scarlet version.
+        """
+        # Patch the installed-scarlet version to something newer
+        # than SCARLET_LITE_SCHEMA so the drift branch fires.
+        with mock.patch.object(
+            scl.io.model_data, "CURRENT_SCHEMA", "9.9.9"
+        ):
+            with self.assertRaises(RuntimeError) as cm:
+                importlib.reload(model_data_module)
+        self.assertIn("9.9.9", str(cm.exception))
+        # Restore the module to its real state for the rest of the
+        # test session — the reload above ran against the patched
+        # value but the module is now imported with the wrong (now-
+        # unpatched) state. Reloading once more rebinds everything
+        # to the genuine constants.
+        importlib.reload(model_data_module)
 
 
 def setup_module(module):
