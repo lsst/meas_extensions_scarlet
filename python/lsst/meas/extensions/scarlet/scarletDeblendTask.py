@@ -1287,7 +1287,7 @@ class ScarletDeblendTask(pipeBase.Task):
             if len(parentBlends) == 0:
                 # All of the deconvolved blends failed to deblend
                 self._updateParentRecord(
-                    parentRecord=blendRecord,
+                    parentRecord=parentRecord,
                     nPeaks=len(parentRecord.getFootprint().peaks),
                     nChild=0,
                     nComponents=0,

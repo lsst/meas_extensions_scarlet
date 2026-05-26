@@ -177,6 +177,32 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         self.assertFalse(parent.get("deblend_skipped_parentTooBig"))
         self.assertFalse(parent.get("deblend_blendConvergenceFailedFlag"))
 
+    def test_all_subblends_failed_updates_parent_record(self):
+        """When every sub-blend of a multi-peak parent fails, the
+        aggregate ``deblend_*`` columns must land on the *parent*
+        record, not on the last sub-blend.
+
+        Triggers the all-sub-blends-failed branch by capping
+        ``maxNumberOfPeaks=2`` on the three-peak ``three_source_blend``,
+        so every sub-blend is skipped as ``deblend_skipped_tooManyPeaks``
+        and the aggregate-update branch runs. Asserts the parent record
+        carries the summary (``deblend_nPeaks`` matches the parent
+        footprint's peak count). Under the bug the aggregate landed on
+        the trailing sub-blend's record and the parent stayed at default.
+        Regression test for finding C-5 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxNumberOfPeaks = 2
+        config.catchFailures = False
+        bundle = self._deblend(SCENES["three_source_blend"], config=config)
+        catalog = bundle.result.objectParents
+        parents = catalog[catalog["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+        parentNPeaks = len(parent.getFootprint().peaks)
+        self.assertEqual(parent.get("deblend_nPeaks"), parentNPeaks)
+
     def test_skip_doesnt_affect_other_parents(self):
         """One parent being skipped does not affect deblending of
         other parents.

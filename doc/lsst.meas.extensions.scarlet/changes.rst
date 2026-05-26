@@ -62,3 +62,23 @@ is correct.
    the children of any blend whose footprint included a pseudo peak. The
    source models themselves are unaffected — only the per-child peak columns
    listed above. Re-run the deblender to obtain corrected values.
+
+All-sub-blends-failed summary now lands on the parent record
+------------------------------------------------------------
+
+When every sub-blend of a multi-peak parent failed or was skipped, the
+aggregate ``deblend_*`` summary (``deblend_nPeaks``, ``deblend_nChild``,
+``deblend_iterations``, ``deblend_chi2``, ``deblend_runtime``,
+``deblend_spectrumInitFlag``, ``deblend_blendConvergenceFailedFlag``) was
+written to the *last* sub-blend's catalog record instead of the parent's.
+The parent record was left at schema defaults and the trailing sub-blend's
+own per-sub-blend values were overwritten. The summary now lands on the
+parent record as intended.
+
+.. warning::
+
+   Catalogs produced by an earlier version have schema-default values for
+   the aggregate ``deblend_*`` columns on any parent whose sub-blends all
+   failed, and the trailing sub-blend of such a parent carries clobbered
+   per-sub-blend values. Re-run the deblender to obtain the correct
+   parent-level summary and intact per-sub-blend records.
