@@ -82,3 +82,33 @@ parent record as intended.
    failed, and the trailing sub-blend of such a parent carries clobbered
    per-sub-blend values. Re-run the deblender to obtain the correct
    parent-level summary and intact per-sub-blend records.
+
+Multiband PSF kernel image is sampled at a single sky position when possible
+----------------------------------------------------------------------------
+
+``computeNearestPsfMultiBand`` previously carried each band's fallback
+location into the next band's search, so each band's PSF could end up
+sampled at a different sky point. Those per-band PSFs were then projected
+onto a single union bounding box and stacked as if they were co-centered,
+producing a multiband PSF kernel image with hidden per-band centroid
+offsets — a source of small but systematic astrometric biases in the
+deblended catalog whenever the PSF model required a fallback location.
+
+The search now tries the requested center in every band first; only bands
+that fail at the center participate in a fallback search, which walks
+catalog peak positions sorted by distance from the *requested* center and
+accepts the first position that works in every failing band. When that
+position is also valid for the bands that succeeded at the center, all
+bands switch to it, so the multiband PSF is genuinely sampled at one sky
+position. When it is not, the successful bands keep their center PSF and
+only the failing bands use the common fallback; this two-location result
+is logged at ``WARNING``. When no single fallback location works for
+every failing band, each failing band uses its own nearest valid position
+and the per-band mis-registration is also logged at ``WARNING``.
+
+.. warning::
+
+   Catalogs produced by an earlier version may carry small per-band
+   astrometric offsets in the PSF kernel image used for objects whose PSF
+   model was invalid at their detected center. Re-run the deblender to
+   obtain coherent multiband PSFs at affected positions.

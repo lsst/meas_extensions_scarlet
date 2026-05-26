@@ -48,6 +48,26 @@ class BadPsf(Psf):
         raise InvalidPsfError(f"Invalid PSF at location {location}")
 
 
+class MultiPointBadPsf(Psf):
+    """A PSF valid at multiple discrete integer locations, with a
+    potentially different underlying ``GaussianPsf`` per location.
+
+    Used to drive the multiband-PSF fallback search through scenarios
+    where the same band would have multiple acceptable fallback
+    locations with distinguishable kernels.
+    """
+
+    def __init__(self, validPsfs: dict[tuple[int, int], GaussianPsf]):
+        self.validPsfs = validPsfs
+        super().__init__()
+
+    def computeKernelImage(self, location: Point2D):
+        key = (int(location.getX()), int(location.getY()))
+        if key in self.validPsfs:
+            return self.validPsfs[key].computeKernelImage(location)
+        raise InvalidPsfError(f"Invalid PSF at location {location}")
+
+
 class TestUtils(lsst.utils.tests.TestCase):
     def setUp(self):
         self.bands = tuple("gri")
@@ -141,6 +161,130 @@ class TestUtils(lsst.utils.tests.TestCase):
         psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(mCoadd, Point2D(25, 25), catalog)
         self.assertIsNone(psfArray)
         self.assertIsNone(newCoadd)
+
+    def test_computeNearestPsfMultiBand_search_center_does_not_drift(self):
+        """When one band falls back, the search for subsequent bands
+        stays anchored at the requested center.
+
+        Requested center is ``(25, 25)``. Band g's PSF is valid only at
+        ``(1, 1)`` (≈34 px from center). Band r's PSF is valid at both
+        ``(10, 10)`` with σ=2.0 and ``(30, 30)`` with σ=1.2. Sorting the
+        catalog peaks by distance from the *requested center* puts
+        ``(30, 30)`` first for band r; sorting by distance from band g's
+        fallback ``(1, 1)`` puts ``(10, 10)`` first. The bug carried band
+        g's fallback into r's search, so r returned the σ=2.0 kernel at
+        ``(10, 10)``. The fix re-anchors r's search at ``(25, 25)``, so r
+        returns the σ=1.2 kernel at ``(30, 30)``. Regression test for
+        finding C-6 of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        bands = ("g", "r")
+        g_inner = GaussianPsf(41, 41, 1.0)
+        r_at_10 = GaussianPsf(41, 41, 2.0)
+        r_at_30 = GaussianPsf(41, 41, 1.2)
+        psfs = [
+            BadPsf(Point2D(1, 1), g_inner),
+            MultiPointBadPsf({(10, 10): r_at_10, (30, 30): r_at_30}),
+        ]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(
+            bands, [[(1, 1, 10), (10, 10, 10), (30, 30, 10)]]
+        )
+
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(
+            mCoadd, Point2D(25, 25), catalog
+        )
+
+        self.assertTupleEqual(newCoadd.bands, bands)
+        # GaussianPsf kernels are stationary so their bboxes don't depend
+        # on the position they were computed at; the peak amplitude is
+        # 1/(2πσ²), so each σ value has a distinct kernel max we can
+        # discriminate on. Band g should land at (1, 1) (its only valid
+        # location, σ=1.0); band r should land at (30, 30) (σ=1.2 — the
+        # closest valid r position to the requested center). Under the
+        # bug, band r would land at (10, 10) and return the σ=2.0 kernel.
+        arr = np.asarray(psfArray)
+        expected_g = g_inner.computeKernelImage(Point2D(1, 1)).array
+        expected_r = r_at_30.computeKernelImage(Point2D(30, 30)).array
+        self.assertAlmostEqual(arr[0].max(), expected_g.max(), places=4)
+        self.assertAlmostEqual(arr[1].max(), expected_r.max(), places=4)
+
+    def test_computeNearestPsfMultiBand_upgrades_all_bands_to_common(self):
+        """When the fallback location found for a failing band is also
+        valid for the bands that succeeded at the center, every band is
+        re-sampled at that common location — including bands that
+        already had a PSF at the center. The previously-successful
+        center PSFs are discarded.
+
+        Band g is invalid at the requested center ``(25, 25)`` but valid
+        at ``(40, 40)`` with σ=1.0. Band r is valid at *both* ``(25, 25)``
+        with σ=1.2 *and* ``(40, 40)`` with σ=1.5. Because the common
+        fallback ``(40, 40)`` is also valid for r, the upgrade fires and
+        r's returned kernel is the σ=1.5 one (re-sampled at (40, 40)),
+        not the σ=1.2 kernel r had at the center.
+        """
+        bands = ("g", "r")
+        g_at_40 = GaussianPsf(41, 41, 1.0)
+        r_at_center = GaussianPsf(41, 41, 1.2)
+        r_at_40 = GaussianPsf(41, 41, 1.5)
+        psfs = [
+            BadPsf(Point2D(40, 40), g_at_40),
+            MultiPointBadPsf({(25, 25): r_at_center, (40, 40): r_at_40}),
+        ]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(bands, [[(40, 40, 10)]])
+
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(
+            mCoadd, Point2D(25, 25), catalog
+        )
+
+        self.assertTupleEqual(newCoadd.bands, bands)
+        # Both bands re-sampled at (40, 40): g matches σ=1.0, and r
+        # matches σ=1.5 (the (40, 40) kernel), not σ=1.2 (the kernel r
+        # held at the center). Failing this assertion would mean either
+        # the upgrade did not run or r kept its center PSF.
+        arr = np.asarray(psfArray)
+        expected_g = g_at_40.computeKernelImage(Point2D(40, 40)).array
+        expected_r = r_at_40.computeKernelImage(Point2D(40, 40)).array
+        self.assertAlmostEqual(arr[0].max(), expected_g.max(), places=4)
+        self.assertAlmostEqual(arr[1].max(), expected_r.max(), places=4)
+
+    def test_computeNearestPsfMultiBand_falls_back_at_two_locations(self):
+        """When a band needs to fall back but the fallback location is
+        invalid for a band that succeeded at the center, the successful
+        band keeps its center PSF — it is not dropped.
+
+        Requested center is ``(25, 25)``. Band g's PSF is valid only at
+        ``(40, 40)``; band r's PSF is valid only at ``(25, 25)``. The
+        catalog has a single peak at ``(40, 40)``, so g falls back there.
+        ``(40, 40)`` is invalid for r, so r stays at the center — both
+        bands are kept. Under the bug, band g's fallback shifted r's
+        search center to ``(40, 40)``; r's direct compute at
+        ``(40, 40)`` then failed and the only catalog peak also failed
+        for r, so r was silently dropped from the multiband PSF.
+        """
+        bands = ("g", "r")
+        g_inner = GaussianPsf(41, 41, 1.0)
+        r_inner = GaussianPsf(41, 41, 1.2)
+        psfs = [
+            BadPsf(Point2D(40, 40), g_inner),
+            BadPsf(Point2D(25, 25), r_inner),
+        ]
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(bands, [[(40, 40, 10)]])
+
+        psfArray, newCoadd = mes.utils.computeNearestPsfMultiBand(
+            mCoadd, Point2D(25, 25), catalog
+        )
+
+        self.assertTupleEqual(newCoadd.bands, bands)
+        # g lands at (40, 40) (σ=1.0); r stays at the requested center
+        # (σ=1.2). The (40, 40) fallback is *not* valid for r, so the
+        # upgrade-to-common path is correctly skipped.
+        arr = np.asarray(psfArray)
+        expected_g = g_inner.computeKernelImage(Point2D(40, 40)).array
+        expected_r = r_inner.computeKernelImage(Point2D(25, 25)).array
+        self.assertAlmostEqual(arr[0].max(), expected_g.max(), places=4)
+        self.assertAlmostEqual(arr[1].max(), expected_r.max(), places=4)
 
     def test_buildObservationBadPsfs(self):
         # Test that creating an observation with all bad PSFs
