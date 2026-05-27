@@ -1819,13 +1819,17 @@ class ScarletDeblendTask(pipeBase.Task):
         ymin, xmin = footprintImage.bbox.origin
 
         # Get the index of the deconvolved footprint at the peak location
+        height, width = footprintImage.data.shape
         for peak in afwFootprint.peaks:
             x = peak["i_x"] - xmin
             y = peak["i_y"] - ymin
-            try:
-                footprintIndex = footprintImage.data[y, x] - 1
-            except IndexError:
+            # NumPy wraps negative indices, so a try/except on
+            # IndexError would silently accept peaks west/south of
+            # the bbox origin. Bounds-check both directions
+            # explicitly.
+            if x < 0 or y < 0 or x >= width or y >= height:
                 raise RuntimeError(f"no footprint at ({y}, {x})")
+            footprintIndex = footprintImage.data[y, x] - 1
             if footprintIndex >= 0:
                 footprintIndices.add(footprintIndex)
 

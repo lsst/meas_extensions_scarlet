@@ -37,6 +37,7 @@ import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
 from lsst.afw.detection import PeakTable
+from lsst.afw.geom import SpanSet
 from lsst.geom import Point2I
 from lsst.meas.extensions.scarlet.scarletDeblendTask import (
     ScarletDeblendContext,
@@ -355,6 +356,59 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         parent.assign(peak, task.parentPeakSchemaMapper)
 
         self.assertTrue(parent.get("merge_peak_sky"))
+
+    def test_build_intersecting_footprints_rejects_out_of_bounds_peak(self):
+        """A peak whose pixel coordinates fall outside the bbox of
+        ``footprintImage`` raises ``RuntimeError``, in every direction.
+
+        ``_buildIntersectingFootprints`` indexed ``footprintImage.data``
+        with the peak's offset from the image bbox origin inside a
+        ``try/except IndexError``. NumPy only raises ``IndexError`` for
+        out-of-range *positive* indices; negative indices silently wrap
+        from the opposite edge of the array, so a peak west or south
+        of the bbox origin used to be silently mapped to an unrelated
+        pixel on the opposite edge and processed as if it lay there.
+        The bounds check must reject all four directions. Regression
+        test for finding C-9 of the ``audits/audit-2026-05-05.md``
+        audit.
+        """
+        schema = afwTable.SourceTable.makeMinimalSchema()
+        task = ScarletDeblendTask(schema=schema)
+        # 5x5 footprintImage filled with zeros at origin (10, 10), so
+        # NumPy wraparound from a negative index lands on a 0 cell and
+        # the inner loop would silently skip the peak under the bug.
+        footprintImage = scl.Image(
+            np.zeros((5, 5), dtype=np.int32), yx0=(10, 10)
+        )
+        parentCatalog = afwTable.SourceCatalog(
+            afwTable.SourceTable.make(task.parentSchema)
+        )
+
+        # One peak per out-of-bounds direction relative to the
+        # ``[10..14, 10..14]`` bbox. ``south`` and ``west`` exercise
+        # the negative-wraparound branches the bug missed; ``north``
+        # and ``east`` exercise the positive-overflow branches that
+        # NumPy raised on.
+        directions = {
+            "west": (5, 12),
+            "south": (12, 5),
+            "east": (20, 12),
+            "north": (12, 20),
+        }
+        for name, (x, y) in directions.items():
+            with self.subTest(direction=name):
+                footprint = afwDet.Footprint(
+                    SpanSet(), PeakTable.makeMinimalSchema()
+                )
+                footprint.addPeak(x, y, 1.0)
+                with self.assertRaises(RuntimeError):
+                    task._buildIntersectingFootprints(
+                        parentId=0,
+                        afwFootprint=footprint,
+                        parentCatalog=parentCatalog,
+                        sclFootprints=[],
+                        footprintImage=footprintImage,
+                    )
 
     def test_catalog_total_count(self):
         """The deblended catalog has one row per input model."""
