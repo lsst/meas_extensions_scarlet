@@ -33,6 +33,7 @@ import unittest
 
 import lsst.afw.image as afwImage
 import lsst.meas.extensions.scarlet as mes
+import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
@@ -158,6 +159,53 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 out_psf.computeImage(out_psf.getAveragePosition()).array,
                 in_psf.computeImage(in_psf.getAveragePosition()).array,
             )
+
+    def test_deconvolve_breaks_on_nonfinite_residual(self):
+        """The deconvolution loop stops early when every residual
+        pixel is non-finite rather than running every iteration to
+        ``maxIter`` on meaningless data.
+
+        The original loop computed ``loss = -0.5 * np.sum(residual**2)``
+        with no NaN guard, so a single NaN in ``residual`` poisoned
+        every subsequent ``loss`` entry; both the convergence test
+        ``np.abs(loss[-1] - loss[-2]) < eRel * np.abs(loss[-1])`` and
+        the divergence test ``loss[-1] < loss[-2]`` return ``False``
+        for NaN, so neither convergence nor step-halving triggered
+        and the loop ran to ``maxIter`` on garbage. The fix moves to
+        ``np.nansum`` for partial-NaN robustness and breaks the loop
+        when ``residual`` is entirely non-finite.
+
+        The production ``_buildObservation`` sanitizes both
+        ``images`` and ``weights``, so this test bypasses it and
+        constructs an ``scl.Observation`` with all-NaN images
+        directly. It stands in for any mid-iteration scenario where
+        ``convolve`` produces NaN everywhere (numerical artifacts,
+        degenerate PSF). Regression test for finding C-11 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        config = DeconvolveExposureTask.ConfigClass()
+        config.maxIter = 20
+        config.minIter = 0
+        task = DeconvolveExposureTask(config=config)
+
+        shape = (1, 8, 8)
+        psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(
+            np.float32
+        )
+        observation = scl.Observation(
+            images=np.full(shape, np.nan, dtype=np.float32),
+            variance=np.ones(shape, dtype=np.float32),
+            weights=np.ones(shape, dtype=np.float32),
+            psfs=psf[None],
+            model_psf=psf[None],
+            bands=("dummy",),
+            convolution_mode="fft",
+        )
+
+        _, loss = task._deconvolve(observation)
+
+        self.assertLess(len(loss), config.maxIter)
+        self.assertFalse(np.isfinite(loss[-1]))
 
     def test_deconvolve_with_nan_input(self):
         """A NaN pixel in the input does not propagate to the

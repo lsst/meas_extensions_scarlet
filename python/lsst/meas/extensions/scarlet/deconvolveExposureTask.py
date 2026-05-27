@@ -339,7 +339,11 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             footprintImage = afwDet.footprintsToNumpy(catalog, shape=(height, width), xy0=(x0, y0))
         for n in range(self.config.maxIter):
             residual = observation.images - observation.convolve(model)
-            loss.append(-0.5 * np.sum(residual.data**2))
+            if np.all(~np.isfinite(residual.data)):
+                self.log.warning(f"Residual is non-finite at iteration {n}, stopping deconvolution")
+                loss.append(-np.inf)
+                break
+            loss.append(-0.5 * np.nansum(residual.data**2))
             update = observation.convolve(residual, grad=True)
             update.data[:] *= step
             model += update
