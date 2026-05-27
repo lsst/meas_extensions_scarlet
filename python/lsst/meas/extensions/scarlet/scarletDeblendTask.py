@@ -131,6 +131,7 @@ def _getDeconvolvedFootprints(
     mDeconvolved: afwImage.MultibandExposure,
     sources: afwTable.SourceCatalog,
     config: ScarletDeblendConfig,
+    sigma: np.ndarray,
 ) -> tuple[list[scl.detect.Footprint], scl.Image]:
     """Detect footprints in the deconvolved image
 
@@ -142,6 +143,11 @@ def _getDeconvolvedFootprints(
         The source catalog for the entire coadd.
     config :
         The configuration for the deblender.
+    sigma :
+        Per-band noise scale used to normalize the deconvolved image
+        before stacking. Must be sourced from the input coadd's
+        variance plane; the deconvolved exposure deliberately carries
+        an invalidated (zero-filled) variance.
 
     Returns
     -------
@@ -152,7 +158,6 @@ def _getDeconvolvedFootprints(
     """
     bbox = mDeconvolved.getBBox()
     xmin, ymin = bbox.getMin()
-    sigma = np.nanmedian(np.sqrt(mDeconvolved.variance.array), axis=(1, 2))
     detect = np.nansum(mDeconvolved.image.array/sigma[:, None, None], axis=0)
 
     # We don't use the variance here because testing in DM-47738
@@ -293,11 +298,16 @@ class ScarletDeblendContext:
         else:
             deconvolved = deconvolved[bands]
 
-        # Detect footprints in the deconvolved image
+        # Detect footprints in the deconvolved image. The deconvolved
+        # exposure carries an invalidated (zero-filled) variance plane,
+        # so the per-band noise scale must come from the input coadd.
+        sigma = np.nanmedian(np.sqrt(mExposure.variance.array), axis=(1, 2))
+
         footprints, footprintImage = _getDeconvolvedFootprints(
             mDeconvolved=mDeconvolved,
             sources=catalog,
             config=config,
+            sigma=sigma,
         )
 
         return ScarletDeblendContext(

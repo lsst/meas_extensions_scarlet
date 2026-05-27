@@ -368,10 +368,22 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     def _modelToExposure(self, model: np.ndarray, coadd: afwImage.Exposure) -> afwImage.Exposure:
         """Convert a scarlet lite Image to an Exposure.
 
+        The output exposure's mask is a deep copy of the input coadd's
+        mask, and its variance plane is fresh and filled with ``inf``.
+        Convolution-then-deconvolution alters the per-pixel noise
+        covariance, so the input coadd's variance no longer describes
+        the deconvolved pixel values; the infinite variance signals
+        "no information about the noise here" and naturally zero-weights
+        these pixels under any inverse-variance scheme. Downstream
+        consumers that need a variance plane must supply their own.
+
         Parameters
         ----------
-        image :
-            Scarlet lite Image.
+        model :
+            Deconvolved image array.
+        coadd :
+            Input coadd exposure; its image dtype, bbox, ``ExposureInfo``,
+            and mask contents are reused.
         """
         image = afwImage.Image(
             array=model,
@@ -379,10 +391,17 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             deep=False,
             dtype=coadd.image.array.dtype,
         )
+        # Deep-copy the mask and build a fresh inf-filled variance so
+        # the output exposure doesn't alias the input coadd's planes.
+        # The variance is deliberately invalidated because the input's
+        # variance does not describe the deconvolved pixel values.
+        mask = coadd.mask.clone()
+        variance = coadd.variance.Factory(coadd.variance.getBBox())
+        variance.array[:] = np.inf
         maskedImage = afwImage.MaskedImage(
             image=image,
-            mask=coadd.mask,
-            variance=coadd.variance,
+            mask=mask,
+            variance=variance,
             dtype=coadd.image.array.dtype,
         )
         exposure = afwImage.Exposure(

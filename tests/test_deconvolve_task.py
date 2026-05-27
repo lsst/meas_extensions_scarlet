@@ -32,6 +32,7 @@ narrow model PSF only). The two existing tests cover the default
 import unittest
 
 import lsst.afw.image as afwImage
+import lsst.geom as geom
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
@@ -206,6 +207,47 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
 
         self.assertLess(len(loss), config.maxIter)
         self.assertFalse(np.isfinite(loss[-1]))
+
+    def test_model_to_exposure_decouples_mask_and_variance(self):
+        """``_modelToExposure`` detaches the output mask/variance from
+        the input coadd and invalidates the variance plane.
+
+        Convolution-then-deconvolution changes the per-pixel noise
+        covariance, so the input coadd's variance plane no longer
+        corresponds to the pixel values of the deconvolved model;
+        propagating it unchanged would advertise an incorrect variance
+        as if it were valid. The previous implementation also aliased
+        the output's mask and variance to the input coadd's by
+        reference, so any downstream mutation of the deconvolved
+        exposure's mask/variance would silently leak back into the
+        input.
+
+        The output exposure now carries (a) a deep-copied mask and
+        (b) a fresh ``inf``-filled variance plane signalling "no
+        information about the noise here". Regression test for finding
+        C-12 of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(16, 16))
+        coadd = afwImage.ExposureF(bbox)
+        coadd.image.array[:] = 1.0
+        coadd.variance.array[:] = 5.0
+        edge_bit = coadd.mask.getPlaneBitMask("EDGE")
+        coadd.mask.array[0, 0] = edge_bit
+
+        task = DeconvolveExposureTask()
+        model = np.full((16, 16), 2.0, dtype=coadd.image.array.dtype)
+        out = task._modelToExposure(model, coadd)
+
+        # Pre-existing mask bits survive the copy.
+        self.assertTrue(out.mask.array[0, 0] & edge_bit != 0)
+        # Variance plane is invalidated by filling with inf.
+        np.testing.assert_array_equal(out.variance.array, np.inf)
+
+        # Mutating the output mask/variance does not affect the input.
+        out.mask.array[5, 5] |= edge_bit
+        out.variance.array[5, 5] = 999.0
+        self.assertEqual(coadd.mask.array[5, 5], 0)
+        self.assertEqual(coadd.variance.array[5, 5], 5.0)
 
     def test_deconvolve_with_nan_input(self):
         """A NaN pixel in the input does not propagate to the
