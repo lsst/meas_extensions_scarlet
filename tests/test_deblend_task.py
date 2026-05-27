@@ -31,6 +31,7 @@ import unittest
 
 import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
+import lsst.afw.table as afwTable
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
@@ -323,6 +324,37 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             self.assertEqual(detectedPeak.getIy(), source.center[0])
             self.assertEqual(detectedPeak.getIx(), source.center[1])
             self.assertNotEqual(detectedPeak.getId(), pseudoId)
+
+    def test_parent_peak_mapper_propagates_extra_peak_fields(self):
+        """``ScarletDeblendTask.parentPeakSchemaMapper`` carries extra
+        ``merge_peak_*`` peak fields onto a parent record.
+
+        The task copies a parent footprint's first peak onto the
+        parent source record via this mapper. Without the extra-field
+        mappings any ``merge_peak_*`` flags (for example
+        ``merge_peak_sky``) on that peak are silently dropped,
+        breaking propagation of pseudo-source flags to deconvolved
+        sub-blend parents. Regression test for finding C-8 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        schema = afwTable.SourceTable.makeMinimalSchema()
+        peakSchema = PeakTable.makeMinimalSchema()
+        skyKey = peakSchema.addField(
+            "merge_peak_sky", type="Flag", doc="sky pseudo peak"
+        )
+        task = ScarletDeblendTask(schema=schema, peakSchema=peakSchema)
+
+        peakCat = afwDet.PeakCatalog(afwDet.PeakTable.make(peakSchema))
+        peak = peakCat.addNew()
+        peak.set(skyKey, True)
+
+        parentCatalog = afwTable.SourceCatalog(
+            afwTable.SourceTable.make(task.parentSchema)
+        )
+        parent = parentCatalog.addNew()
+        parent.assign(peak, task.parentPeakSchemaMapper)
+
+        self.assertTrue(parent.get("merge_peak_sky"))
 
     def test_catalog_total_count(self):
         """The deblended catalog has one row per input model."""

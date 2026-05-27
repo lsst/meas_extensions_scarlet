@@ -112,3 +112,25 @@ and the per-band mis-registration is also logged at ``WARNING``.
    astrometric offsets in the PSF kernel image used for objects whose PSF
    model was invalid at their detected center. Re-run the deblender to
    obtain coherent multiband PSFs at affected positions.
+
+``merge_peak_*`` flags now propagate to deconvolved sub-blend parents
+---------------------------------------------------------------------
+
+When a parent footprint was subdivided into deconvolved sub-blends, the
+extra peak-schema fields (``merge_peak_sky`` and any other
+``merge_peak_*`` band/pseudo flags supplied via ``peakSchema``) were
+silently dropped on the deconvolved sub-blend parent records: the
+peak-to-parent schema mapper had only the peak minimal schema and no
+mappings for the extra peak fields, so the values from the first peak
+never made it onto the parent row. These flags are now copied onto the
+deconvolved sub-blend parent records the same way they have always been
+copied onto top-level parent and child records.
+
+.. warning::
+
+   Catalogs produced by an earlier version have every ``merge_peak_*``
+   column equal to ``False`` on rows where ``parent`` is a deconvolved
+   sub-blend parent (i.e. an entry in the ``objectParents`` table whose
+   ``parent`` field is nonzero), regardless of the underlying peak flags.
+   Selections that filtered these rows by ``merge_peak_*`` were silently
+   dropping every row.

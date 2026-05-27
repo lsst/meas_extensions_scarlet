@@ -792,7 +792,16 @@ class ScarletDeblendTask(pipeBase.Task):
         parentOutSchema = self.parentSchemaMapper.editOutputSchema()
         self._addParentSchemaKeys(parentOutSchema)
         self.parentSchema = parentOutSchema
-        self.parentPeakSchemaMapper = afwTable.SchemaMapper(peakMinimalSchema, self.parentSchema)
+        # Mirror peakSchemaMapper's extra-field handling so any
+        # merge_peak_* (or other non-minimal) peak fields are also
+        # carried onto parent records.
+        if peakSchema is None:
+            self.parentPeakSchemaMapper = afwTable.SchemaMapper(peakMinimalSchema, self.parentSchema)
+        else:
+            self.parentPeakSchemaMapper = afwTable.SchemaMapper(peakSchema, self.parentSchema)
+            for item in peakSchema:
+                if item.key not in peakMinimalSchema:
+                    self.parentPeakSchemaMapper.addMapping(item.key, item.field)
 
         # Add keys for isolated sources and deblended children to the schema.
         self._addChildSchemaKeys(schema)
@@ -1736,7 +1745,7 @@ class ScarletDeblendTask(pipeBase.Task):
             # Since we use the first peak for the parent object, we should
             # propagate its flags to the parent source.
             # For example, this propagates `merge_peak_sky` to the parent
-            parent.assign(parent.getFootprint().peaks[0], self.peakSchemaMapper)
+            parent.assign(parent.getFootprint().peaks[0], self.parentPeakSchemaMapper)
 
             if isPseudoSource(parent, self.config.pseudoColumns):
                 # Skip pseudo sources
