@@ -192,6 +192,18 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
 
         model = butler.get("old_scarlet_model_data", dataId={})
         self.assertEqual(len(model.blends), 2)
+        # The pre-``metadata`` archive stored the model PSF as the
+        # top-level ``psf`` / ``psfShape`` entries. The legacy
+        # migration must promote those into ``metadata['model_psf']``
+        # (numpy array, reconstructed via ``array_keys``) so
+        # downstream consumers see the same shape as a modern model.
+        # Regression test for finding IO-17 of
+        # ``audits/audit-2026-05-05.md``.
+        self.assertIsNotNone(model.metadata)
+        self.assertIn("model_psf", model.metadata)
+        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
+        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
+        self.assertNotIn("psfShape", model.metadata)
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
@@ -252,11 +264,13 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         ``metadata`` entry.
 
         Legacy archives store the model PSF as top-level ``psf`` /
-        ``psf_shape`` entries instead of a ``metadata`` entry.
+        ``psfShape`` entries instead of a ``metadata`` entry.
         ``zipfile.ZipFile.open`` raises ``KeyError`` (not ``ValueError``)
         for a missing entry, so the legacy fallback was unreachable and
         such archives crashed on read. Regression test for finding C-3
-        of the ``audits/audit-2026-05-05.md`` audit.
+        of the ``audits/audit-2026-05-05.md`` audit; also pins the IO-17
+        fix that the legacy load now produces a ``metadata['model_psf']``
+        numpy array.
         """
         bundle = pipeline.deblend(
             pipeline.deconvolve(
@@ -272,14 +286,19 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             for blendId, blendData in jm["blends"].items():
                 zf.writestr(str(blendId), json.dumps(blendData))
             model_psf = jm["metadata"]["model_psf"]
+            model_psf_shape = list(np.asarray(model_psf).shape)
             zf.writestr("psf", json.dumps(model_psf))
-            zf.writestr(
-                "psf_shape", json.dumps(list(np.asarray(model_psf).shape))
-            )
+            zf.writestr("psfShape", json.dumps(model_psf_shape))
         buf.seek(0)
 
         model = mes.io.utils.read_scarlet_model(buf)
         self.assertEqual(len(model.blends), len(jm["blends"]))
+        self.assertIsNotNone(model.metadata)
+        self.assertIn("model_psf", model.metadata)
+        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
+        self.assertEqual(
+            list(model.metadata["model_psf"].shape), model_psf_shape
+        )
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal

@@ -160,6 +160,17 @@ def _to_1_0_0(data: dict) -> dict:
     if "model_type" not in data:
         data["model_type"] = MODEL_TYPE
     data["isolated"] = {}
+    # Pre-``metadata`` archives stored the model PSF as top-level
+    # ``psf`` / ``psfShape`` entries. Promote them into the modern
+    # ``metadata`` shape so ``decode_metadata`` can reconstruct the
+    # array via ``array_keys``. Mirrors scarlet_lite's pre-schema
+    # ``scarlet_model`` migration.
+    if "metadata" not in data and "psfShape" in data:
+        data["metadata"] = {
+            "model_psf": data.pop("psf"),
+            "model_psf_shape": data.pop("psfShape"),
+            "array_keys": ["model_psf"],
+        }
     data["version"] = "1.0.0"
     return data
 

@@ -490,13 +490,14 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
     """
     metadata = zip_dict.pop('metadata', None)
     version = zip_dict.pop('version', scl.io.migration.PRE_SCHEMA)
-    if metadata is None:
-        model_psf = zip_dict.pop('psf')
-        psf_shape = zip_dict.pop('psf_shape')
-        metadata = {
-            'psf': model_psf,
-            'psfShape': psf_shape,
-        }
+    # Top-level legacy keys (e.g. ``psf`` / ``psfShape`` from a
+    # pre-``metadata`` archive) are passed through to the migration
+    # in ``LsstScarletModelData._to_1_0_0``, which synthesizes a
+    # proper ``metadata`` dict.
+    legacy_extras = {}
+    for legacy_key in ('psf', 'psfShape'):
+        if legacy_key in zip_dict:
+            legacy_extras[legacy_key] = zip_dict.pop(legacy_key)
     blends = {}
     isolated = {}
     for key, value in zip_dict.items():
@@ -509,12 +510,15 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
         else:
             raise ValueError(f"Found unknown file '{value}' in scarlet model data")
 
-    return LsstScarletModelData.parse_obj({
+    payload: dict[str, Any] = {
         'version': version,
         'isolated': isolated,
         'blends': blends,
-        'metadata': metadata,
-    })
+    }
+    if metadata is not None:
+        payload['metadata'] = metadata
+    payload.update(legacy_extras)
+    return LsstScarletModelData.parse_obj(payload)
 
 
 def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> LsstScarletModelData:
@@ -551,7 +555,7 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
         except KeyError:
             # The metadata file is not present, so we will
             # assume that the model is in the legacy format.
-            filenames += ['psf', 'psf_shape']
+            filenames += ['psf', 'psfShape']
         try:
             with zip_file.open('version') as f:
                 version = from_json(f.read())
@@ -594,17 +598,10 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
         str(source_id): json.dumps(source_data)
         for source_id, source_data in json_model['isolated'].items()
     })
-    # Support for legacy models
-    if 'psf' in json_model:
-        data.update({
-            'psf_shape': json.dumps(json_model['psfShape']),
-            'psf': json.dumps(json_model['psf']),
-        })
-    else:
-        data.update({
-            'metadata': json.dumps(json_model['metadata']),
-            'version': json.dumps(json_model['version']),
-        })
+    data.update({
+        'metadata': json.dumps(json_model['metadata']),
+        'version': json.dumps(json_model['version']),
+    })
     return data
 
 
