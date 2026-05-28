@@ -33,6 +33,9 @@ from lsst.meas.extensions.scarlet.io.model_data import LsstScarletModelData
 from lsst.meas.extensions.scarlet.io.source_data import IsolatedSourceData
 from lsst.pipe.base import NoWorkFound
 
+import pipeline
+from scenes import SCENES
+
 
 class TestUpdateCatalogFootprints(lsst.utils.tests.TestCase):
     """Tests for the empty-input guard in
@@ -189,6 +192,118 @@ class TestMonochromaticDataToScarletDeprecation(lsst.utils.tests.TestCase):
             )
 
         self.assertEqual(blend.sources[0].components[0].peak, peak)
+
+
+class TestLoadBlend(lsst.utils.tests.TestCase):
+    """Tests for ``loadBlend``.
+
+    ``loadBlend`` reconstructs a single per-blend scarlet ``Blend``
+    object from a persisted ``ScarletBlendData`` and a multiband
+    coadd. The legacy signature took ``model_psf`` directly and
+    computed per-band PSFs from the coadd; the new signature accepts
+    the full ``modelData`` and uses its already-fit PSFs verbatim,
+    which is both a more faithful round-trip and the only path that
+    works against modern persistence (legacy fields like
+    ``psf_center`` were dropped from ``ScarletBlendData`` during the
+    scarlet_lite refactor).
+    """
+
+    def _bundle(self):
+        # ``pipeline.deblend`` is memoized per (scene, config) so this
+        # is effectively a free lookup after the first invocation.
+        return pipeline.deblend(
+            pipeline.deconvolve(
+                pipeline.detect(pipeline.build_image(SCENES["multi-blend"]))
+            )
+        )
+
+    def _leaf_blend(self, modelData):
+        # Return the first leaf ``ScarletBlendData`` (i.e. the first
+        # child of the first hierarchical parent). ``loadBlend``'s
+        # contract is per-leaf, not per-parent.
+        for parent_blend in modelData.blends.values():
+            for child in parent_blend.children.values():
+                if isinstance(child, scl.io.ScarletBlendData):
+                    return child
+        self.fail("multi-blend scene unexpectedly produced no leaf blends")
+
+    def test_loadBlend_modelData_uses_metadata_model_psf(self):
+        """``loadBlend(..., modelData=...)`` builds an observation
+        whose ``model_psf`` equals ``modelData.metadata['model_psf']``.
+
+        The previous signature derived its PSFs from the coadd at the
+        blend's ``psf_center``, which both required attributes
+        ``ScarletBlendData`` no longer carries and re-derived a PSF
+        that may not match the one used during the fit. Pinning the
+        observation's ``model_psf`` to the metadata value guards the
+        intended round-trip.
+        """
+        bundle = self._bundle()
+        modelData = bundle.result.scarletModelData
+        blendData = self._leaf_blend(modelData)
+
+        blend, _ = mes.io.loadBlend(
+            blendData, mCoadd=bundle.image.mCoadd, modelData=modelData,
+        )
+
+        np.testing.assert_array_equal(
+            blend.observation.model_psf[0],
+            modelData.metadata["model_psf"],
+        )
+
+    def test_loadBlend_model_psf_emits_future_warning(self):
+        """Passing ``model_psf`` emits a ``FutureWarning`` flagging the
+        removal scheduled for v31.
+
+        The legacy path may still raise downstream (modern
+        ``ScarletBlendData`` lacks the ``psf_center`` attribute it
+        once required), so the assertion only pins the warning — any
+        post-warning exception is swallowed.
+        """
+        bundle = self._bundle()
+        modelData = bundle.result.scarletModelData
+        blendData = self._leaf_blend(modelData)
+        model_psf = modelData.metadata["model_psf"]
+
+        with self.assertWarns(FutureWarning):
+            try:
+                mes.io.loadBlend(
+                    blendData,
+                    model_psf=model_psf,
+                    mCoadd=bundle.image.mCoadd,
+                )
+            except Exception:
+                pass
+
+    def test_loadBlend_requires_psf_source(self):
+        """Calling ``loadBlend`` with ``mCoadd`` but neither
+        ``modelData`` nor ``model_psf`` raises ``ValueError``.
+
+        Pins the precondition that some PSF source has to be passed,
+        rather than silently constructing a degenerate observation.
+        """
+        bundle = self._bundle()
+        modelData = bundle.result.scarletModelData
+        blendData = self._leaf_blend(modelData)
+
+        with self.assertRaises(ValueError):
+            mes.io.loadBlend(blendData, mCoadd=bundle.image.mCoadd)
+
+    def test_loadBlend_requires_mCoadd(self):
+        """Calling ``loadBlend`` without ``mCoadd`` raises
+        ``ValueError``.
+
+        ``mCoadd`` has no default value at the API level (the
+        signature uses ``None`` only to support the legacy positional
+        order); omitting it should be a loud error rather than an
+        ``AttributeError`` deep inside the observation construction.
+        """
+        bundle = self._bundle()
+        modelData = bundle.result.scarletModelData
+        blendData = self._leaf_blend(modelData)
+
+        with self.assertRaises(ValueError):
+            mes.io.loadBlend(blendData, modelData=modelData)
 
 
 def setup_module(module):

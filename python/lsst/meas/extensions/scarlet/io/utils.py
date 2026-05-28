@@ -697,38 +697,86 @@ class ScarletModelDelegate(StorageClassDelegate):
         return inMemoryDataset
 
 
-def loadBlend(blendData: scl.io.ScarletBlendData, model_psf: np.ndarray, mCoadd: MultibandExposure):
+def loadBlend(
+    blendData: scl.io.ScarletBlendData,
+    model_psf: np.ndarray | None = None,
+    mCoadd: MultibandExposure = None,  # type: ignore[assignment]
+    modelData: LsstScarletModelData | None = None,
+):
     """Load a blend from the persisted data
 
     Parameters
     ----------
     blendData:
         The persisted scarlet BlendData to load into the blend.
-    model_psf:
-        The psf of the model in each band. This should be 2D, as scarlet
-        lite assumes that the PSF is the same for all bands.
     mCoadd:
         The coadd image to use for the observation attached to the blend.
         This is required in order to create a difference kernel to convolve
         the model into an observed seeing.
+    modelData:
+        The full persisted scarlet model data. When provided, the
+        per-band ``psf`` and 2D ``model_psf`` stored in
+        ``modelData.metadata`` are used to build the observation —
+        these are the same PSFs the deblender saw during fitting and
+        give a more faithful round-trip than re-deriving them from
+        the coadd.
+    model_psf:
+        The 2D model-space PSF (deprecated). Retained for backward
+        compatibility with the pre-``modelData`` signature; will be
+        removed after v31. Passing it emits a ``FutureWarning``.
 
     Returns
     -------
     blend : `scarlet.lite.Blend`
         The blend object loaded from the persisted data.
+    afw_box : `lsst.geom.Box2I`
+        The afw bounding box covering the blend.
     """
-    psf, _ = utils.computePsfKernelImage(mCoadd, blendData.psf_center)
+    if model_psf is not None:
+        warnings.warn(
+            "The `model_psf` parameter to `loadBlend` is deprecated and "
+            "will be removed after v31; pass `modelData` instead so the "
+            "PSFs from the fit can be reused directly.",
+            FutureWarning, stacklevel=2,
+        )
+    if mCoadd is None:
+        raise ValueError("`mCoadd` is required to load a blend from persisted data")
+
+    psfs: np.ndarray
+    if modelData is not None:
+        if modelData.metadata is None:
+            raise ValueError(
+                "`modelData.metadata` must be populated to use the "
+                "`modelData` branch of `loadBlend`."
+            )
+        bands = tuple(modelData.metadata["bands"])
+        psfs = modelData.metadata["psf"]
+        actual_model_psf = modelData.metadata["model_psf"][None, :, :]
+    elif model_psf is not None:
+        # Legacy path: derive per-band PSFs from the coadd at the
+        # blend's stored ``psf_center``. Modern ``ScarletBlendData``
+        # no longer carries ``psf_center`` or ``bands`` attributes, so
+        # this branch only works against legacy-zip-read blends.
+        psfs, _ = utils.computePsfKernelImage(mCoadd, blendData.psf_center)  # type: ignore[attr-defined]
+        bands = tuple(blendData.bands)  # type: ignore[attr-defined]
+        actual_model_psf = model_psf[None, :, :]
+    else:
+        raise ValueError(
+            "loadBlend requires `modelData` (preferred) or `model_psf` "
+            "to construct the observation."
+        )
+
     bbox = Box(blendData.shape, origin=blendData.origin)
     afw_box = Box2I(Point2I(bbox.origin[::-1]), Extent2I(bbox.shape[::-1]))
-    coadd = mCoadd[blendData.bands, afw_box]
+    coadd = mCoadd[bands, afw_box]
     observation = scl.Observation(
         images=coadd.image.array,
         variance=coadd.variance.array,
         weights=np.ones(coadd.image.array.shape, dtype=np.float32),
-        psfs=psf,
-        model_psf=model_psf[None, :, :],
+        psfs=psfs,
+        model_psf=actual_model_psf,
         convolution_mode='real',
-        bands=mCoadd.bands,
+        bands=bands,
         bbox=bbox,
     )
     return blendData.to_blend(observation), afw_box

@@ -186,3 +186,34 @@ and ``monochromaticBands`` (``("dummy",)``) now emit a
 will be removed after v31 alongside ``monochromaticDataToScarlet``.
 Use the real band name from ``modelData.metadata["bands"]`` instead of
 the ``"dummy"`` placeholder.
+
+``loadBlend`` accepts ``modelData``; ``model_psf`` is deprecated
+----------------------------------------------------------------
+
+The public ``lsst.meas.extensions.scarlet.io.loadBlend`` helper now
+accepts an optional ``modelData: LsstScarletModelData`` keyword that
+sources the per-band PSFs and bands directly from the persisted model's
+metadata — the same PSFs the deblender used during the fit. The previous
+flow re-derived per-band PSFs from the supplied ``MultibandExposure`` at
+the blend's stored ``psf_center``; modern ``ScarletBlendData`` no longer
+carries ``psf_center`` or ``bands`` attributes (they were dropped during
+the scarlet_lite IO refactor), so that code path raised
+``AttributeError`` against any model produced after that refactor and
+worked only on legacy-zip-read data.
+
+The bare ``model_psf`` parameter is retained but emits a
+``FutureWarning``; it will be removed after v31. The original positional
+order ``(blendData, model_psf, mCoadd)`` is preserved so existing
+positional callers continue to work (with a deprecation warning if they
+pass ``model_psf``). To accommodate the new ``model_psf=None`` default,
+``mCoadd`` now also defaults to ``None`` at the signature level and is
+validated at runtime — calling ``loadBlend`` without ``mCoadd`` raises
+``ValueError`` rather than producing a confusing ``AttributeError`` deep
+inside the observation construction.
+
+.. warning::
+
+   Migrate to ``loadBlend(blendData, mCoadd=mCoadd, modelData=modelData)``
+   to drop the ``FutureWarning`` and prepare for the v31 removal of
+   ``model_psf``. In the future mCoadd and modelData will return to
+   positional arguments but the new keyword-only signature is a temorary accommodation for the transition.
