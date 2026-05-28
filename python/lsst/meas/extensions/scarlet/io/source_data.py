@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,9 +33,57 @@ from ..source import IsolatedSource
 
 __all__ = ["IsolatedSourceData"]
 
-CURRENT_SCHEMA = "1.0.0"
+CURRENT_SCHEMA = "1.0.1"
 SOURCE_TYPE = "isolated"
 scl.io.migration.MigrationRegistry.set_current(SOURCE_TYPE, CURRENT_SCHEMA)
+
+
+def _encode_span_array(span_array: np.ndarray) -> str:
+    """Pack a 2D 0/1 mask into a base64-encoded packed-bits string.
+
+    The mask is flattened in C order, packed eight bits per byte via
+    :func:`numpy.packbits`, then base64-encoded. The companion
+    ``shape`` field carries the unflattened dimensions, since packing
+    pads to the next byte boundary.
+
+    Parameters
+    ----------
+    span_array : np.ndarray
+        Truthy values become 1; falsy become 0.
+
+    Returns
+    -------
+    encoded : str
+        ASCII base64 string suitable for direct JSON embedding.
+    """
+    flat = np.asarray(span_array, dtype=bool).ravel().astype(np.uint8)
+    return base64.b64encode(np.packbits(flat).tobytes()).decode("ascii")
+
+
+def _decode_span_array(
+    encoded: str, shape: tuple[int, ...], dtype: DTypeLike
+) -> np.ndarray:
+    """Decode the base64 packed-bits payload written by
+    :func:`_encode_span_array`.
+
+    Parameters
+    ----------
+    encoded : str
+        Base64 string from a 1.0.1+ ``span_array`` field.
+    shape : tuple[int, ...]
+        Output shape. ``np.prod(shape)`` defines how many bits are
+        valid; bytes past that are padding and are dropped.
+    dtype : DTypeLike
+        Output dtype. The decoded 0/1 values are cast to this type.
+
+    Returns
+    -------
+    span_array : np.ndarray
+        Mask of ``shape`` and ``dtype``.
+    """
+    packed = np.frombuffer(base64.b64decode(encoded), dtype=np.uint8)
+    n = int(np.prod(shape))
+    return np.unpackbits(packed)[:n].reshape(shape).astype(dtype)
 
 
 @dataclass(kw_only=True)
@@ -78,7 +127,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
             "origin": tuple(int(o) for o in self.origin),
             "shape": tuple(int(s) for s in self.span_array.shape),
             "peak": tuple(int(p) for p in self.peak),
-            "span_array": tuple(self.span_array.flatten().astype(float)),
+            "span_array": _encode_span_array(self.span_array),
             "source_type": self.source_type,
             "version": self.version,
         }
@@ -106,7 +155,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         data = scl.io.migration.MigrationRegistry.migrate(SOURCE_TYPE, data)
         shape = tuple(int(s) for s in data["shape"])
         origin = tuple(int(o) for o in data["origin"])
-        span_array = np.array(data["span_array"], dtype=dtype).reshape(shape)
+        span_array = _decode_span_array(data["span_array"], shape, dtype)
         peak = tuple(int(p) for p in data["peak"])
         metadata = scl.io.utils.decode_metadata(data.get("metadata", None))
         return cls(
@@ -146,3 +195,32 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
 
 IsolatedSourceData.register()
+
+
+@scl.io.migration.migration(SOURCE_TYPE, "1.0.0")
+def _to_1_0_1(data: dict) -> dict:
+    """Migrate an ``IsolatedSourceData`` payload from schema 1.0.0 to
+    1.0.1.
+
+    1.0.0 stored ``span_array`` as a flat tuple of Python floats
+    (one entry per pixel). 1.0.1 packs the same 0/1 mask into bytes
+    with :func:`numpy.packbits` and base64-encodes the result, which
+    cuts the on-disk representation by roughly an order of magnitude
+    for typical isolated-source footprints. The migration re-encodes
+    the legacy payload in place so the modern decoder handles it
+    transparently.
+
+    Parameters
+    ----------
+    data : dict
+        The data to migrate.
+    Returns
+    -------
+    result : dict
+        The migrated data.
+    """
+    shape = tuple(int(s) for s in data["shape"])
+    legacy = np.asarray(data["span_array"]).reshape(shape)
+    data["span_array"] = _encode_span_array(legacy)
+    data["version"] = "1.0.1"
+    return data
