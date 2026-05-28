@@ -83,6 +83,25 @@ class TestIsolatedSourceData(lsst.utils.tests.TestCase):
         roundtripped = IsolatedSourceData.from_dict(encoded)
         self.assertIsNone(roundtripped.metadata)
 
+    def test_as_dict_peak_is_int(self):
+        """Encoded ``peak`` values are ``int``, matching the dataclass
+        contract (``tuple[int, int]``).
+
+        Regression test for finding IO-1 of the
+        ``audits/audit-2026-05-05.md`` audit: ``as_dict`` previously
+        wrote floats while ``from_dict`` read ints, so any sub-pixel
+        peak that reached this path would be silently truncated.
+        """
+        original = IsolatedSourceData(
+            span_array=np.ones((3, 3), dtype=np.float32),
+            origin=(0, 0),
+            peak=(2, 3),
+        )
+        encoded = original.as_dict()
+        for value in encoded["peak"]:
+            self.assertIsInstance(value, int)
+            self.assertNotIsInstance(value, bool)
+
     def test_span_array_roundtrip(self):
         """A non-trivial ``span_array`` survives the round-trip
         bit-for-bit.

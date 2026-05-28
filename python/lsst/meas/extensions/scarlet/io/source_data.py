@@ -77,7 +77,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
         result: dict[str, Any] = {
             "origin": tuple(int(o) for o in self.origin),
             "shape": tuple(int(s) for s in self.span_array.shape),
-            "peak": tuple(float(p) for p in self.peak),
+            "peak": tuple(int(p) for p in self.peak),
             "span_array": tuple(self.span_array.flatten().astype(float)),
             "source_type": self.source_type,
             "version": self.version,
