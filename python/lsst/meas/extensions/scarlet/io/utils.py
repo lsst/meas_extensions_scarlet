@@ -26,9 +26,11 @@ from io import BytesIO
 import logging
 import json
 from typing import Any, BinaryIO, cast
+import warnings
 import zipfile
 
 import numpy as np
+from deprecated.sphinx import deprecated
 from pydantic_core import from_json
 
 import lsst.scarlet.lite as scl
@@ -67,13 +69,36 @@ __all__ = [
     "loadBlend",
 ]
 
-# The name of the band in an monochome blend.
-# This is used as a placeholder since the band is not used in the
-# monochromatic model.
-monochromaticBand = "dummy"
-monochromaticBands = (monochromaticBand,)
+# Placeholder band label used by the deprecated
+# `monochromaticDataToScarlet` flow. New code uses the real band name
+# from `modelData.metadata["bands"]`. Kept under a private name and
+# surfaced under the deprecated public names via the module
+# `__getattr__` below.
+_MONOCHROMATIC_BAND = "dummy"
+_MONOCHROMATIC_BANDS = (_MONOCHROMATIC_BAND,)
 
 
+def __getattr__(name: str) -> Any:
+    if name in ("monochromaticBand", "monochromaticBands"):
+        warnings.warn(
+            f"`{name}` is deprecated and will be removed after v31; "
+            "callers should use the real band name from "
+            "`modelData.metadata['bands']` instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return _MONOCHROMATIC_BAND if name == "monochromaticBand" else _MONOCHROMATIC_BANDS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+@deprecated(
+    reason=(
+        "Use `ScarletBlendData.minimal_data_to_blend(...)[band]` from "
+        "`lsst.scarlet.lite` instead. Will be removed after v31."
+    ),
+    version="v30.0",
+    category=FutureWarning,
+)
 def monochromaticDataToScarlet(
     blendData: scl.io.ScarletBlendData,
     bandIndex: int,
@@ -98,7 +123,7 @@ def monochromaticDataToScarlet(
     sources = []
     # Use a dummy band, since we are only extracting a monochromatic model
     # that will be turned into a HeavyFootprint.
-    bands = monochromaticBands
+    bands = _MONOCHROMATIC_BANDS
     for sourceId, sourceData in blendData.sources.items():
         components: list[scl.Component] = []
         # There is no need to distinguish factorized components from regular
@@ -175,8 +200,6 @@ def updateCatalogFootprints(
         This should only be true when the input catalog schema already
         contains those columns.
     """
-    # All of the blends should have the same PSF,
-    # so we extract it from the first blend data.
     if len(modelData.blends) == 0:
         if len(modelData.isolated) == 0:
             raise NoWorkFound("Scarlet model data is empty")
@@ -187,10 +210,9 @@ def updateCatalogFootprints(
     if modelData.metadata is None:
         raise ValueError("Scarlet model data does not contain metadata")
     bands = modelData.metadata["bands"]
-    try:
-        bandIndex = bands.index(band)
-    except ValueError:
+    if band not in bands:
         raise NoWorkFound(f"Band '{band}' not found in scarlet model data")
+    bandIndex = bands.index(band)
     modelPsf = modelData.metadata["model_psf"]
     observedPsf = modelData.metadata["psf"][bandIndex][None, :, :]
 
@@ -205,14 +227,16 @@ def updateCatalogFootprints(
         observation = buildMonochromaticObservation(
             modelPsf=modelPsf,
             observedPsf=observedPsf,
+            band=band,
             scarletBox=bbox,
             footprint=spans,
             imageForRedistribution=imageForRedistribution,
         )
 
         updateBlendRecords(
+            modelData=modelData,
             blendData=blendData,
-            bandIndex=bandIndex,
+            band=band,
             catalog=catalog,
             observation=observation,
             updateFluxColumns=updateFluxColumns,
@@ -226,6 +250,7 @@ def updateCatalogFootprints(
 def buildMonochromaticObservation(
     modelPsf: np.ndarray,
     observedPsf: np.ndarray,
+    band: str,
     scarletBox: Box,
     footprint: np.ndarray | None,
     imageForRedistribution: MaskedImage | Exposure | None = None,
@@ -238,6 +263,8 @@ def buildMonochromaticObservation(
         The 2D model of the PSF.
     observedPsf :
         The observed PSF model for the catalog.
+    band :
+        Name of the band the observation represents.
     scarletBox :
         The bounding box for the scarlet observation.
     footprint :
@@ -253,6 +280,7 @@ def buildMonochromaticObservation(
         The observation for the entire image
     """
     bbox = utils.scarletBoxToBBox(scarletBox)
+    bands = (band,)
 
     if imageForRedistribution is not None:
         cutout = imageForRedistribution[bbox]
@@ -270,12 +298,12 @@ def buildMonochromaticObservation(
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
             convolution_mode="real",
-            bands=monochromaticBands,
+            bands=bands,
             bbox=scarletBox,
         )
     else:
         observation = scl.Observation.empty(
-            bands=monochromaticBands,
+            bands=bands,
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
             bbox=scarletBox,
@@ -315,8 +343,9 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 
 def updateBlendRecords(
+    modelData: LsstScarletModelData,
     blendData: scl.io.ScarletBlendData | scl.io.HierarchicalBlendData,
-    bandIndex: int,
+    band: str,
     catalog: SourceCatalog,
     observation: scl.Observation,
     updateFluxColumns: bool,
@@ -326,14 +355,20 @@ def updateBlendRecords(
 
     Parameters
     ----------
+    modelData :
+        The full persisted scarlet model data. Its top-level
+        ``metadata`` (``model_psf``, ``psf``, ``bands``) is used to
+        reconstruct each child blend at full band-multiplicity before
+        slicing to ``band``.
     blendData :
         Persistable data for a single blend or hierarchical blend.
-    bandIndex :
-        The number of the band to extract.
+    band :
+        Name of the band to extract.
     catalog :
         The catalog that is being updated.
     observation :
-        The observation of the blend.
+        The observation of the blend in ``band``. Its ``bands`` tuple
+        should be ``(band,)``.
     updateFluxColumns :
         Whether or not to update the `deblend_*` columns in the catalog.
         This should only be true when the input catalog schema already
@@ -345,13 +380,20 @@ def updateBlendRecords(
     """
     useFlux = imageForRedistribution is not None
 
-    # Create a blend with the parent and all of its children.
+    # Reconstruct each child sub-blend from its persisted form, slice
+    # down to the requested band, and collect the per-band sources into
+    # a single Blend tied to the caller's redistribution observation.
     sources = []
     if isinstance(blendData, scl.io.HierarchicalBlendData):
-        for blendId in blendData.children:
-            _blendData = cast(scl.io.ScarletBlendData, blendData.children[blendId])
-            blend = monochromaticDataToScarlet(_blendData, bandIndex, observation)
-            sources.extend(blend.sources)
+        for _blendData in blendData.children.values():
+            full_blend = cast(
+                scl.io.ScarletBlendData, _blendData
+            ).minimal_data_to_blend(
+                model_psf=modelData.metadata["model_psf"][None, :, :],
+                psf=modelData.metadata["psf"],
+                bands=modelData.metadata["bands"],
+            )
+            sources.extend(full_blend[band].sources)
 
     if len(sources) == 0:
         # No sources to update, so we can skip the rest of the function.

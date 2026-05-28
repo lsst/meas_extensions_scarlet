@@ -134,3 +134,55 @@ copied onto top-level parent and child records.
    ``parent`` field is nonzero), regardless of the underlying peak flags.
    Selections that filtered these rows by ``merge_peak_*`` were silently
    dropping every row.
+
+Per-band blend reconstruction now takes a band name
+---------------------------------------------------
+
+``lsst.meas.extensions.scarlet.io.updateBlendRecords`` now takes the
+full ``modelData: LsstScarletModelData`` plus a band name
+(``band: str``) and delegates per-child blend reconstruction to
+``ScarletBlendData.minimal_data_to_blend(...)[band]`` from
+``lsst.scarlet.lite``. ``buildMonochromaticObservation`` likewise gains
+a required ``band: str`` argument and tags the observation with the
+real band label instead of the previous ``"dummy"`` placeholder. The
+top-level ``updateCatalogFootprints`` signature is unchanged.
+
+The new flow preserves the original component types (factorized vs.
+cube) under the per-band slice, instead of always collapsing to
+``CubeComponent`` the way the previous hand-rolled reconstruction did.
+
+.. warning::
+
+   Callers that drove per-band ``Blend`` reconstruction directly
+   through ``updateBlendRecords`` must switch their ``bandIndex: int``
+   argument to ``band: str`` and additionally supply the
+   ``modelData``. Code that built observations via
+   ``buildMonochromaticObservation`` must also pass ``band``; the
+   ``("dummy",)`` band labeling convention is gone.
+
+``monochromaticDataToScarlet`` is deprecated
+--------------------------------------------
+
+``lsst.meas.extensions.scarlet.io.monochromaticDataToScarlet`` now
+emits a ``FutureWarning`` on every call and will be removed after
+v31. The function predates scarlet_lite's
+``ScarletBlendData.minimal_data_to_blend`` and ``Blend.__getitem__``
+slicing; that pair expresses the same job in three lines with a
+better-behaved component round-trip. Migrate to::
+
+   blend = blendData.minimal_data_to_blend(
+       model_psf=modelData.metadata["model_psf"][None, :, :],
+       psf=modelData.metadata["psf"],
+       bands=modelData.metadata["bands"],
+   )[band]
+
+``monochromaticBand`` and ``monochromaticBands`` are deprecated
+---------------------------------------------------------------
+
+The module-level constants
+``lsst.meas.extensions.scarlet.io.utils.monochromaticBand`` (``"dummy"``)
+and ``monochromaticBands`` (``("dummy",)``) now emit a
+``FutureWarning`` on access via a module ``__getattr__`` hook. They
+will be removed after v31 alongside ``monochromaticDataToScarlet``.
+Use the real band name from ``modelData.metadata["bands"]`` instead of
+the ``"dummy"`` placeholder.

@@ -97,33 +97,22 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             for child in catalog[catalog["parent"] == parent.get("id")]:
                 yield parent, child
 
-    def _scarlet_blend_for_child(self, bundle, parent, child, bandIndex):
+    def _scarlet_blend_for_child(self, bundle, parent, child, band):
         # Reconstruct the per-band scarlet blend and pick out the
         # source matching ``child.getId()``. Returns the blend (whose
         # ``observation`` can be rebound for flux redistribution), the
         # source, and the parent's afw footprint.
         modelData = bundle.result.scarletModelData
-        observedPsf = modelData.metadata["psf"]
-        modelPsf = modelData.metadata["model_psf"]
         parentBlendData = modelData.blends[parent.getId()]
         parentFootprint = parent.getFootprint()
-        x0, y0 = parentFootprint.getBBox().getMin()
-        width, height = parentFootprint.getBBox().getDimensions()
 
         blendData = parentBlendData.children[child["deblend_blendId"]]
-        modelBox = scl.Box((height, width), origin=(y0, x0))
-        observation = scl.Observation.empty(
-            bands=("dummy",),
-            psfs=observedPsf[bandIndex][None, :, :],
-            model_psf=modelPsf[None, :, :],
-            bbox=modelBox,
-            dtype=np.float32,
+        full_blend = blendData.minimal_data_to_blend(
+            model_psf=modelData.metadata["model_psf"][None, :, :],
+            psf=modelData.metadata["psf"],
+            bands=modelData.metadata["bands"],
         )
-        blend = mes.io.monochromaticDataToScarlet(
-            blendData=blendData,
-            bandIndex=bandIndex,
-            observation=observation,
-        )
+        blend = full_blend[band]
         source = next(
             src for src in blend.sources if src.metadata["id"] == child.getId()
         )
@@ -543,7 +532,6 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         """
         bundle = self._deblend(SCENES["multi-blend"])
         band = bundle.image.bands[0]
-        bandIndex = 0
         self._attach_band_footprints(bundle, band, useFlux=False)
 
         for parent, child in self._iter_multipeak_children(bundle):
@@ -554,7 +542,7 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             self.assertEqual(py, fp.getPeaks()[0].getIy())
 
             _, source, _ = self._scarlet_blend_for_child(
-                bundle, parent, child, bandIndex
+                bundle, parent, child, band
             )
             self.assertEqual(source.center[1], px)
             self.assertEqual(source.center[0], py)
@@ -575,7 +563,6 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         image = bundle.image
         for useFlux in [False, True]:
             for band in image.bands:
-                bandIndex = image.bands.index(band)
                 with self.subTest(band=band, useFlux=useFlux):
                     self._attach_band_footprints(bundle, band, useFlux)
                     imageForRedistribution = (
@@ -587,7 +574,7 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                         img = fp.extractImage(fill=0.0)
                         blend, source, parentFootprint = (
                             self._scarlet_blend_for_child(
-                                bundle, parent, child, bandIndex
+                                bundle, parent, child, band
                             )
                         )
 
@@ -601,12 +588,12 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                             blend.observation.images = scl.Image(
                                 _images[None, :, :],
                                 yx0=yx0,
-                                bands=("dummy",),
+                                bands=(band,),
                             )
                             blend.observation.weights = scl.Image(
                                 parentFootprint.spans.asArray()[None, :, :],
                                 yx0=yx0,
-                                bands=("dummy",),
+                                bands=(band,),
                             )
                             blend.conserve_flux()
                             model = source.flux_weighted_image.data[0]
