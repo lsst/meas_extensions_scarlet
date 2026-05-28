@@ -208,6 +208,81 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
 
+    def test_v30_legacy_model(self):
+        """``LsstScarletModelData`` ingested from a v30-era fixture
+        round-trips intact.
+
+        ``data/v30_models.json`` snapshots the on-disk layout produced
+        by LSST release v30 — model schema ``1.0.1`` and
+        isolated-source schema ``1.0.0``. It plays the same role for
+        future schema bumps that ``v29_models.json`` plays for the
+        pre-``metadata`` layout: as long as the migration chain stays
+        complete, a v30 archive must continue to load against whatever
+        schemas a later release ships.
+        """
+        repo = self._setup_butler()
+        storageClass = StorageClass(
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
+        )
+        datasetType = DatasetType(
+            "old_scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=repo.dimensions,
+        )
+        ref = DatasetRef(
+            datasetType,
+            run="test_ingestion_v30",
+            dataId={},
+        )
+        dataset = FileDataset(
+            path=os.path.join(TESTDIR, "data", "v30_models.json"),
+            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
+            refs=[ref],
+        )
+
+        butler = makeTestCollection(repo, uniqueId="ingestion_v30")
+        repo.registry.registerDatasetType(datasetType)
+        butler.ingest(dataset)
+
+        model = butler.get("old_scarlet_model_data", dataId={})
+
+        # The multi-blend scene that generated the fixture produces
+        # three parent blends and one isolated source.
+        self.assertEqual(len(model.blends), 3)
+        self.assertEqual(len(model.isolated), 1)
+
+        # Metadata round-trips with the model_psf array reconstructed
+        # via ``decode_metadata``'s ``array_keys`` handling.
+        self.assertIsNotNone(model.metadata)
+        self.assertIn("model_psf", model.metadata)
+        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
+        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
+        self.assertIn("psf", model.metadata)
+        self.assertIn("bands", model.metadata)
+
+        # The isolated source survives the full ``IsolatedSourceData``
+        # round-trip: shape and integer peak (post-IO-1), and a
+        # bit-exact span mask. Pinning the span sum guards the
+        # ``span_array`` serialization path against silent regressions
+        # under future schema bumps.
+        iso = next(iter(model.isolated.values()))
+        self.assertEqual(iso.span_array.shape, (13, 13))
+        self.assertEqual(iso.origin, (6, 14))
+        self.assertEqual(iso.peak, (12, 20))
+        self.assertEqual(float(iso.span_array.sum()), 119.0)
+
+        # Single-blend parameter load also works on v30 archives.
+        first_blend_id = sorted(model.blends.keys())[0]
+        test = butler.get(
+            "old_scarlet_model_data",
+            dataId={},
+            parameters={"blend_id": first_blend_id},
+        )
+        self.assertEqual(len(test.blends), 1)
+        self.assertIn(first_blend_id, test.blends)
+
     def test_older_legacy_model(self):
         repo = self._setup_butler()
         oldStorageClass = StorageClass(
