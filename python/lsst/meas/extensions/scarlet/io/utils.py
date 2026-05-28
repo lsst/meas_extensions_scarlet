@@ -639,7 +639,7 @@ def scarlet_model_to_lsst_scarlet_model(model_data: scl.io.ScarletModelData) -> 
     """
     return LsstScarletModelData(
         blends=model_data.blends,
-        metadata=None,
+        metadata=model_data.metadata if model_data.metadata is not None else {},
     )
 
 

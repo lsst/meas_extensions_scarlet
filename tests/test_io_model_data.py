@@ -99,6 +99,32 @@ class TestModelDataMigrations(lsst.utils.tests.TestCase):
             result["metadata"], {"survey": "DES", "footprint": None}
         )
 
+    def test_to_1_0_1_handles_none_metadata(self):
+        """``_to_1_0_1`` tolerates an explicit ``metadata=None`` entry
+        from older payloads.
+
+        Regression test for finding IO-3 of
+        ``audits/audit-2026-05-05.md``. The naive
+        ``data.setdefault("metadata", {}).setdefault("footprint", None)``
+        idiom returned the existing ``None`` and then raised
+        ``AttributeError: 'NoneType' object has no attribute 'setdefault'``
+        when the payload carried ``metadata=None`` explicitly — the
+        same value emitted by
+        ``scarlet_model_to_lsst_scarlet_model`` for converted v0
+        archives. The migration must replace ``None`` with
+        ``{"footprint": None}``.
+        """
+        v1_0_0 = {
+            "blends": {},
+            "isolated": {},
+            "model_type": MODEL_TYPE,
+            "version": "1.0.0",
+            "metadata": None,
+        }
+        result = _to_1_0_1(copy.deepcopy(v1_0_0))
+        self.assertEqual(result["version"], "1.0.1")
+        self.assertEqual(result["metadata"], {"footprint": None})
+
     def test_schema_version_constants_match(self):
         """The schema constants line up with what's actually registered
         and with the scarlet_lite version installed.

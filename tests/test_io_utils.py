@@ -91,6 +91,41 @@ class TestUpdateCatalogFootprints(lsst.utils.tests.TestCase):
         self.assertIsNone(result)
 
 
+class TestScarletModelToLsstScarletModel(lsst.utils.tests.TestCase):
+    """Tests for ``scarlet_model_to_lsst_scarlet_model``.
+
+    The converter wraps a base ``ScarletModelData`` in an
+    ``LsstScarletModelData``. Previously it dropped the input's
+    ``metadata`` and substituted ``None``, which then crashed the
+    ``_to_1_0_1`` migration on any subsequent round-trip (see finding
+    IO-3 of ``audits/audit-2026-05-05.md``).
+    """
+
+    @staticmethod
+    def _base_model(metadata):
+        return scl.io.ScarletModelData(blends={}, metadata=metadata)
+
+    def test_propagates_metadata_when_present(self):
+        """The returned ``LsstScarletModelData`` carries the same
+        ``metadata`` dict as the source, not ``None``.
+        """
+        source_metadata = {"bands": ("g", "r"), "model_psf": "placeholder"}
+        result = mes.io.utils.scarlet_model_to_lsst_scarlet_model(
+            self._base_model(source_metadata)
+        )
+        self.assertEqual(result.metadata, source_metadata)
+
+    def test_defaults_to_empty_dict_not_none(self):
+        """When the source's ``metadata`` is ``None``, the converter
+        substitutes an empty dict so the ``_to_1_0_1`` migration sees
+        a real dict it can call ``setdefault`` on.
+        """
+        result = mes.io.utils.scarlet_model_to_lsst_scarlet_model(
+            self._base_model(None)
+        )
+        self.assertEqual(result.metadata, {})
+
+
 class TestMonochromaticDataToScarletDeprecation(lsst.utils.tests.TestCase):
     """Coverage retention for the deprecated
     ``monochromaticDataToScarlet`` (scheduled for removal after v31).

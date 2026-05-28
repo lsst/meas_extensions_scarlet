@@ -192,5 +192,7 @@ def _to_1_0_1(data: dict) -> dict:
         The migrated data.
     """
     data["version"] = "1.0.1"
-    data.setdefault("metadata", {}).setdefault("footprint", None)
+    if data.get("metadata") is None:
+        data["metadata"] = {}
+    data["metadata"].setdefault("footprint", None)
     return data
