@@ -208,6 +208,71 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         self.assertLess(len(loss), config.maxIter)
         self.assertFalse(np.isfinite(loss[-1]))
 
+    def test_calculate_update_step_excludes_masked_pixels(self):
+        """``calculate_update_step`` divides by the count of unmasked
+        pixels rather than the full image size.
+
+        The previous implementation computed ``sparsity =
+        np.sum(signal_mask) / image.size``; the denominator counted
+        every pixel in the array even when many of them carried zero
+        weight (border, NO_DATA, BAD). On heavily masked inputs such
+        as tract edges this artificially shrinks ``sparsity`` and in
+        turn the update step. The fix restricts both numerator and
+        denominator to pixels with non-zero weight, so the sparsity
+        reflects the fraction of *valid* pixels carrying signal.
+
+        Two observations are built that differ only in their weight
+        plane: ``full`` has weights ``1`` everywhere; ``half`` masks
+        the bottom half of the image (which contains no signal). A
+        signal-amplitude/noise pair is chosen so the resulting scale
+        does not saturate at the ``1.0`` cap. Under the previous
+        formula both observations yielded the same step (the denominator
+        ignored the mask); under the fix the masked observation yields
+        a step that is roughly twice as large because the denominator
+        halves while the signal count is preserved.
+
+        Regression test for finding DC-8 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        from lsst.meas.extensions.scarlet.deconvolveExposureTask import (
+            calculate_update_step,
+        )
+
+        shape = (1, 32, 32)
+        noise = 1.0
+        image = np.zeros(shape, dtype=np.float32)
+        # 16-pixel signal block in the top-left; amplitude tuned so
+        # ``scale = sparsity * sqrt(snr) / 0.1`` lands well below 1.0
+        # in the unmasked case.
+        image[0, :4, :4] = 5.0
+        variance = np.full(shape, noise**2, dtype=np.float32)
+        psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+
+        full_weights = np.ones(shape, dtype=np.float32)
+        half_weights = np.ones(shape, dtype=np.float32)
+        half_weights[:, 16:, :] = 0
+
+        def _make_obs(weights):
+            return scl.Observation(
+                images=image,
+                variance=variance,
+                weights=weights,
+                psfs=psf[None],
+                model_psf=psf[None],
+                bands=("dummy",),
+                convolution_mode="fft",
+            )
+
+        step_full = calculate_update_step(_make_obs(full_weights))
+        step_half = calculate_update_step(_make_obs(half_weights))
+
+        self.assertLess(step_full, 1.0)
+        self.assertGreater(step_half, step_full)
+        # The signal count is preserved across both observations and
+        # the masked denominator is exactly half the full denominator,
+        # so the masked step should be ~2× larger when neither caps.
+        self.assertAlmostEqual(step_half / step_full, 2.0, places=5)
+
     def test_model_to_exposure_decouples_mask_and_variance(self):
         """``_modelToExposure`` detaches the output mask/variance from
         the input coadd and invalidates the variance plane.

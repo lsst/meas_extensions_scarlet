@@ -68,17 +68,25 @@ def calculate_update_step(
     scale : float
         Scale factor for the update step.
     """
-    # Calculate sparsity as fraction of pixels significantly above noise
+    # Calculate sparsity as fraction of unmasked pixels significantly
+    # above noise. Pixels with zero weight (border, NO_DATA, BAD) are
+    # excluded from both numerator and denominator so heavily masked
+    # inputs are not biased toward a small step.
     noise_level = observation.noise_rms[0]
     # Guard against non-finite or non-positive noise levels
     if noise_level <= 0 or not np.isfinite(noise_level):
         return default_scale
-    signal_mask = observation.images.data > 3*noise_level
+    image = observation.images.data[0]
+    valid_mask = observation.weights.data[0] > 0
+    valid_pixels = np.sum(valid_mask)
+    if valid_pixels == 0:
+        return default_scale
+    signal_mask = (image > 3*noise_level) & valid_mask
     signal_pixels = np.sum(signal_mask)
-    sparsity = signal_pixels / observation.images.data.size
+    sparsity = signal_pixels / valid_pixels
 
     if np.any(signal_mask):
-        median_signal = np.median(observation.images.data[signal_mask])
+        median_signal = np.median(image[signal_mask])
         snr = median_signal / noise_level
     else:
         snr = 1.0
