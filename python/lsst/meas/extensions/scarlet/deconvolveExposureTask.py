@@ -343,13 +343,16 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         loss = []
         step = calculate_update_step(observation)
         for n in range(self.config.maxIter):
-            residual = observation.images - observation.convolve(model)
+            # cache=True reuses the FFT plan across iterations; the
+            # image shape is stable inside the loop so this is a free
+            # speedup at zero correctness cost.
+            residual = observation.images - observation.convolve(model, cache=True)
             if np.all(~np.isfinite(residual.data)):
                 self.log.warning(f"Residual is non-finite at iteration {n}, stopping deconvolution")
                 loss.append(-np.inf)
                 break
             loss.append(-0.5 * np.nansum(residual.data**2))
-            update = observation.convolve(residual, grad=True)
+            update = observation.convolve(residual, grad=True, cache=True)
             update.data[:] *= step
             model += update
             model.data[(model.data < 0) | ~np.isfinite(model.data)] = 0
