@@ -584,7 +584,7 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
 
     Parameters
     ----------
-    model_data : `lsst.scarelt.lite.io.LsstScarletModelData`
+    model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
 
     Returns
@@ -615,7 +615,7 @@ def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstScarletM
 
     Parameters
     ----------
-    model_data : `lsst.scarlet.lite.io.LsstScarletModelData`
+    model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
 
     Returns
@@ -639,7 +639,7 @@ def scarlet_model_to_lsst_scarlet_model(model_data: scl.io.ScarletModelData) -> 
 
     Returns
     -------
-    result : `lsst.scarlet.lite.io.LsstScarletModelData`
+    result : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
     """
     return LsstScarletModelData(
