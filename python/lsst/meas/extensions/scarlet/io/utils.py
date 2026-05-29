@@ -473,7 +473,7 @@ def updateBlendRecords(
                 y = peak["i_y"]
                 logger.warning(
                     f"Source {srcId} at {x},{y} could not set the peak flux with error:",
-                    exc_info=1,
+                    exc_info=True,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
         else:
