@@ -685,11 +685,19 @@ class ScarletModelDelegate(StorageClassDelegate):
         raise AttributeError(f"Unsupported component: {componentName}")
 
     def handleParameters(self, inMemoryDataset: Any, parameters: Mapping[str, Any] | None = None) -> Any:
+        # The base class signature permits ``parameters=None`` and
+        # treats both ``None`` and ``{}`` as "no parameters". Mirror
+        # that here: the dispatch path in
+        # ``daf_butler.datastore.generic_base.post_process_get`` does
+        # filter empty parameters before calling, but in-memory and
+        # disassembled-composite reads pass ``None``/``{}`` through.
+        if not parameters:
+            return inMemoryDataset
         if "blend_id" in parameters:
             blend_ids = lsst_utils.iteration.ensure_iterable(parameters["blend_id"])
             blends = {blend_id: inMemoryDataset.blends[blend_id] for blend_id in blend_ids}
             inMemoryDataset.blends = blends
-        elif parameters is not None:
+        else:
             raise ValueError(f"Unsupported parameters: {parameters}")
         return inMemoryDataset
 

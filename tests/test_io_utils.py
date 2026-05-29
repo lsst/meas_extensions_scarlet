@@ -126,6 +126,114 @@ class TestScarletModelToLsstScarletModel(lsst.utils.tests.TestCase):
         self.assertEqual(result.metadata, {})
 
 
+class TestScarletModelDelegate(lsst.utils.tests.TestCase):
+    """Tests for
+    ``lsst.meas.extensions.scarlet.io.utils.ScarletModelDelegate.handleParameters``.
+
+    The delegate hooks ``LsstScarletModelData`` into Butler's
+    parameter-application pipeline. The base ``StorageClassDelegate``
+    annotates ``parameters`` as ``Mapping[str, Any] | None`` and
+    treats ``None``/``{}`` as "no parameters" — its dispatch path in
+    ``daf_butler.datastore.generic_base.post_process_get`` already
+    short-circuits with ``if assemblerParams:``, so the bug below is
+    latent in current usage, but in-memory-datastore and
+    disassembled-composite reads pass ``None``/``{}`` straight
+    through, and the delegate must agree with the base class on
+    those values.
+    """
+
+    @staticmethod
+    def _model_with_blends():
+        # ``handleParameters`` only inspects the keys of
+        # ``inMemoryDataset.blends`` (to slice the dict), so the
+        # values can be arbitrary sentinels — no need to build real
+        # ScarletBlendData objects.
+        return LsstScarletModelData(
+            blends={1: "blend-1", 2: "blend-2", 3: "blend-3"},
+        )
+
+    @staticmethod
+    def _delegate():
+        # ``StorageClassDelegate.__init__`` requires a
+        # ``StorageClass`` argument, but ``handleParameters`` never
+        # consults it; a sentinel is enough to construct the
+        # delegate in isolation from a real Butler.
+        from unittest.mock import Mock
+        return mes.io.ScarletModelDelegate(storageClass=Mock())
+
+    def test_handleParameters_none_returns_unchanged(self):
+        """``parameters=None`` returns the dataset unchanged.
+
+        Regression test for finding IO-6 of the
+        ``audits/audit-2026-05-05.md`` audit. The bug was
+        ``"blend_id" in None`` raising ``TypeError`` — the base-class
+        contract permits ``None`` and treats it as "no parameters",
+        so the delegate must do the same.
+        """
+        model = self._model_with_blends()
+        delegate = self._delegate()
+
+        result = delegate.handleParameters(model, None)
+
+        self.assertIs(result, model)
+        self.assertEqual(set(result.blends.keys()), {1, 2, 3})
+
+    def test_handleParameters_empty_dict_returns_unchanged(self):
+        """``parameters={}`` also returns unchanged.
+
+        Mirrors ``StorageClassDelegate.handleParameters`` whose
+        ``if parameters:`` guard treats the empty dict as "no
+        parameters" rather than as "unsupported parameters". The
+        pre-fix delegate raised ``ValueError("Unsupported parameters:
+        {}")`` here because the ``elif parameters is not None`` branch
+        fired on an empty dict. Companion to the ``None`` case under
+        finding IO-6 of ``audits/audit-2026-05-05.md``.
+        """
+        model = self._model_with_blends()
+        delegate = self._delegate()
+
+        result = delegate.handleParameters(model, {})
+
+        self.assertIs(result, model)
+        self.assertEqual(set(result.blends.keys()), {1, 2, 3})
+
+    def test_handleParameters_blend_id_filters(self):
+        """``parameters={'blend_id': ...}`` keeps only the requested
+        blends.
+
+        Pins the filtering branch under finding IO-6 of the
+        ``audits/audit-2026-05-05.md`` audit: the no-parameter fixes
+        above must not regress the actual partial-load path.
+        """
+        model = self._model_with_blends()
+        delegate = self._delegate()
+
+        result = delegate.handleParameters(model, {"blend_id": 2})
+
+        self.assertIs(result, model)
+        self.assertEqual(set(result.blends.keys()), {2})
+        # Iterable forms also work.
+        model = self._model_with_blends()
+        result = delegate.handleParameters(model, {"blend_id": [1, 3]})
+        self.assertEqual(set(result.blends.keys()), {1, 3})
+
+    def test_handleParameters_unsupported_raises(self):
+        """Non-empty parameters without ``blend_id`` raise
+        ``ValueError``.
+
+        Pins the rejection branch under finding IO-6 of
+        ``audits/audit-2026-05-05.md`` so a future relaxation of the
+        no-parameter case does not silently start accepting
+        unrecognized keys.
+        """
+        model = self._model_with_blends()
+        delegate = self._delegate()
+
+        with self.assertRaises(ValueError) as cm:
+            delegate.handleParameters(model, {"something_else": 42})
+        self.assertIn("something_else", str(cm.exception))
+
+
 class TestMonochromaticDataToScarletDeprecation(lsst.utils.tests.TestCase):
     """Coverage retention for the deprecated
     ``monochromaticDataToScarlet`` (scheduled for removal after v31).
