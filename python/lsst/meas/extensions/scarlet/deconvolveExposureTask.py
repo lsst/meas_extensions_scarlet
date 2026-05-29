@@ -29,6 +29,7 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import lsst.scarlet.lite as scl
 import numpy as np
+from deprecated.sphinx import deprecated
 
 from . import utils
 
@@ -41,10 +42,10 @@ __all__ = [
 ]
 
 
-def calculate_update_step(
+def calculateUpdateStep(
     observation: scl.Observation,
-    min_scale: float = 0.01,
-    default_scale: float = 0.1,
+    minScale: float = 0.01,
+    defaultScale: float = 0.1,
 ) -> float:
     """Calculate the scale factor for the update step in deconvolution.
 
@@ -57,10 +58,10 @@ def calculate_update_step(
     observation :
         Scarlet lite Observation.
 
-    min_scale :
+    minScale :
         Minimum allowed scale factor.
 
-    default_scale :
+    defaultScale :
         Default scale factor to return if noise level is non-finite.
 
     Returns
@@ -72,29 +73,48 @@ def calculate_update_step(
     # above noise. Pixels with zero weight (border, NO_DATA, BAD) are
     # excluded from both numerator and denominator so heavily masked
     # inputs are not biased toward a small step.
-    noise_level = observation.noise_rms[0]
+    noiseLevel = observation.noise_rms[0]
     # Guard against non-finite or non-positive noise levels
-    if noise_level <= 0 or not np.isfinite(noise_level):
-        return default_scale
+    if noiseLevel <= 0 or not np.isfinite(noiseLevel):
+        return defaultScale
     image = observation.images.data[0]
-    valid_mask = observation.weights.data[0] > 0
-    valid_pixels = np.sum(valid_mask)
-    if valid_pixels == 0:
-        return default_scale
-    signal_mask = (image > 3*noise_level) & valid_mask
-    signal_pixels = np.sum(signal_mask)
-    sparsity = signal_pixels / valid_pixels
+    validMask = observation.weights.data[0] > 0
+    validPixels = np.sum(validMask)
+    if validPixels == 0:
+        return defaultScale
+    signalMask = (image > 3*noiseLevel) & validMask
+    signalPixels = np.sum(signalMask)
+    sparsity = signalPixels / validPixels
 
-    if np.any(signal_mask):
-        median_signal = np.median(image[signal_mask])
-        snr = median_signal / noise_level
+    if np.any(signalMask):
+        medianSignal = np.median(image[signalMask])
+        snr = medianSignal / noiseLevel
     else:
         snr = 1.0
 
     # Scale factor that decreases with sparsity and increases with SNR
     scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
 
-    return max(min_scale, scale)
+    return max(minScale, scale)
+
+
+@deprecated(
+    reason=(
+        "Use `calculateUpdateStep` instead; the snake_case name is kept "
+        "as a shim. Will be removed after v31."
+    ),
+    version="v30.0",
+    category=FutureWarning,
+)
+def calculate_update_step(
+    observation: scl.Observation,
+    min_scale: float = 0.01,
+    default_scale: float = 0.1,
+) -> float:
+    """Deprecated snake_case alias for `calculateUpdateStep`."""
+    return calculateUpdateStep(
+        observation, minScale=min_scale, defaultScale=default_scale,
+    )
 
 
 class DeconvolveExposureConnections(
@@ -349,7 +369,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         """
         model = observation.images.copy()
         loss = []
-        step = calculate_update_step(observation)
+        step = calculateUpdateStep(observation)
         for n in range(self.config.maxIter):
             # cache=True reuses the FFT plan across iterations; the
             # image shape is stable inside the loop so this is a free

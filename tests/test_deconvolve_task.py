@@ -30,6 +30,7 @@ narrow model PSF only). The two existing tests cover the default
 """
 
 import unittest
+import warnings
 
 import lsst.afw.image as afwImage
 import lsst.geom as geom
@@ -37,7 +38,11 @@ import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
 import numpy as np
-from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
+from lsst.meas.extensions.scarlet.deconvolveExposureTask import (
+    DeconvolveExposureTask,
+    calculateUpdateStep,
+    calculate_update_step,
+)
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 
 import pipeline
@@ -209,7 +214,7 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         self.assertFalse(np.isfinite(loss[-1]))
 
     def test_calculate_update_step_excludes_masked_pixels(self):
-        """``calculate_update_step`` divides by the count of unmasked
+        """``calculateUpdateStep`` divides by the count of unmasked
         pixels rather than the full image size.
 
         The previous implementation computed ``sparsity =
@@ -234,10 +239,6 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         Regression test for finding DC-8 of the
         ``audits/audit-2026-05-05.md`` audit.
         """
-        from lsst.meas.extensions.scarlet.deconvolveExposureTask import (
-            calculate_update_step,
-        )
-
         shape = (1, 32, 32)
         noise = 1.0
         image = np.zeros(shape, dtype=np.float32)
@@ -263,8 +264,8 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 convolution_mode="fft",
             )
 
-        step_full = calculate_update_step(_make_obs(full_weights))
-        step_half = calculate_update_step(_make_obs(half_weights))
+        step_full = calculateUpdateStep(_make_obs(full_weights))
+        step_half = calculateUpdateStep(_make_obs(half_weights))
 
         self.assertLess(step_full, 1.0)
         self.assertGreater(step_half, step_full)
@@ -272,6 +273,42 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         # the masked denominator is exactly half the full denominator,
         # so the masked step should be ~2× larger when neither caps.
         self.assertAlmostEqual(step_half / step_full, 2.0, places=5)
+
+    def test_calculate_update_step_deprecation_wrapper(self):
+        """The snake_case ``calculate_update_step`` shim emits a
+        ``FutureWarning`` and forwards to ``calculateUpdateStep``.
+
+        The function was renamed to match the surrounding LSST
+        camelCase style; the legacy name is retained as a thin
+        deprecation wrapper so external callers continue to work for
+        one release.
+
+        Regression test for finding DC-10 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        shape = (1, 8, 8)
+        psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        observation = scl.Observation(
+            images=np.ones(shape, dtype=np.float32),
+            variance=np.ones(shape, dtype=np.float32),
+            weights=np.ones(shape, dtype=np.float32),
+            psfs=psf[None],
+            model_psf=psf[None],
+            bands=("dummy",),
+            convolution_mode="fft",
+        )
+
+        expected = calculateUpdateStep(observation)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            actual = calculate_update_step(observation)
+
+        self.assertEqual(actual, expected)
+        deprecation_warnings = [
+            w for w in caught if issubclass(w.category, FutureWarning)
+        ]
+        self.assertEqual(len(deprecation_warnings), 1)
+        self.assertIn("calculateUpdateStep", str(deprecation_warnings[0].message))
 
     def test_model_to_exposure_decouples_mask_and_variance(self):
         """``_modelToExposure`` detaches the output mask/variance from

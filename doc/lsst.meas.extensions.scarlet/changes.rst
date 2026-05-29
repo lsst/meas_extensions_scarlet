@@ -217,3 +217,15 @@ inside the observation construction.
    to drop the ``FutureWarning`` and prepare for the v31 removal of
    ``model_psf``. In the future mCoadd and modelData will return to
    positional arguments but the new keyword-only signature is a temorary accommodation for the transition.
+
+``calculate_update_step`` renamed to ``calculateUpdateStep``
+-----------------------------------------------------------
+
+The deconvolution-step helper in
+``lsst.meas.extensions.scarlet.deconvolveExposureTask`` was renamed
+from ``calculate_update_step`` to ``calculateUpdateStep`` to match
+the camelCase convention used elsewhere in the module. The
+keyword-argument names follow suit (``min_scale`` → ``minScale``,
+``default_scale`` → ``defaultScale``). The snake_case name is
+retained as a thin shim that forwards to the new function and emits
+a ``FutureWarning`` on every call; it will be removed after v31.
