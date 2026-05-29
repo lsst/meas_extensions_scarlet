@@ -241,15 +241,24 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             Deconvolved exposure
         """
         observation = self._buildObservation(coadd, catalog, band)
-        self.bbox = coadd.getBBox()
 
-        # Deconvolve.
-        # Store the loss history for debugging purposes.
-        model, self.loss = self._deconvolve(observation, catalog)
+        # Build the per-pixel footprint mask from the catalog, if one
+        # was supplied, so the deconvolution loop only needs to know
+        # about the mask itself rather than how it was derived.
+        if catalog is not None:
+            bbox = coadd.getBBox()
+            width, height = bbox.getDimensions()
+            x0, y0 = bbox.getMin()
+            footprintImage = afwDet.footprintsToNumpy(
+                catalog, shape=(height, width), xy0=(x0, y0)
+            )
+        else:
+            footprintImage = None
 
-        # Store the model in an Exposure
+        model, loss = self._deconvolve(observation, footprintImage=footprintImage)
+
         exposure = self._modelToExposure(model.data[0], coadd)
-        return pipeBase.Struct(deconvolved=exposure)
+        return pipeBase.Struct(deconvolved=exposure, loss=loss)
 
     def _buildObservation(
         self,
@@ -316,7 +325,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     def _deconvolve(
         self,
         observation: scl.Observation,
-        catalog: afwTable.SourceCatalog | None = None,
+        footprintImage: np.ndarray | None = None,
     ) -> tuple[scl.Image, list[float]]:
         """Deconvolve the observed image.
 
@@ -324,19 +333,15 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         ----------
         observation :
             Scarlet lite Observation.
-        catalog :
-            Catalog of sources detected in the deconvolved image.
-            This is used to mask the deconvolved image so that
-            the deconvolved footprints detected downstream will always
-            fit inside of the original footprints.
+        footprintImage :
+            Per-pixel mask matching ``observation.images.shape[1:]``.
+            When supplied, the deconvolved model is multiplied by this
+            mask after each iteration so the recovered footprints stay
+            inside the input footprints.
         """
         model = observation.images.copy()
         loss = []
         step = calculate_update_step(observation)
-        if catalog is not None:
-            width, height = self.bbox.getDimensions()
-            x0, y0 = self.bbox.getMin()
-            footprintImage = afwDet.footprintsToNumpy(catalog, shape=(height, width), xy0=(x0, y0))
         for n in range(self.config.maxIter):
             residual = observation.images - observation.convolve(model)
             if np.all(~np.isfinite(residual.data)):
@@ -348,10 +353,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             update.data[:] *= step
             model += update
             model.data[(model.data < 0) | ~np.isfinite(model.data)] = 0
-            if catalog is not None:
-                # Ensure that the deconvolved model footprints fit
-                # inside of the original footprints by setting regions
-                # outside of the original footprints to zero.
+            if footprintImage is not None:
                 model.data[:] *= footprintImage
 
             # Check for a diverging model
