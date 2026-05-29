@@ -165,7 +165,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
             metadata=metadata,
         )
 
-    def to_source(self, observation: scl.Observation) -> IsolatedSourceData:
+    def to_source(self, observation: scl.Observation) -> IsolatedSource:
         """Convert to a scarlet Source object
 
         Parameters
@@ -175,7 +175,7 @@ class IsolatedSourceData(scl.io.blend.ScarletSourceBaseData):
 
         Returns
         -------
-        result : IsolatedSourceData
+        result : IsolatedSource
             The scarlet Source object.
         """
         # Extract the image data that overlaps with the Footprint
