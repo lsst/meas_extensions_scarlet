@@ -379,7 +379,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         return model, loss
 
     def _modelToExposure(self, model: np.ndarray, coadd: afwImage.Exposure) -> afwImage.Exposure:
-        """Convert a scarlet lite Image to an Exposure.
+        """Convert a deconvolved image array to an Exposure.
 
         The output exposure's mask is a deep copy of the input coadd's
         mask, and its variance plane is fresh and filled with ``inf``.
