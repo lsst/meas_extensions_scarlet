@@ -313,7 +313,7 @@ def buildMonochromaticObservation(
 
 
 def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.floating:
-    """Calculate the fraction of pixels with no data in a Footprint
+    """Calculate the fraction of pixels with valid data in a Footprint
 
     Parameters
     ----------
@@ -321,10 +321,13 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
         The footprint to check for missing data.
     maskImage : `lsst.afw.image.MaskX`
         The mask image with the ``NO_DATA`` bit set.
+
     Returns
     -------
     coverage : `float`
-        The fraction of pixels in `footprint` where the ``NO_DATA`` bit is set.
+        The fraction of pixels in `footprint` where the ``NO_DATA`` bit
+        is **not** set (i.e. the fraction with valid data). Backs the
+        ``deblend_dataCoverage`` catalog column.
     """
     # Store the value of "NO_DATA" from the mask plane.
     noDataInt = 2 ** maskImage.getMaskPlaneDict()["NO_DATA"]
@@ -332,8 +335,10 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
     # Calculate the coverage in the footprint
     bbox = footprint.getBBox()
     if bbox.area == 0:
-        # The source has no footprint, so it has no coverage
-        return 0
+        # The source has no footprint, so it has no coverage.
+        # Returning a ``np.float64`` (not a Python ``int``) honors the
+        # ``-> np.floating`` annotation.
+        return np.float64(0.0)
     spans = footprint.spans.asArray()
     totalArea = footprint.getArea()
     mask = maskImage[bbox].array & noDataInt
