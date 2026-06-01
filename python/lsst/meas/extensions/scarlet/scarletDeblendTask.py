@@ -472,15 +472,6 @@ class ScarletDeblendConfig(pexConfig.Config):
     )
     # Lite Parameters
     # All of these parameters (except version) are only valid if version='lite'
-    version = pexConfig.ChoiceField[str](
-        default="lite",
-        allowed={
-            "lite": "LSST optimized version of scarlet for survey data from a single instrument",
-        },
-        doc="The version of scarlet to use.",
-        deprecated="This field is deprecated since the ony available `version` is `lite` "
-                   "and will be removed after v29.0",
-    )
     optimizer = pexConfig.ChoiceField[str](
         default="adaprox",
         allowed={
@@ -488,17 +479,6 @@ class ScarletDeblendConfig(pexConfig.Config):
             "fista": "Accelerated proximal gradient method",
         },
         doc="The optimizer to use for fitting parameters.",
-    )
-    morphImage = pexConfig.ChoiceField[str](
-        default="chi2",
-        allowed={
-            "chi2": "Initialize sources on a chi^2 image made from all available bands",
-        },
-        doc="The type of image to use for initializing the morphology. "
-            "Must be either 'chi2' or 'wavelet'. ",
-        deprecated="This field is deprecated since testing has shown that only 'chi2' should be used "
-                   "and 'wavelet' has been broken since v27.0. "
-                   "This field will be removed in v29.0",
     )
     backgroundThresh = pexConfig.Field[float](
         default=1.0,
@@ -517,13 +497,6 @@ class ScarletDeblendConfig(pexConfig.Config):
         "iteration of the optimizer. "
         "This config field is only used if version='lite' and optimizer='adaprox'.",
     )
-    waveletScales = pexConfig.Field[int](
-        default=5,
-        doc="Number of wavelet scales to use for wavelet initialization. "
-        "This field is only used when `version`='lite' and `morphImage`='wavelet'.",
-        deprecated="This field is deprecated along with `morphImage` and will be removed in v29.0.",
-    )
-
     # Other scarlet paremeters
     useWeights = pexConfig.Field[bool](
         default=True,
@@ -560,19 +533,6 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Type of convolution to render the model to the observations.\n"
         "- 'fft': perform convolutions in Fourier space\n"
         "- 'real': peform convolutions in real space.",
-    )
-    sourceModel = pexConfig.Field[str](
-        default="double",
-        doc=(
-            "How to determine which model to use for sources, from\n"
-            "- 'single': use a single component for all sources\n"
-            "- 'double': use a bulge disk model for all sources\n"
-            "- 'compact': use a single component model, initialzed with a point source morphology, "
-            " for all sources\n"
-            "- 'point': use a point-source model for all sources\n"
-            "- 'fit: use a PSF fitting model to determine the number of components (not yet implemented)"
-        ),
-        deprecated="This field will be deprecated when the default for `version` is changed to `lite`.",
     )
     setSpectra = pexConfig.Field[bool](
         default=True,
@@ -695,8 +655,9 @@ class ScarletDeblendConfig(pexConfig.Config):
             "deblend_nPeaks": "deblend_parentNPeaks",
         },
         doc="Columns to pass from the parent to the child. "
-            "This is no longer used since the object and parent catalogs contain different columns.",
-        deprecated="This field is deprecated along with `morphImage` and will be removed after v30.0.",
+            "The child catalog records the number of peaks and children "
+            "in the parent footprint so downstream measurement consumers "
+            "can recover the parent context without a separate join.",
     )
     pseudoColumns = pexConfig.ListField[str](
         default=["merge_peak_sky", "sky_source"],
@@ -942,9 +903,7 @@ class ScarletDeblendTask(pipeBase.Task):
         schema.addField(
             "deblend_nComponents",
             type=np.int32,
-            doc="Number of components in a ScarletLiteSource. "
-            "If `config.version != 'lite' then "
-            "this column is set to zero.",
+            doc="Number of components in a ScarletLiteSource.",
         )
         schema.addField(
             "deblend_chi2",
@@ -1052,9 +1011,7 @@ class ScarletDeblendTask(pipeBase.Task):
         schema.addField(
             "deblend_nComponents",
             type=np.int32,
-            doc="Number of components in a ScarletLiteSource. "
-            "If `config.version != 'lite'`then "
-            "this column is set to zero.",
+            doc="Number of components in a ScarletLiteSource.",
         )
         schema.addField(
             "deblend_chi2",

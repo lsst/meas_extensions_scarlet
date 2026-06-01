@@ -257,3 +257,12 @@ keyword-argument names follow suit (``min_scale`` → ``minScale``,
 ``default_scale`` → ``defaultScale``). The snake_case name is
 retained as a thin shim that forwards to the new function and emits
 a ``FutureWarning`` on every call; it will be removed after v31.
+
+Deprecated ``ScarletDeblendConfig`` fields removed
+--------------------------------------------------
+
+Four long-deprecated ``ScarletDeblendConfig`` fields are removed:
+``version``, ``morphImage``, ``waveletScales``, and ``sourceModel``.
+Their removal had been scheduled in ``deprecated=`` notes since
+v29.0; pipelines past that release should already have stopped
+setting them.
