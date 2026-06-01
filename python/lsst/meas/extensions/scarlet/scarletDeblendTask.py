@@ -1591,7 +1591,7 @@ class ScarletDeblendTask(pipeBase.Task):
             The message to display in a log.trace when a source
             is skipped.
         """
-        if logMessage is not None:
+        if logMessage:
             self.log.trace(logMessage)
         footprint = blendRecord.getFootprint()
         self._updateParentRecord(
