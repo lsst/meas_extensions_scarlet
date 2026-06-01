@@ -218,6 +218,34 @@ inside the observation construction.
    ``model_psf``. In the future mCoadd and modelData will return to
    positional arguments but the new keyword-only signature is a temorary accommodation for the transition.
 
+Per-source blendedness / overlap metrics now populated on the catalog
+---------------------------------------------------------------------
+
+The four ``np.float32`` schema fields ``deblend_maxOverlap``,
+``deblend_fluxOverlap``, ``deblend_fluxOverlapFraction``, and
+``deblend_blendedness`` have always been declared on the deblended-source
+schema and have always had their values computed by
+``setDeblenderMetrics`` during ``updateCatalogFootprints``, but the
+computed values were never copied onto the catalog record. Every
+deblended row therefore carried the schema default (``NaN``) for these
+four columns, regardless of how blended the source actually was.
+
+The values are now written onto each ``sourceRecord`` alongside the
+existing ``deblend_scarletFlux`` and ``deblend_peak_instFlux`` writes, so
+catalogs produced through ``updateCatalogFootprints`` carry the
+single-band Bosch-2018 blendedness, max-pixel neighbor overlap, total
+neighbor-flux overlap, and overlap-as-fraction-of-source-flux for every
+deblended source.
+
+.. warning::
+
+   Catalogs produced by an earlier version have ``NaN`` in these four
+   columns for every deblended source. Selections that filtered on these
+   metrics were silently dropping every row; comparisons that read these
+   values for blend quality were undefined. Re-run the deblender (or
+   re-run ``updateCatalogFootprints`` over the persisted ``ScarletModelData``
+   and existing catalogs) to obtain populated values.
+
 ``calculate_update_step`` renamed to ``calculateUpdateStep``
 -----------------------------------------------------------
 

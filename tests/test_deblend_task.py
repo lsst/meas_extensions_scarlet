@@ -634,6 +634,44 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                             flux, child.get("deblend_peak_instFlux")
                         )
 
+    def test_heavy_footprint_band_columns_populated(self):
+        """``updateCatalogFootprints`` populates every band-dependent
+        ``deblend_*`` column it owns on each deblended child.
+
+        Pins both the four pre-existing writes
+        (``deblend_zeroFlux``, ``deblend_dataCoverage``,
+        ``deblend_scarletFlux``, ``deblend_peak_instFlux``) and the
+        four blendedness/overlap metric writes
+        (``deblend_maxOverlap``, ``deblend_fluxOverlap``,
+        ``deblend_fluxOverlapFraction``, ``deblend_blendedness``).
+        The metric writes were previously missing: their values were
+        computed onto ``source.metrics`` by ``setDeblenderMetrics``
+        but never pushed onto the catalog record, so every child
+        carried the schema's default ``NaN`` for the four
+        ``np.float32`` metric fields. Runs with ``useFlux=True`` so
+        the ``deblend_dataCoverage`` branch is also covered.
+        Regression test for finding DB-7 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        bundle = self._deblend(SCENES["multi-blend"])
+        band = bundle.image.bands[0]
+        self._attach_band_footprints(bundle, band, useFlux=True)
+
+        for _, child in self._iter_multipeak_children(bundle):
+            with self.subTest(childId=child.getId()):
+                self.assertFalse(child.get("deblend_zeroFlux"))
+                self.assertGreater(child.get("deblend_dataCoverage"), 0)
+                self.assertGreater(child.get("deblend_scarletFlux"), 0)
+                self.assertFalse(
+                    np.isnan(child.get("deblend_peak_instFlux"))
+                )
+                self.assertGreater(child.get("deblend_maxOverlap"), 0)
+                self.assertGreater(child.get("deblend_fluxOverlap"), 0)
+                self.assertGreater(
+                    child.get("deblend_fluxOverlapFraction"), 0
+                )
+                self.assertGreater(child.get("deblend_blendedness"), 0)
+
     def test_heavy_footprint_peak_position(self):
         """The HeavyFootprint's peak position and the scarlet model's
         source center both match ``deblend_peak_center_{x,y}``.

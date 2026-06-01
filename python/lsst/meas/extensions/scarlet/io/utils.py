@@ -413,8 +413,6 @@ def updateBlendRecords(
         blend.conserve_flux()
 
     # Set the metrics for the blend.
-    # TODO: remove this once DM-34558 runs all deblender metrics
-    # in a separate task.
     if updateFluxColumns:
         setDeblenderMetrics(blend)
 
@@ -476,6 +474,16 @@ def updateBlendRecords(
                     exc_info=True,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
+
+            # The blend here is single-band, so every ``source.metrics``
+            # array has one entry — the value for ``band``.
+            metrics = source.metrics  # type: ignore[attr-defined]
+            sourceRecord.set("deblend_maxOverlap", metrics.maxOverlap[0])
+            sourceRecord.set("deblend_fluxOverlap", metrics.fluxOverlap[0])
+            sourceRecord.set(
+                "deblend_fluxOverlapFraction", metrics.fluxOverlapFraction[0]
+            )
+            sourceRecord.set("deblend_blendedness", metrics.blendedness[0])
         else:
             sourceRecord.setFootprint(heavy)
 
