@@ -238,6 +238,72 @@ class TestFootprintConversions(lsst.utils.tests.TestCase):
             self.assertEqual(row.getPeakValue(), v)
 
 
+class TestScarletModelToHeavy(lsst.utils.tests.TestCase):
+    """Tests for ``scarletModelToHeavy`` in
+    ``lsst.meas.extensions.scarlet.footprint``.
+    """
+
+    def test_multiband_spanset_includes_negative_band_pixels(self):
+        """A multi-band model's heavy footprint covers every pixel
+        where any band is non-zero, including pixels that are
+        negative-only in some bands.
+
+        The 2-band model has three non-zero pixels:
+
+        - ``(0, 0)``: ``[+1, 0]`` -- positive in g.
+        - ``(1, 1)``: ``[-1, 0]`` -- negative-only in g
+          (``np.max == 0`` would exclude this pixel under U-2's old
+          idiom).
+        - ``(2, 2)``: ``[+1, +1]`` -- positive in both bands.
+
+        A 1x1 PSF of value 1.0 per band makes
+        ``observation.convolve(model, mode="real")`` the identity so
+        the post-convolution model preserves these exact values.
+        Under the U-18 bug the call raises ``AttributeError`` from
+        the ``MultibandImage(blend.bands, ...)`` line; under the
+        fix the SpanSet covers all three pixels and excludes the
+        rest of the bbox.
+        """
+        bands = ("g", "r")
+        model_data = np.zeros((2, 3, 3), dtype=np.float32)
+        model_data[0, 0, 0] = 1.0
+        model_data[0, 1, 1] = -1.0
+        model_data[:, 2, 2] = 1.0
+
+        psfs = np.ones((2, 1, 1), dtype=np.float32)
+        obs_shape = (2, 5, 5)
+        observation = scl.Observation(
+            images=np.zeros(obs_shape, dtype=np.float32),
+            variance=np.ones(obs_shape, dtype=np.float32),
+            weights=np.ones(obs_shape, dtype=np.float32),
+            psfs=psfs,
+            bands=bands,
+        )
+        image = scl.Image(model_data, yx0=(0, 0), bands=bands)
+        component = scl.component.CubeComponent(model=image, peak=(2, 2))
+        source = scl.Source([component])
+        blend = scl.Blend(sources=[source], observation=observation)
+
+        heavy = mes.footprint.scarletModelToHeavy(source, blend, useFlux=False)
+
+        bbox = heavy.getBBox()
+        # The 3x3 model bbox contains the three non-zero pixels.
+        self.assertEqual(bbox.getMin(), geom.Point2I(0, 0))
+        self.assertEqual(bbox.getDimensions(), geom.Extent2I(3, 3))
+        mask = heavy.getSpans().asArray(
+            shape=(bbox.getHeight(), bbox.getWidth()),
+            xy0=bbox.getMin(),
+        )
+        expected = np.array(
+            [
+                [True, False, False],
+                [False, True, False],
+                [False, False, True],
+            ]
+        )
+        np.testing.assert_array_equal(mask, expected)
+
+
 def setup_module(module):
     lsst.utils.tests.init()
 

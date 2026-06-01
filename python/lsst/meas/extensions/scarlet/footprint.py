@@ -166,8 +166,9 @@ def scarletModelToHeavy(
         maskedImage = MaskedImage(image, dtype=model.dtype)
         heavy = makeHeavyFootprint(foot, maskedImage)
     else:
-        model = MultibandImage(blend.bands, model.data, valid.getBBox())
-        heavy = MultibandFootprint.fromImages(blend.bands, model, footprint=foot)
+        bands = model.bands
+        model = MultibandImage(bands, model.data, valid.getBBox())
+        heavy = MultibandFootprint.fromImages(bands, model, footprint=foot)
     return heavy
 
 
