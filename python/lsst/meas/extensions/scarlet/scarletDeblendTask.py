@@ -44,15 +44,6 @@ from . import io, utils
 from .footprint import scarletFootprintToAfw
 from .source import IsolatedSource
 
-# Scarlet and proxmin have a different definition of log levels than the stack,
-# so even "warnings" occur far more often than we would like.
-# So for now we only display scarlet and proxmin errors, as all other
-# scarlet outputs would be considered "TRACE" by our standards.
-scarletLogger = logging.getLogger("scarlet")
-scarletLogger.setLevel(logging.ERROR)
-proxminLogger = logging.getLogger("proxmin")
-proxminLogger.setLevel(logging.ERROR)
-
 __all__ = ["deblend", "ScarletDeblendContext", "ScarletDeblendConfig", "ScarletDeblendTask"]
 
 logger = logging.getLogger(__name__)
