@@ -107,7 +107,7 @@ class IsolatedSource(scl.source.SourceBase):
         footprint_array = footprint.spans.asArray((height, width), (x0, y0))
         # Create the 3D model array by multiplying the footprint by each band
         # of the multiband coadd.
-        model_array = np.ndarray((len(mCoadd.bands), height, width), dtype=dtype)
+        model_array = np.empty((len(mCoadd.bands), height, width), dtype=dtype)
         for bidx, band in enumerate(mCoadd.bands):
             model_array[bidx] = mCoadd[band, bbox].image.array * footprint_array
         # Create the model
