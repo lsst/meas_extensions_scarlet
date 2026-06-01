@@ -29,6 +29,8 @@ from dataclasses import dataclass
 import numpy as np
 from lsst.scarlet.lite import Blend
 
+from .utils import nonzeroBandSupport
+
 
 @dataclass
 class DeblenderMetrics:
@@ -92,7 +94,7 @@ def setDeblenderMetrics(blend: Blend):
         # Extract the source model in the full bounding box
         model = src.get_model().project(bbox=blend.bbox).data
         # The footprint is the 2D array of non-zero pixels in each band
-        footprint = np.bitwise_or.reduce(model > 0, axis=0)
+        footprint = nonzeroBandSupport(model)
         # Calculate the metrics.
         # See `DeblenderMetrics` for a description of each metric.
         neighborOverlap = (blendModel - model) * footprint[None, :, :]

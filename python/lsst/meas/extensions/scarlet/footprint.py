@@ -34,7 +34,7 @@ from lsst.afw.image import Image as afwImage
 from lsst.afw.image import Mask, MaskedImage, MultibandImage
 from lsst.scarlet.lite.detect_pybind11 import Peak
 
-from .utils import bboxToScarletBox
+from .utils import bboxToScarletBox, nonzeroBandSupport
 
 
 def afwFootprintToScarlet(footprint: afwFootprint, copyPeaks: bool = True):
@@ -143,7 +143,7 @@ def scarletModelToHeavy(
     # Update xy0 with the origin of the sources box
     xy0 = geom.Point2I(model.yx0[-1], model.yx0[-2])
     # Create the spans for the footprint
-    valid = np.max(model.data, axis=0) != 0
+    valid = nonzeroBandSupport(model.data)
     valid = Mask(valid.astype(np.int32), xy0=xy0)
     spans = SpanSet.fromMask(valid)
 

@@ -68,6 +68,30 @@ def bboxToScarletBox(bbox: geom.Box2I, xy0: geom.Point2I = geom.Point2I()) -> sc
     return scl.Box((bbox.getHeight(), bbox.getWidth()), origin)
 
 
+def nonzeroBandSupport(data: np.ndarray) -> np.ndarray:
+    """Return the per-pixel support of a multi-band model.
+
+    A pixel is in the support whenever any band's value is non-zero.
+    This is the canonical "spatial extent of a model across bands"
+    test; the alternative idioms ``data > 0`` and
+    ``np.max(data, axis=0) != 0`` either exclude negative-valued
+    pixels outright or exclude pixels whose largest band value is
+    exactly zero, both of which under-count the true spatial extent.
+
+    Parameters
+    ----------
+    data :
+        A ``(bands, height, width)`` array of model values.
+
+    Returns
+    -------
+    support :
+        A ``(height, width)`` boolean mask, ``True`` at pixels where
+        at least one band is non-zero.
+    """
+    return np.any(data != 0, axis=0)
+
+
 def multiband_convolve(images: np.ndarray, psfs: np.ndarray) -> np.ndarray:
     """Convolve a multi-band image with the PSF in each band.
 

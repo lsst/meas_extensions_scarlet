@@ -362,6 +362,80 @@ class TestUtils(lsst.utils.tests.TestCase):
         return catalog
 
 
+class TestNonzeroBandSupport(lsst.utils.tests.TestCase):
+    """Tests for ``nonzeroBandSupport`` in
+    ``lsst.meas.extensions.scarlet.utils``.
+
+    The helper consolidates three previously inconsistent idioms for
+    "this pixel is in the source's support across bands" (``> 0``,
+    ``np.max != 0``, ``np.any != 0``) into a single canonical
+    ``np.any(data != 0, axis=0)``. The discriminator between the
+    canonical form and the historical idioms is a pixel whose band
+    values are all zero except for a negative entry, or a mix of
+    negative and zero (which ``np.max != 0`` excludes when the
+    largest value is exactly zero). Regression coverage for
+    finding U-2 of the ``audits/audit-2026-05-05.md`` audit.
+    """
+
+    def test_nonzeroBandSupport_includes_negative_only_pixels(self):
+        """A pixel that is negative in some bands and zero in others
+        counts as in the support.
+
+        Layout of the 2-band ``(2, 3, 3)`` input:
+
+        - ``(0, 0)``: ``[+1, 0]`` — positive, in support.
+        - ``(0, 1)``: ``[-1, 0]`` — negative-and-zero mix (``max == 0``
+          excludes this; the canonical helper includes it).
+        - ``(0, 2)``: ``[0, 0]`` — all-zero, not in support.
+        - ``(1, 0)``: ``[-1, -1]`` — uniformly negative; ``> 0``
+          excludes, the canonical helper includes.
+        - All other pixels zero.
+        """
+        data = np.zeros((2, 3, 3), dtype=np.float32)
+        data[0, 0, 0] = 1.0
+        data[0, 0, 1] = -1.0
+        data[:, 1, 0] = -1.0
+
+        result = mes.utils.nonzeroBandSupport(data)
+
+        expected = np.array(
+            [
+                [True, True, False],
+                [True, False, False],
+                [False, False, False],
+            ]
+        )
+        np.testing.assert_array_equal(result, expected)
+
+    def test_nonzeroBandSupport_all_zero(self):
+        """An all-zero cube returns an all-False support mask."""
+        data = np.zeros((3, 4, 4), dtype=np.float32)
+        result = mes.utils.nonzeroBandSupport(data)
+        np.testing.assert_array_equal(result, np.zeros((4, 4), dtype=bool))
+
+    def test_nonzeroBandSupport_all_positive(self):
+        """A strictly-positive cube returns an all-True support mask."""
+        data = np.ones((3, 2, 2), dtype=np.float32)
+        result = mes.utils.nonzeroBandSupport(data)
+        np.testing.assert_array_equal(result, np.ones((2, 2), dtype=bool))
+
+    def test_nonzeroBandSupport_single_band(self):
+        """A single-band cube reduces along the band axis cleanly.
+
+        The historical ``np.max != 0`` form silently failed for a
+        ``(1, h, w)`` slice whose only non-zero pixel was negative —
+        the test pixel at ``(0, 1)`` distinguishes ``!= 0`` from
+        ``> 0`` even with only one band.
+        """
+        data = np.array(
+            [[[0.0, -1.0], [2.0, 0.0]]], dtype=np.float32
+        )
+        result = mes.utils.nonzeroBandSupport(data)
+        np.testing.assert_array_equal(
+            result, np.array([[False, True], [True, False]])
+        )
+
+
 class TestMultibandConvolve(lsst.utils.tests.TestCase):
     """Tests for ``multiband_convolve`` in
     ``lsst.meas.extensions.scarlet.utils``.

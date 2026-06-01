@@ -31,6 +31,8 @@ from lsst.afw.detection import Footprint
 from lsst.afw.image import MultibandExposure
 import lsst.scarlet.lite as scl
 
+from .utils import nonzeroBandSupport
+
 if TYPE_CHECKING:
     from .io import IsolatedSourceData
 
@@ -147,7 +149,7 @@ class IsolatedSource(scl.source.SourceBase):
         """
         from .io import IsolatedSourceData
 
-        span_array = np.any(self.component._model.data != 0, axis=0)
+        span_array = nonzeroBandSupport(self.component._model.data)
         return IsolatedSourceData(
             span_array=span_array,
             origin=self.bbox.origin,

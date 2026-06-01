@@ -183,6 +183,55 @@ class TestSetDeblenderMetrics(lsst.utils.tests.TestCase):
             )
 
 
+    def test_setDeblenderMetrics_counts_negative_pixels_as_support(self):
+        """A source with a negative-only pixel still sees neighbor
+        overlap at that pixel.
+
+        Per finding U-2 of the ``audits/audit-2026-05-05.md`` audit,
+        ``setDeblenderMetrics`` previously built its per-source
+        footprint with ``np.bitwise_or.reduce(model > 0, axis=0)``,
+        which dropped every pixel whose model values were all ``≤ 0``
+        in every band. A negative-only pixel was therefore invisible
+        to ``maxOverlap`` / ``fluxOverlap``, even if a neighbor put
+        flux there. The canonical helper uses ``np.any != 0`` so the
+        support tracks the spatial extent of the model regardless of
+        sign.
+
+        Setup
+        -----
+        - Source A: 3×3 morph at origin ``(5, 5)``, all zero except
+          ``-1.0`` at relative ``(1, 1)`` (absolute ``(6, 6)``). Flat
+          spectrum ``(1, 1, 1)``.
+        - Source B: 1×1 morph at origin ``(6, 6)``, value ``+5.0``.
+          Flat spectrum ``(1, 1, 1)``.
+
+        Source A's support after the fix is the single pixel ``(6, 6)``;
+        the rest of its bbox stays zero in every band and is correctly
+        excluded by ``any != 0`` too. ``neighborOverlap`` at ``(6, 6)``
+        is ``(blendModel - model_A) = (4 - (-1)) = 5`` per band; A's
+        footprint masks every other pixel to zero. So per-band
+        ``maxOverlap = fluxOverlap = 5.0``. Under the bug, A's
+        footprint is empty, ``neighborOverlap`` is zero everywhere,
+        and both metrics are ``0``.
+        """
+        morphA = np.zeros((3, 3), dtype=np.float32)
+        morphA[1, 1] = -1.0
+        morphB = np.array([[5.0]], dtype=np.float32)
+        blend = _build_blend(
+            [
+                (morphA, (5, 5), (6, 6), [1.0, 1.0, 1.0]),
+                (morphB, (6, 6), (6, 6), [1.0, 1.0, 1.0]),
+            ]
+        )
+
+        mes.metrics.setDeblenderMetrics(blend)
+
+        n_bands = len(BANDS)
+        metricsA = blend.sources[0].metrics
+        np.testing.assert_allclose(metricsA.maxOverlap, [5.0] * n_bands)
+        np.testing.assert_allclose(metricsA.fluxOverlap, [5.0] * n_bands)
+
+
 def setup_module(module):
     lsst.utils.tests.init()
 
