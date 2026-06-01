@@ -71,10 +71,10 @@ class DeblenderMetrics:
         surveys use the term "purity," which is `1-blendedness`.
     """
 
-    maxOverlap: np.array
-    fluxOverlap: np.array
-    fluxOverlapFraction: np.array
-    blendedness: np.array
+    maxOverlap: np.ndarray
+    fluxOverlap: np.ndarray
+    fluxOverlapFraction: np.ndarray
+    blendedness: np.ndarray
 
 
 def setDeblenderMetrics(blend: Blend):
