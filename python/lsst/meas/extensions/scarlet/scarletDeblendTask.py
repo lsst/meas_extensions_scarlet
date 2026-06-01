@@ -1936,12 +1936,20 @@ class ScarletDeblendTask(pipeBase.Task):
         # Store the number of components for the source
         src.set("deblend_nComponents", len(scarletSource.components))
 
-        # Calculate the reduced chi2 for the source.
+        # Calculate the reduced chi2 for the source. The ``chi2``
+        # image is the blend's, so within this source's bbox it
+        # carries contributions wherever the *combined* blend model
+        # was positive — including pixels where neighboring sources'
+        # models extend into this bbox. Mask by this source's own
+        # positive-model footprint so the chi2 sum and the area
+        # normalization are over the same pixel set.
         # Defensive: a detected peak's source model has positive flux,
         # so ``area`` should never be 0.
-        area = np.sum(scarletSource.get_model().data > 0)
+        sourceFootprint = scarletSource.get_model().data > 0
+        area = np.sum(sourceFootprint)
         sourceReducedChi2 = (
-            np.sum(chi2[:, scarletSource.bbox].data / area) if area > 0 else np.nan
+            np.sum(chi2[:, scarletSource.bbox].data * sourceFootprint) / area
+            if area > 0 else np.nan
         )
         src.set("deblend_chi2", sourceReducedChi2)
 

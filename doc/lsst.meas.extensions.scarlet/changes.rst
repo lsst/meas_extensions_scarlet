@@ -83,6 +83,33 @@ parent record as intended.
    per-sub-blend values. Re-run the deblender to obtain the correct
    parent-level summary and intact per-sub-blend records.
 
+Per-source ``deblend_chi2`` no longer leaks neighbor residuals
+--------------------------------------------------------------
+
+The per-child ``deblend_chi2`` reduced-chi2 value is built from the
+blend-level chi2 image, which carries residuals wherever the *combined*
+blend model is positive. Within one child's bbox that footprint included
+pixels that belong to a neighboring source's model, so the chi2 sum
+attributed to the child also included the neighbor's residual at those
+pixels. The sum was then normalized by just this child's positive-pixel
+area, inflating the reported reduced chi2 whenever a neighbor overlapped
+the child's bbox.
+
+The chi2 sum is now masked by the child's own positive-model footprint
+before normalization, so the numerator and denominator are over the same
+pixel set. Children with no overlapping neighbor are unaffected;
+children in overlapping blends now report a lower, more representative
+``deblend_chi2``.
+
+.. warning::
+
+   Catalogs produced by an earlier version overstate ``deblend_chi2``
+   for any deblended child whose bbox overlaps a neighboring source's
+   positive-model footprint — i.e. essentially every child of a
+   multi-peak blend. Selections or thresholds on ``deblend_chi2`` may
+   need to be retuned, and any earlier comparison of values from
+   isolated vs. blended sources was systematically biased.
+
 Multiband PSF kernel image is sampled at a single sky position when possible
 ----------------------------------------------------------------------------
 

@@ -40,7 +40,7 @@ import numpy as np
 from lsst.afw.detection import PeakTable
 from lsst.afw.geom import SpanSet
 from lsst.afw.table import Schema
-from lsst.geom import Point2I
+from lsst.geom import Box2I, Point2I
 from lsst.meas.extensions.scarlet.scarletDeblendTask import (
     ScarletDeblendContext,
     ScarletDeblendTask,
@@ -538,6 +538,80 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                         sclFootprints=[],
                         footprintImage=footprintImage,
                     )
+
+    def test_addDeblendedSource_chi2_masks_to_source_footprint(self):
+        """``_addDeblendedSource`` sums ``chi2`` over only the source's
+        own positive-model pixels before dividing by the source area.
+
+        The ``chi2`` image passed in is the *blend's* chi2, masked at
+        construction by ``blendModel.data > 0`` — the union of every
+        source's positive-model footprint. Within one source's
+        ``scarletSource.bbox`` that mask therefore leaks contributions
+        from neighbors whose models extend into the same bbox.
+        Summing the full bbox and dividing by just this source's
+        positive-pixel count conflates those neighbor residuals into
+        this source's reduced chi2. The correct calculation masks
+        ``chi2`` by ``scarletSource.get_model().data > 0`` before
+        summing so the numerator and denominator are over the same
+        pixel set.
+
+        Builds a synthetic two-band setup with a 4x4 source bbox: the
+        source's model is positive only in the top-left 2x2 quadrant.
+        The chi2 image has a small contribution in that quadrant (the
+        source's own residual) and a much larger contribution in the
+        disjoint bottom-right 2x2 quadrant (a hypothetical neighbor's
+        residual leaking into this bbox). The masked reduced chi2 is
+        1.0; the unmasked formula yields 11.0.
+        """
+        bands = ("g", "r")
+        nBands = len(bands)
+
+        # Source model: positive only in the top-left 2x2 quadrant.
+        modelData = np.zeros((nBands, 4, 4), dtype=np.float32)
+        modelData[:, :2, :2] = 1.0
+        sourceModel = scl.Image(modelData, yx0=(0, 0), bands=bands)
+        component = scl.component.CubeComponent(model=sourceModel, peak=(0, 0))
+        scarletSource = scl.Source([component])
+
+        # chi2: 1.0 per pixel in the source's own quadrant (sum = 8
+        # across both bands), 10.0 per pixel in the disjoint
+        # bottom-right "neighbor" quadrant (sum = 80 across both
+        # bands). area = 2 bands * 4 positive pixels = 8.
+        # Masked reduced chi2 = 8/8 = 1.0; unmasked = 88/8 = 11.0.
+        chi2Data = np.zeros((nBands, 4, 4), dtype=np.float32)
+        chi2Data[:, :2, :2] = 1.0
+        chi2Data[:, 2:, 2:] = 10.0
+        chi2 = scl.Image(chi2Data, yx0=(0, 0), bands=bands)
+
+        schema = afwTable.SourceTable.makeMinimalSchema()
+        task = ScarletDeblendTask(schema=schema)
+
+        parentCatalog = afwTable.SourceCatalog(
+            afwTable.SourceTable.make(task.parentSchema)
+        )
+        blendRecord = parentCatalog.addNew()
+        footprint = afwDet.Footprint(
+            SpanSet(Box2I(Point2I(0, 0), Point2I(3, 3))),
+            PeakTable.makeMinimalSchema(),
+        )
+        peak = footprint.addPeak(0, 0, 1.0)
+        blendRecord.setFootprint(footprint)
+
+        objectCatalog = afwTable.SourceCatalog(
+            afwTable.SourceTable.make(task.objectSchema)
+        )
+
+        task._addDeblendedSource(
+            parentId=0,
+            blendRecord=blendRecord,
+            peak=peak,
+            objectCatalog=objectCatalog,
+            scarletSource=scarletSource,
+            chi2=chi2,
+        )
+
+        src = objectCatalog[0]
+        self.assertAlmostEqual(src.get("deblend_chi2"), 1.0, places=6)
 
     def test_catalog_total_count(self):
         """The deblended catalog has one row per input model."""
