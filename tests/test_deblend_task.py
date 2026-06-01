@@ -268,6 +268,31 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         self.assertEqual(parent.get("deblend_iterations"), config.maxIter)
         self.assertTrue(parent.get("deblend_blendConvergenceFailedFlag"))
 
+    def test_max_iter_zero_skips_fit_cleanly(self):
+        """With ``maxIter=0`` the optimizer never runs, so the parent
+        record's ``deblend_iterations`` must report 0 (not the synthetic
+        2 the old code produced by stuffing two equal entries into
+        ``blend.loss`` to keep downstream consumers indexable).
+
+        Also pins ``deblend_blendConvergenceFailedFlag`` False: a blend
+        that was never fit hasn't failed convergence, and
+        ``_checkBlendConvergence`` must handle the empty-loss case
+        without crashing. Regression test for finding DB-1 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        config = ScarletDeblendTask.ConfigClass()
+        config.maxIter = 0
+        config.catchFailures = False
+
+        bundle = self._deblend(SCENES["three_source_blend"], config=config)
+        parents = bundle.result.objectParents
+        parents = parents[parents["parent"] == 0]
+        self.assertEqual(len(parents), 1)
+        parent = parents[0]
+
+        self.assertEqual(parent.get("deblend_iterations"), 0)
+        self.assertFalse(parent.get("deblend_blendConvergenceFailedFlag"))
+
     def test_detected_peak_skips_pseudo_peaks(self):
         """Each deblended source's ``detectedPeak`` is the real peak at
         its own center, even when a pseudo peak precedes it in the

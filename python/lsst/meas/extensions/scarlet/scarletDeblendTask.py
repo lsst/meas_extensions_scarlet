@@ -98,6 +98,12 @@ class DeblenderSkippedError(Exception):
 
 def _checkBlendConvergence(blend: scl.Blend, f_rel: float) -> bool:
     """Check whether or not a blend has converged"""
+    if len(blend.loss) < 2:
+        # No fitting ran (or only one iteration): there is no delta
+        # to test against, so report vacuous convergence. The
+        # ``convergenceFailed`` flag is reserved for a fitted blend
+        # that did not converge.
+        return True
     deltaLoss = np.abs(blend.loss[-2] - blend.loss[-1])
     convergence = f_rel * np.abs(blend.loss[-1])
     return deltaLoss < convergence
@@ -423,9 +429,6 @@ def deblend(
             min_iter=config.minIter,
             resize=config.resizeFrequency,
         )
-    else:
-        loss = (blend.observation.images - blend.get_model(convolve=True)).data
-        blend.loss = [np.sum(loss), np.sum(loss)]
 
     # Attach the peak to all of the initialized sources
     for k, center in enumerate(peaks):
@@ -1485,7 +1488,7 @@ class ScarletDeblendTask(pipeBase.Task):
             nComponents=nComponents,
             runtime=runtime,
             iterations=len(blend.loss),
-            logL=blend.loss[-1],
+            logL=blend.log_likelihood,
             chi2=np.sum(chi2.data)/np.sum(blendFootprintImage),
             spectrumInit=spectrumInit,
             convergenceFailed=convergenceFailed,
