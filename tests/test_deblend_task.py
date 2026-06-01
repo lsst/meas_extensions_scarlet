@@ -28,6 +28,7 @@ against targeted single-blend scenes.
 """
 
 import unittest
+from unittest.mock import patch
 
 import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
@@ -267,6 +268,39 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         # The blend stopped at the iteration cap, i.e. it did not converge.
         self.assertEqual(parent.get("deblend_iterations"), config.maxIter)
         self.assertTrue(parent.get("deblend_blendConvergenceFailedFlag"))
+
+    def test_sub_blend_progress_log_distinguishes_inner_loop(self):
+        """The periodic logger inside the sub-blend loop names the
+        sub-blend, not the outer parent count.
+
+        Under the bug the inner-loop ``periodicLog.log`` reused the
+        outer loop's format string, so long sub-blend runs of a
+        single top-level parent kept emitting "Deblended N out of M
+        parents" with stale ``N`` — making the task look stalled.
+        Patches ``PeriodicLogger.LOGGING_INTERVAL`` so every ``log()``
+        call fires regardless of wall time, then asserts at least one
+        captured INFO message identifies a sub-blend. Regression test
+        for finding DB-2 of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        # Perturb a config field that no other test touches so the
+        # ``pipeline.deblend`` memoization cache misses and the task
+        # actually runs inside the ``assertLogs`` block.
+        config = ScarletDeblendTask.ConfigClass()
+        config.minIter = 1
+        config.catchFailures = False
+
+        # Negative interval guarantees ``time.time() > next_log_time``
+        # on every call.
+        with patch(
+            "lsst.utils.logging.PeriodicLogger.LOGGING_INTERVAL", -1.0
+        ):
+            with self.assertLogs(level="INFO") as logs:
+                self._deblend(SCENES["multi-blend"], config=config)
+
+        self.assertTrue(
+            any("sub-blend" in record for record in logs.output),
+            f"No sub-blend progress message in: {logs.output}",
+        )
 
     def test_max_iter_zero_skips_fit_cleanly(self):
         """With ``maxIter=0`` the optimizer never runs, so the parent

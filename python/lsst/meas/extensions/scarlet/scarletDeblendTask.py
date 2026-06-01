@@ -1261,12 +1261,13 @@ class ScarletDeblendTask(pipeBase.Task):
 
             sourceRecords = []
             parentBlends = {}
-            for blendRecord in blendRecords:
+            for subBlendIndex, blendRecord in enumerate(blendRecords):
                 # Log a message if it has been a while since the last log.
                 periodicLog.log(
-                    "Deblended %d out of %d parents",
-                    parentIndex,
-                    nParents,
+                    "Deblending sub-blend %d/%d of parent %d",
+                    subBlendIndex + 1,
+                    len(blendRecords),
+                    parentRecord.getId(),
                 )
                 try:
                     blend, blendModel, chi2 = self._deblendParent(blendRecord)
