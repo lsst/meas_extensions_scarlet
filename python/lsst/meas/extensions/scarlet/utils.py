@@ -498,7 +498,11 @@ def buildObservation(
 
     # Use the inverse variance as the weights
     if useWeights:
-        weights = 1 / mExposure.variance.array
+        # Zero/NaN variance produces inf/NaN weights here; the next line
+        # zeros them deliberately. Silence the spurious RuntimeWarnings
+        # the division would otherwise emit on those pixels.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weights = 1 / mExposure.variance.array
         weights[~np.isfinite(weights)] = 0
     else:
         weights = np.ones_like(mExposure.image.array)

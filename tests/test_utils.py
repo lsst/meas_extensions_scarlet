@@ -22,6 +22,7 @@
 """Tests for ``lsst.meas.extensions.scarlet.utils``."""
 
 import unittest
+import warnings
 
 import lsst.afw.image as afwImage
 import lsst.meas.extensions.scarlet as mes
@@ -285,6 +286,47 @@ class TestUtils(lsst.utils.tests.TestCase):
         expected_r = r_inner.computeKernelImage(Point2D(25, 25)).array
         self.assertAlmostEqual(arr[0].max(), expected_g.max(), places=4)
         self.assertAlmostEqual(arr[1].max(), expected_r.max(), places=4)
+
+    def test_buildObservation_no_divide_warning_on_zero_variance(self):
+        """``buildObservation`` does not emit numpy ``RuntimeWarning``
+        when the input variance plane contains zeros.
+
+        Per finding U-5 of the ``audits/audit-2026-05-05.md`` audit,
+        the inverse-variance weights were computed as
+        ``weights = 1 / mExposure.variance.array`` without an
+        ``errstate`` guard. Any zero pixel in the variance plane
+        produced ``RuntimeWarning: divide by zero encountered in
+        divide``, and any non-finite pixel produced
+        ``RuntimeWarning: invalid value encountered in divide``. The
+        warnings are spurious -- the immediately following
+        ``weights[~np.isfinite(weights)] = 0`` line replaces every
+        offending value with the intended sentinel -- but they pollute
+        production logs and look like real numerical problems. The
+        fix suppresses the spurious warnings via ``np.errstate``.
+
+        The fixture coadd's variance plane defaults to all zeros,
+        which under the bug fires the warning on every pixel; the
+        modelPsf and a valid per-band PSF satisfy
+        ``buildObservation``'s preconditions so the function runs all
+        the way through and the test exercises both the divide site
+        and the downstream weight-zeroing.
+        """
+        modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        bands = tuple("gri")
+        psfs, _ = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            observation = mes.utils.buildObservation(
+                modelPsf, Point2I(25, 25), mCoadd
+            )
+
+        # Sanity check that the call actually went through the
+        # divide-by-zero path: every weight should have been zeroed.
+        np.testing.assert_array_equal(
+            observation.weights, np.zeros_like(observation.weights)
+        )
 
     def test_buildObservationBadPsfs(self):
         # Test that creating an observation with all bad PSFs
