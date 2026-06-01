@@ -1417,10 +1417,6 @@ class ScarletDeblendTask(pipeBase.Task):
         bbox = footprint.getBBox()
         peaks = footprint.getPeaks()
 
-        # Since we use the first peak for the parent object, we should
-        # propagate its flags to the parent source.
-        blendRecord.assign(peaks[0], self.parentPeakSchemaMapper)
-
         # Skip the source if it meets the skipping criteria
         isSkipped = self._checkSkipped(blendRecord, self.mExposure)
         if isSkipped is not None:
@@ -1899,6 +1895,10 @@ class ScarletDeblendTask(pipeBase.Task):
         blendRecord = parentCatalog.addNew()
         blendRecord.setParent(parentId)
         blendRecord.setFootprint(footprint)
+        # Propagate the first peak's schema fields onto the
+        # sub-blend record, mirroring what ``_initializeCatalogs``
+        # does for top-level parents.
+        blendRecord.assign(footprint.peaks[0], self.parentPeakSchemaMapper)
 
     def _addDeblendedSource(
         self,
