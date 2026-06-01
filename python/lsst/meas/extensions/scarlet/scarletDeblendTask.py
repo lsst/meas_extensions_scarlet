@@ -65,19 +65,14 @@ class DeblenderError(Exception):
     on the parent source.
     """
 
-    def __init__(
-        self,
-        message: str,
-        parent: afwTable.source.SourceRecord,
-        errorName: str,
-    ):
+    def __init__(self, message: str, parentId: int, errorName: str):
         super().__init__(message)
         self.message = message
-        self.parent = parent
+        self.parentId = parentId
         self.errorName = errorName
 
     def __str__(self) -> str:
-        return f"DeblenderError: {self.args[0]} (parent: {self.parent})"
+        return f"DeblenderError: {self.args[0]} (parentId: {self.parentId})"
 
 
 class DeblenderSkippedError(Exception):
@@ -86,14 +81,14 @@ class DeblenderSkippedError(Exception):
     This is used to catch cases where the deblender does not process
     a deconvolved parent because it is skipped for some reason.
     """
-    def __init__(self, message: str, parent: afwTable.source.SourceRecord, skipKey):
+    def __init__(self, message: str, parentId: int, skipKey):
         super().__init__(message)
         self.message = message
-        self.parent = parent
+        self.parentId = parentId
         self.skipKey = skipKey
 
     def __str__(self) -> str:
-        return f"DeblenderSkippedError: {self.args[0]} (parent: {self.parent}, skipKey: {self.skipKey})"
+        return f"DeblenderSkippedError: {self.args[0]} (parentId: {self.parentId}, skipKey: {self.skipKey})"
 
 
 def _checkBlendConvergence(blend: scl.Blend, f_rel: float) -> bool:
