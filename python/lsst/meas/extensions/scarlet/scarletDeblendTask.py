@@ -1545,7 +1545,12 @@ class ScarletDeblendTask(pipeBase.Task):
             `self.config.maskLimits`.
         """
         bbox = footprint.getBBox()
-        mask = np.bitwise_or.reduce(mExposure.mask[:, bbox].array, axis=0)
+        # AND across bands: a pixel counts as masked only when the bit
+        # is set in every band. Matches ``buildObservation``'s per-band
+        # weight zeroing — a pixel is truly unconstrained only when
+        # masked in all bands; otherwise the unmasked bands still
+        # contribute.
+        mask = np.bitwise_and.reduce(mExposure.mask[:, bbox].array, axis=0)
         size = float(footprint.getArea())
         for maskName, limit in self.config.maskLimits.items():
             maskVal = mExposure.mask.getPlaneBitMask(maskName)

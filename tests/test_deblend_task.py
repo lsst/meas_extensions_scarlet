@@ -39,6 +39,7 @@ import lsst.utils.tests
 import numpy as np
 from lsst.afw.detection import PeakTable
 from lsst.afw.geom import SpanSet
+from lsst.afw.table import Schema
 from lsst.geom import Point2I
 from lsst.meas.extensions.scarlet.scarletDeblendTask import (
     ScarletDeblendContext,
@@ -301,6 +302,57 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             any("sub-blend" in record for record in logs.output),
             f"No sub-blend progress message in: {logs.output}",
         )
+
+    def test_is_masked_combines_bands_with_and(self):
+        """``_isMasked`` counts a pixel toward the ``maskLimits``
+        fraction only when *every* band has that mask bit set.
+
+        This mirrors ``buildObservation``'s per-band weight zeroing
+        — a pixel only becomes truly unconstrained when masked in
+        all bands; if even one band leaves it unmasked, that band's
+        data still constrains it. Sets ``INTRP`` in band 0 only
+        across a multi-peak parent's footprint and asserts the
+        parent is not flagged masked. Under the bug (OR across
+        bands) every footprint pixel had ``INTRP`` set in *some*
+        band and the parent was skipped. A second pass sets
+        ``INTRP`` in every band and asserts the parent is then
+        flagged, confirming AND still triggers when the bit is
+        universal. Regression test for finding DB-3 of the
+        ``audits/audit-2026-05-05.md`` audit.
+        """
+        bundle = self._deblend(SCENES["multi-blend"])
+        parents = bundle.result.objectParents
+        parents = parents[parents["parent"] == 0]
+        parent = next(p for p in parents if p["deblend_nPeaks"] > 1)
+        footprint = parent.getFootprint()
+
+        # Deep-copy the per-band exposures so the cached bundle's
+        # mask plane isn't corrupted for downstream tests.
+        bands = bundle.image.mCoadd.bands
+        mExposure = afwImage.MultibandExposure.fromExposures(
+            bands, [exp.clone() for exp in bundle.image.mCoadd]
+        )
+
+        config = ScarletDeblendTask.ConfigClass()
+        config.maskLimits = {"INTRP": 0.05}
+        task = ScarletDeblendTask(
+            schema=Schema(bundle.deconvolved.detection.schema),
+            config=config,
+        )
+
+        intrp = mExposure.mask.getPlaneBitMask("INTRP")
+
+        # Sanity: a clean mask plane is not flagged.
+        self.assertFalse(task._isMasked(footprint, mExposure))
+
+        # INTRP in band 0 only — not flagged under AND, was under OR.
+        mExposure.mask.array[0] |= intrp
+        self.assertFalse(task._isMasked(footprint, mExposure))
+
+        # INTRP in every band — flagged under AND as well.
+        for b in range(len(bands)):
+            mExposure.mask.array[b] |= intrp
+        self.assertTrue(task._isMasked(footprint, mExposure))
 
     def test_max_iter_zero_skips_fit_cleanly(self):
         """With ``maxIter=0`` the optimizer never runs, so the parent
