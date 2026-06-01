@@ -25,6 +25,7 @@ import logging
 from dataclasses import dataclass
 from functools import partial
 import time
+import traceback
 from typing import cast
 
 import lsst.afw.detection as afwDet
@@ -1488,7 +1489,6 @@ class ScarletDeblendTask(pipeBase.Task):
             if self.config.catchFailures:
                 # Make it easy to find UnknownErrors in the log file
                 self.log.warning("UnknownError")
-                import traceback
                 traceback.print_exc()
             else:
                 raise
