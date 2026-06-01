@@ -196,21 +196,28 @@ class IsolatedSource(scl.source.SourceBase):
         return source
 
     def __getitem__(self, indices: Any) -> IsolatedSource:
-        """Get a sub-source corresponding to the given indices.
+        """Get a sub-source by slicing along the band axis.
+
+        Delegates to ``self.component[indices]``; only band labels
+        are accepted as the selector. Spatial slices and ``Box``
+        instances raise ``IndexError`` because they don't appear in
+        ``self.bands``.
 
         Parameters
         ----------
         indices : Any
-            The indices to use to slice the source model.
+            A single band label, a slice of band labels (e.g.
+            ``"g":"r"``), or a sequence of band labels.
 
         Returns
         -------
         source :
-            A new IsolatedSource that is a sub-source of this one.
+            A new IsolatedSource restricted to the selected bands.
+
         Raises
         ------
         IndexError :
-            If the index includes a `Box` or spatial indices.
+            If ``indices`` is not a valid band selector.
         """
         component = self.component[indices]
         return IsolatedSource(
