@@ -37,6 +37,14 @@ from lsst.scarlet.lite.detect_pybind11 import Peak
 from .utils import bboxToScarletBox, nonzeroBandSupport
 
 
+__all__ = [
+    "afwFootprintToScarlet",
+    "scarletFootprintToAfw",
+    "scarletModelToHeavy",
+    "scarletFootprintsToPeakCatalog",
+]
+
+
 def afwFootprintToScarlet(footprint: afwFootprint, copyPeaks: bool = True):
     """Convert an afw Footprint into a scarlet lite Footprint.
 

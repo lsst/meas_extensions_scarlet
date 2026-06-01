@@ -30,6 +30,8 @@ import lsst.scarlet.lite as scl
 
 from .source_data import IsolatedSourceData
 
+__all__ = ["LsstScarletModelData"]
+
 CURRENT_SCHEMA = "1.0.1"
 SCARLET_LITE_SCHEMA = "1.0.0"
 MODEL_TYPE = "lsst"

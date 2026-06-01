@@ -19,6 +19,19 @@ from lsst.pipe.base import NoWorkFound
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "defaultBadPixelMasks",
+    "scarletBoxToBBox",
+    "bboxToScarletBox",
+    "nonzeroBandSupport",
+    "multiband_convolve",
+    "computePsfKernelImage",
+    "computeNearestPsf",
+    "computeNearestPsfMultiBand",
+    "buildObservation",
+    "calcChi2",
+]
+
 defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
 

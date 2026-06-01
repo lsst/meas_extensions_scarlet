@@ -19,8 +19,26 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from . import io, utils
-from .deconvolveExposureTask import *
-from .metrics import *
-from .scarletDeblendTask import *
-from .version import *
+from . import (
+    deconvolveExposureTask,
+    footprint,
+    io,
+    metrics,
+    scarletDeblendTask,
+    source,
+    utils,
+    version,
+)
+from .deconvolveExposureTask import *  # noqa: F401, F403
+from .metrics import *  # noqa: F401, F403
+from .scarletDeblendTask import *  # noqa: F401, F403
+from .source import *  # noqa: F401, F403
+from .version import *  # noqa: F401, F403
+
+__all__ = [
+    *deconvolveExposureTask.__all__,
+    *metrics.__all__,
+    *scarletDeblendTask.__all__,
+    *source.__all__,
+    *version.__all__,
+]
