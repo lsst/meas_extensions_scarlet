@@ -94,9 +94,16 @@ class TestUtils(lsst.utils.tests.TestCase):
         # Test that computing the PSF works after finding a new location.
         # Since the PSF above is *only* defined at (1, 1) it will fail to
         # compute a PSF image at (4, 5) but should fall back to (1, 1).
+        # Per finding U-6 of the ``audits/audit-2026-05-05.md`` audit,
+        # the fallback path previously returned a ``Point2I`` while the
+        # direct-success path returned a ``Point2D``; both now uniformly
+        # return ``Point2D`` and ``Point2D != Point2I`` even at the same
+        # coordinates, so the type check below is also a regression guard
+        # on the unified return type.
         derivedPsf, center, dist = mes.utils.computeNearestPsf(coadd, catalog, None, Point2D(4, 5))
         np.testing.assert_array_equal(derivedPsf.array, psfImage)
-        self.assertEqual(center, Point2I(1, 1))
+        self.assertIsInstance(center, Point2D)
+        self.assertEqual(center, Point2D(1, 1))
         self.assertEqual(dist, 5)
 
     def test_computeNearestPsfBad(self):

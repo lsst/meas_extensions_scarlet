@@ -157,7 +157,7 @@ def computeNearestPsf(
     catalog: SourceCatalog,
     band: str | None = None,
     psfCenter: Point2D | None = None,
-) -> tuple[np.ndarray, Point2I, float]:
+) -> tuple[np.ndarray, Point2D, float] | tuple[None, None, None]:
     """Create a PSF image at the nearest valid location
 
     Sometimes not all locations in an image can generate a PSF image so the
@@ -233,7 +233,7 @@ def computeNearestPsf(
             pass
     if psf is None:
         return None, None, None
-    newLocation = Point2I(x[ref_index], y[ref_index])
+    newLocation = Point2D(x[ref_index], y[ref_index])
     diff = np.sqrt(diff_x[ref_index]**2 + diff_y[ref_index]**2)
 
     return psf, newLocation, diff
