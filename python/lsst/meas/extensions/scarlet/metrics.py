@@ -89,10 +89,20 @@ def setDeblenderMetrics(blend: Blend):
         The blend containing the sources to measure.
     """
     # Store the full model of the scene for comparison
-    blendModel = blend.get_model().data
-    for k, src in enumerate(blend.sources):
-        # Extract the source model in the full bounding box
-        model = src.get_model().project(bbox=blend.bbox).data
+    blendModelImage = blend.get_model()
+    for src in blend.sources:
+        # Operate over the source's own bbox (intersected with the
+        # blend's bbox so sources that grew beyond the blend during
+        # fitting are clipped). The metrics are sums, maxes, and
+        # pointwise products masked by the source's support; pixels
+        # outside the source's bbox would contribute zero to every
+        # one of them, so restricting the math here avoids the
+        # full-blend-sized per-source allocation done by the previous
+        # ``project(bbox=blend.bbox)`` call.
+        srcModelImage = src.get_model()
+        bbox = srcModelImage.bbox & blendModelImage.bbox
+        model = srcModelImage[:, bbox].data
+        blendModel = blendModelImage[:, bbox].data
         # The footprint is the 2D array of non-zero pixels in each band
         footprint = nonzeroBandSupport(model)
         # Calculate the metrics.
