@@ -182,6 +182,33 @@ class TestSetDeblenderMetrics(lsst.utils.tests.TestCase):
                 atol=1e-6,
             )
 
+    def test_setDeblenderMetrics_zero_model_band_blendedness_is_zero(self):
+        """A source whose model is identically zero in every band
+        receives ``blendedness == 0``, not ``NaN``.
+
+        Per finding U-3 of the ``audits/audit-2026-05-05.md`` audit,
+        the blendedness formula ``1 - sum(m²) / sum(M·m)`` was
+        computed unguarded. When the source's model is zero
+        everywhere, both numerator and denominator vanish and the
+        ratio is ``NaN``, which then propagated into the
+        ``deblend_blendedness`` schema field. The fix mirrors the
+        existing ``fluxOverlapFraction`` guard pattern and defaults
+        to ``0`` when the source has no flux.
+
+        The single-source blend below uses an all-zero morph so
+        ``model * model`` and ``blendModel * model`` are both
+        identically zero per band; the unguarded code returns ``NaN``
+        per band, the guarded code returns ``0``.
+        """
+        morph = np.zeros((5, 5), dtype=np.float32)
+        blend = _build_blend([(morph, (5, 5), (7, 7), [1.0, 1.0, 1.0])])
+
+        mes.metrics.setDeblenderMetrics(blend)
+
+        zeros = np.zeros(len(BANDS), dtype=np.float64)
+        np.testing.assert_array_equal(
+            blend.sources[0].metrics.blendedness, zeros
+        )
 
     def test_setDeblenderMetrics_counts_negative_pixels_as_support(self):
         """A source with a negative-only pixel still sees neighbor

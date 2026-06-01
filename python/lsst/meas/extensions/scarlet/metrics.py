@@ -104,9 +104,10 @@ def setDeblenderMetrics(blend: Blend):
         fluxOverlapFraction = np.zeros((len(model),), dtype=float)
         isFinite = fluxModel > 0
         fluxOverlapFraction[isFinite] = fluxOverlap[isFinite] / fluxModel[isFinite]
-        blendedness = 1 - np.sum(model * model, axis=(1, 2)) / np.sum(
-            blendModel * model, axis=(1, 2)
-        )
+        blendedness = np.zeros((len(model),), dtype=float)
+        sqModel = np.sum(model * model, axis=(1, 2))
+        crossModel = np.sum(blendModel * model, axis=(1, 2))
+        blendedness[isFinite] = 1 - sqModel[isFinite] / crossModel[isFinite]
         src.metrics = DeblenderMetrics(
             maxOverlap, fluxOverlap, fluxOverlapFraction, blendedness
         )
