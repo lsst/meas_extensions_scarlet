@@ -859,7 +859,20 @@ class ScarletDeblendTask(pipeBase.Task):
         )
         # Skipped flags
         schema.addField(
-            "deblend_skipped", type="Flag", doc="Deblender skipped this source"
+            "deblend_skipped",
+            type="Flag",
+            doc=(
+                "The deblender skipped this source. On a deconvolved "
+                "sub-blend the flag means that sub-blend itself was "
+                "skipped. On a top-level parent the flag is the union "
+                "over its deconvolved sub-blends: it fires whenever at "
+                "least one sub-blend was skipped, even when the others "
+                "succeeded. The per-reason ``deblend_skipped_*`` "
+                "sub-flags follow the same union convention on a "
+                "top-level parent, so a parent record can carry "
+                "multiple sub-flags when different sub-blends were "
+                "skipped for different reasons."
+            ),
         )
         schema.addField(
             "deblend_skipped_isolatedParent",
