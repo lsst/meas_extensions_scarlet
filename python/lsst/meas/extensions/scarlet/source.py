@@ -137,7 +137,7 @@ class IsolatedSource(scl.source.SourceBase):
         model :
             The 3D (band, y, x) model of the source.
         """
-        return self.component._model
+        return self.component.get_model()
 
     def to_data(self) -> IsolatedSourceData:
         """Convert to a ScarletSourceData representation.
@@ -149,7 +149,7 @@ class IsolatedSource(scl.source.SourceBase):
         """
         from .io import IsolatedSourceData
 
-        span_array = nonzeroBandSupport(self.component._model.data)
+        span_array = nonzeroBandSupport(self.component.get_model().data)
         return IsolatedSourceData(
             span_array=span_array,
             origin=self.bbox.origin,
