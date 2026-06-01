@@ -50,7 +50,7 @@ class IsolatedSource(scl.source.SourceBase):
         ----------
         model :
             The 3D (band, y, x) model of the source.
-        center :
+        peak :
             The (y, x) coordinates of the peak pixel within the model.
         metadata :
             Optional metadata to store with the source.
