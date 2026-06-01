@@ -813,6 +813,28 @@ class ScarletDeblendTask(pipeBase.Task):
                 or (name := item.field.getName()).startswith("merge_peak"))
         ]
 
+        # Any pseudoColumn must be present on the deblender schema —
+        # the science pipeline always adds these upstream (e.g.
+        # ``SkyObjectsTask`` for ``sky_source``, the coadd merge step
+        # for ``merge_peak_*``). A missing column means a typo in
+        # config or a missing upstream task; warn so the user knows
+        # the corresponding filter is silently inactive.
+        schemaNames = set(self.objectSchema.getNames())
+        unknownPseudoColumns = [
+            col for col in self.config.pseudoColumns
+            if col not in schemaNames
+        ]
+        if unknownPseudoColumns:
+            self.log.warning(
+                "pseudoColumns %s not found on the deblender schema. "
+                "Pseudo-source filtering for these columns will be "
+                "silently skipped at runtime — check for config typos "
+                "or missing upstream tasks (e.g. SkyObjectsTask "
+                "provides 'sky_source', the coadd merge provides "
+                "'merge_peak_sky').",
+                unknownPseudoColumns,
+            )
+
     def _addParentSchemaKeys(self, schema: afwTable.Schema):
         """Add parent specific keys to the schema"""
         # Parent (blend) fields

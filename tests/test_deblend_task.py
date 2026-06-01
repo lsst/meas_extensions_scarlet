@@ -354,6 +354,35 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             mExposure.mask.array[b] |= intrp
         self.assertTrue(task._isMasked(footprint, mExposure))
 
+    def test_init_warns_on_unknown_pseudo_columns(self):
+        """``ScarletDeblendTask.__init__`` warns when a configured
+        ``pseudoColumn`` is not present on the deblender schema.
+
+        ``isPseudoSource`` deliberately swallows ``KeyError`` so the
+        same ``pseudoColumns`` list can be evaluated against
+        ``PeakRecord`` and ``SourceRecord``. The schema-presence check
+        runs once at task construction: any pseudoColumn missing from
+        the input source schema (and from ``peakSchema`` if provided)
+        is reported as a likely config typo or missing-upstream-task
+        signal, since the science pipeline always adds the relevant
+        columns before the deblender runs. Regression test for
+        finding DB-17 of the ``audits/audit-2026-05-05.md`` audit.
+        """
+        schema = afwTable.SourceTable.makeMinimalSchema()
+        config = ScarletDeblendTask.ConfigClass()
+        config.pseudoColumns = ["definitely_not_a_real_column"]
+
+        with self.assertLogs(level="WARNING") as logs:
+            ScarletDeblendTask(schema=schema, config=config)
+
+        self.assertTrue(
+            any(
+                "definitely_not_a_real_column" in record
+                for record in logs.output
+            ),
+            f"No unknown-pseudoColumn warning in: {logs.output}",
+        )
+
     def test_max_iter_zero_skips_fit_cleanly(self):
         """With ``maxIter=0`` the optimizer never runs, so the parent
         record's ``deblend_iterations`` must report 0 (not the synthetic
