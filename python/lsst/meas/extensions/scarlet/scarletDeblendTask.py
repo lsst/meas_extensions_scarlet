@@ -1327,6 +1327,12 @@ class ScarletDeblendTask(pipeBase.Task):
             # Calculate the reduced chi2 for the PSF parent
             parentFootprintImage = parentModel.data > 0
             chi2 = utils.calcChi2(parentModel, context.observation, parentFootprintImage)
+            # Defensive: a detected parent's aggregate model has
+            # positive flux somewhere, so the area should never be 0.
+            parentArea = np.sum(parentFootprintImage)
+            parentReducedChi2 = (
+                np.sum(chi2.data) / parentArea if parentArea > 0 else np.nan
+            )
 
             # Update the parent record with the deblending results
             self._updateParentRecord(
@@ -1337,7 +1343,7 @@ class ScarletDeblendTask(pipeBase.Task):
                 runtime=np.sum([child["deblend_runtime"] for child in blendRecords]),
                 iterations=np.sum([child["deblend_iterations"] for child in blendRecords]),
                 logL=np.nan,
-                chi2=np.sum(chi2.data)/np.sum(parentFootprintImage),
+                chi2=parentReducedChi2,
                 spectrumInit=np.all([
                     child["deblend_spectrumInitFlag"]
                     for child in blendRecords
@@ -1480,6 +1486,12 @@ class ScarletDeblendTask(pipeBase.Task):
         blendModel = blend.get_model(convolve=False)
         blendFootprintImage = blendModel.data > 0
         chi2 = utils.calcChi2(blendModel, self.context.observation, blendFootprintImage)
+        # Defensive: same unreachable-in-practice guard as the
+        # aggregate-parent branch above.
+        blendArea = np.sum(blendFootprintImage)
+        blendReducedChi2 = (
+            np.sum(chi2.data) / blendArea if blendArea > 0 else np.nan
+        )
 
         # Update the blend record with the deblending results
         self._updateParentRecord(
@@ -1490,7 +1502,7 @@ class ScarletDeblendTask(pipeBase.Task):
             runtime=runtime,
             iterations=len(blend.loss),
             logL=blend.log_likelihood,
-            chi2=np.sum(chi2.data)/np.sum(blendFootprintImage),
+            chi2=blendReducedChi2,
             spectrumInit=spectrumInit,
             convergenceFailed=convergenceFailed,
         )
@@ -1946,9 +1958,14 @@ class ScarletDeblendTask(pipeBase.Task):
         # Store the number of components for the source
         src.set("deblend_nComponents", len(scarletSource.components))
 
-        # Calculate the reduced chi2 for the source
+        # Calculate the reduced chi2 for the source.
+        # Defensive: a detected peak's source model has positive flux,
+        # so ``area`` should never be 0.
         area = np.sum(scarletSource.get_model().data > 0)
-        src.set("deblend_chi2", np.sum(chi2[:, scarletSource.bbox].data/area))
+        sourceReducedChi2 = (
+            np.sum(chi2[:, scarletSource.bbox].data / area) if area > 0 else np.nan
+        )
+        src.set("deblend_chi2", sourceReducedChi2)
 
         return src
 
