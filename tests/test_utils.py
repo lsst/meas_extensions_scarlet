@@ -294,6 +294,39 @@ class TestUtils(lsst.utils.tests.TestCase):
         self.assertAlmostEqual(arr[0].max(), expected_g.max(), places=4)
         self.assertAlmostEqual(arr[1].max(), expected_r.max(), places=4)
 
+    def test_computePsfKernelImage_catalog_emits_future_warning(self):
+        """Passing the deprecated ``catalog`` argument to
+        ``computePsfKernelImage`` emits a ``FutureWarning``.
+
+        Per finding U-7 of the ``audits/audit-2026-05-05.md`` audit,
+        ``catalog`` is a dead argument -- the body never references it.
+        Rather than remove the parameter (which would silently break
+        any external caller passing it positionally or by keyword) the
+        fix deprecates it and steers callers toward
+        ``computeNearestPsfMultiBand`` for nearest-PSF fallback. The
+        warning lets users find and remove the dead-arg call site
+        before the parameter is dropped after v31.
+
+        The test pins the warning channel (``FutureWarning``) and
+        confirms the function still returns a valid result -- the
+        ``catalog`` argument is ignored, so the output is identical to
+        the ``catalog=None`` path.
+        """
+        bands = tuple("gri")
+        psfs, psfImage = self._generateMultibandPsf([1.0, 1.2, 1.4])
+        mCoadd = self._generateMultibandCoadd(psfs, bands)
+        catalog = self._generateCatalog(bands)
+
+        with self.assertWarns(FutureWarning):
+            psfArray, newCoadd = mes.utils.computePsfKernelImage(
+                mCoadd, Point2D(25, 25), catalog=catalog,
+            )
+
+        # The catalog argument is ignored, so the output matches the
+        # catalog=None / catalog-absent path exactly.
+        np.testing.assert_array_equal(psfArray, psfImage)
+        self.assertTupleEqual(newCoadd.bands, bands)
+
     def test_buildObservation_no_divide_warning_on_zero_variance(self):
         """``buildObservation`` does not emit numpy ``RuntimeWarning``
         when the input variance plane contains zeros.

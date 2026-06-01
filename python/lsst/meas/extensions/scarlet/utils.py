@@ -1,4 +1,5 @@
 import logging
+import warnings
 
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
@@ -123,6 +124,11 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
     ----------
     psfCenter : `tuple` or `Point2I` or `Point2D`
         The location `(x, y)` used as the center of the PSF.
+    catalog :
+        Deprecated and ignored. Retained for signature stability; will
+        be removed after v31. Passing a non-``None`` value emits a
+        ``FutureWarning``. For nearest-PSF fallback at a different
+        location, call ``computeNearestPsfMultiBand`` instead.
 
     Returns
     -------
@@ -132,6 +138,13 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
         The exposure, updated to only use bands that
         successfully generated a PSF image.
     """
+    if catalog is not None:
+        warnings.warn(
+            "The `catalog` parameter to `computePsfKernelImage` is "
+            "deprecated and ignored; it will be removed after v31. "
+            "For nearest-PSF fallback, use `computeNearestPsfMultiBand`.",
+            FutureWarning, stacklevel=2,
+        )
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
 
