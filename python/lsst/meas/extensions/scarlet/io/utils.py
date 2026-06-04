@@ -54,6 +54,7 @@ from lsst.scarlet.lite import (
 from ..metrics import setDeblenderMetrics
 from .. import utils
 from ..footprint import scarletModelToHeavy
+from .hierarchical_blend_data import LsstHierarchicalBlendData
 from .model_data import LsstScarletModelData
 
 logger = logging.getLogger(__name__)
@@ -71,9 +72,8 @@ __all__ = [
 
 # Placeholder band label used by the deprecated
 # `monochromaticDataToScarlet` flow. New code uses the real band name
-# from `modelData.metadata["bands"]`. Kept under a private name and
-# surfaced under the deprecated public names via the module
-# `__getattr__` below.
+# from `modelData.bands`. Kept under a private name and surfaced under
+# the deprecated public names via the module `__getattr__` below.
 _MONOCHROMATIC_BAND = "dummy"
 _MONOCHROMATIC_BANDS = (_MONOCHROMATIC_BAND,)
 
@@ -83,7 +83,7 @@ def __getattr__(name: str) -> Any:
         warnings.warn(
             f"`{name}` is deprecated and will be removed after v31; "
             "callers should use the real band name from "
-            "`modelData.metadata['bands']` instead.",
+            "`modelData.bands` instead.",
             FutureWarning,
             stacklevel=2,
         )
@@ -207,22 +207,31 @@ def updateCatalogFootprints(
         # to do in this function. This is rare but it does occasionally
         # happen in fields that only have u-band images.
         return
-    if modelData.metadata is None:
-        raise ValueError("Scarlet model data does not contain metadata")
-    bands = modelData.metadata["bands"]
+    if modelData.bands is None or modelData.model_psf is None or modelData.psf is None:
+        raise ValueError(
+            "Scarlet model data is missing the `bands`, `model_psf` or `psf` "
+            "needed to update catalog footprints."
+        )
+    bands = modelData.bands
     if band not in bands:
         raise NoWorkFound(f"Band '{band}' not found in scarlet model data")
     bandIndex = bands.index(band)
-    modelPsf = modelData.metadata["model_psf"]
-    observedPsf = modelData.metadata["psf"][bandIndex][None, :, :]
+    modelPsf = modelData.model_psf
+    observedPsf = modelData.psf[bandIndex][None, :, :]
 
     # Flux re-distribution may mix depth=1 blends, so we iterate over the
     # completely flux separated parents to ensure that the full models
     # are used for each source.
     blend_items = list(modelData.blends.items())
     for parentId, blendData in blend_items:
-        spans = blendData.metadata["spans"]
-        bbox = scl.Box(spans.shape, blendData.metadata["origin"])
+        if not isinstance(blendData, LsstHierarchicalBlendData):
+            raise ValueError(
+                "updateCatalogFootprints expected an `LsstHierarchicalBlendData` "
+                f"for parent {parentId}, got {type(blendData).__name__}. Top-level "
+                "blends produced by the deblender are always hierarchical."
+            )
+        spans = blendData.span_array
+        bbox = scl.Box(spans.shape, blendData.origin)
 
         observation = buildMonochromaticObservation(
             modelPsf=modelPsf,
@@ -349,7 +358,7 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 def updateBlendRecords(
     modelData: LsstScarletModelData,
-    blendData: scl.io.ScarletBlendData | scl.io.HierarchicalBlendData,
+    blendData: scl.io.ScarletBlendData | LsstHierarchicalBlendData,
     band: str,
     catalog: SourceCatalog,
     observation: scl.Observation,
@@ -361,10 +370,10 @@ def updateBlendRecords(
     Parameters
     ----------
     modelData :
-        The full persisted scarlet model data. Its top-level
-        ``metadata`` (``model_psf``, ``psf``, ``bands``) is used to
-        reconstruct each child blend at full band-multiplicity before
-        slicing to ``band``.
+        The full persisted scarlet model data. Its ``model_psf``,
+        ``psf`` and ``bands`` attributes are used to reconstruct each
+        child blend at full band-multiplicity before slicing to
+        ``band``.
     blendData :
         Persistable data for a single blend or hierarchical blend.
     band :
@@ -389,14 +398,14 @@ def updateBlendRecords(
     # down to the requested band, and collect the per-band sources into
     # a single Blend tied to the caller's redistribution observation.
     sources = []
-    if isinstance(blendData, scl.io.HierarchicalBlendData):
+    if isinstance(blendData, LsstHierarchicalBlendData):
         for _blendData in blendData.children.values():
             full_blend = cast(
                 scl.io.ScarletBlendData, _blendData
             ).minimal_data_to_blend(
-                model_psf=modelData.metadata["model_psf"][None, :, :],
-                psf=modelData.metadata["psf"],
-                bands=modelData.metadata["bands"],
+                model_psf=modelData.model_psf[None, :, :],
+                psf=modelData.psf,
+                bands=modelData.bands,
             )
             sources.extend(full_blend[band].sources)
 
@@ -733,11 +742,10 @@ def loadBlend(
         the model into an observed seeing.
     modelData:
         The full persisted scarlet model data. When provided, the
-        per-band ``psf`` and 2D ``model_psf`` stored in
-        ``modelData.metadata`` are used to build the observation —
-        these are the same PSFs the deblender saw during fitting and
-        give a more faithful round-trip than re-deriving them from
-        the coadd.
+        per-band ``psf`` and 2D ``model_psf`` carried on ``modelData``
+        are used to build the observation — these are the same PSFs the
+        deblender saw during fitting and give a more faithful round-trip
+        than re-deriving them from the coadd.
     model_psf:
         The 2D model-space PSF (deprecated). Retained for backward
         compatibility with the pre-``modelData`` signature; will be
@@ -762,14 +770,14 @@ def loadBlend(
 
     psfs: np.ndarray
     if modelData is not None:
-        if modelData.metadata is None:
+        if modelData.bands is None or modelData.psf is None or modelData.model_psf is None:
             raise ValueError(
-                "`modelData.metadata` must be populated to use the "
-                "`modelData` branch of `loadBlend`."
+                "`modelData` must carry `bands`, `psf` and `model_psf` to use "
+                "the `modelData` branch of `loadBlend`."
             )
-        bands = tuple(modelData.metadata["bands"])
-        psfs = modelData.metadata["psf"]
-        actual_model_psf = modelData.metadata["model_psf"][None, :, :]
+        bands = tuple(modelData.bands)
+        psfs = modelData.psf
+        actual_model_psf = modelData.model_psf[None, :, :]
     elif model_psf is not None:
         # Legacy path: derive per-band PSFs from the coadd at the
         # blend's stored ``psf_center``. Modern ``ScarletBlendData``
