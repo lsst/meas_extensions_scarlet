@@ -372,7 +372,7 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
 
     def test_loadBlend_modelData_uses_metadata_model_psf(self):
         """``loadBlend(..., modelData=...)`` builds an observation
-        whose ``model_psf`` equals ``modelData.metadata['model_psf']``.
+        whose ``model_psf`` equals ``modelData.model_psf``.
 
         The previous signature derived its PSFs from the coadd at the
         blend's ``psf_center``, which both required attributes
@@ -391,7 +391,7 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
 
         np.testing.assert_array_equal(
             blend.observation.model_psf[0],
-            modelData.metadata["model_psf"],
+            modelData.model_psf,
         )
 
     def test_loadBlend_model_psf_emits_future_warning(self):
@@ -406,7 +406,7 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
         bundle = self._bundle()
         modelData = bundle.result.scarletModelData
         blendData = self._leaf_blend(modelData)
-        model_psf = modelData.metadata["model_psf"]
+        model_psf = modelData.model_psf
 
         with self.assertWarns(FutureWarning):
             try:

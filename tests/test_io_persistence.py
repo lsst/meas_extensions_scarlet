@@ -76,9 +76,9 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             )
         )
         self.modelData = bundle.result.scarletModelData
-        self.bands = self.modelData.metadata["bands"]
-        self.model_psf = self.modelData.metadata["model_psf"][None, :, :]
-        self.psf = self.modelData.metadata["psf"]
+        self.bands = self.modelData.bands
+        self.model_psf = self.modelData.model_psf[None, :, :]
+        self.psf = self.modelData.psf
         repo = self._setup_butler()
         self.butler = makeTestCollection(repo, uniqueId="test_run1")
         self.butler.put(self.modelData, "scarlet_model_data", dataId={})
@@ -95,9 +95,9 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         modelData2 = self.butler.get("scarlet_model_data", dataId={})
 
         np.testing.assert_almost_equal(
-            modelData2.metadata["model_psf"][None, :, :], self.model_psf
+            modelData2.model_psf[None, :, :], self.model_psf
         )
-        np.testing.assert_almost_equal(modelData2.metadata["psf"], self.psf)
+        np.testing.assert_almost_equal(modelData2.psf, self.psf)
         self.assertEqual(len(modelData2.blends), len(self.modelData.blends))
 
         for parentId in self.modelData.blends.keys():
@@ -199,11 +199,10 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         # downstream consumers see the same shape as a modern model.
         # Regression test for finding IO-17 of
         # ``audits/audit-2026-05-05.md``.
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
-        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
-        self.assertNotIn("psfShape", model.metadata)
+        self.assertIsNotNone(model.model_psf)
+        self.assertIsInstance(model.model_psf, np.ndarray)
+        self.assertEqual(model.model_psf.shape, (15, 15))
+        self.assertNotIn("psfShape", model.metadata or {})
 
         test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
         self.assertEqual(len(test.blends), 1)
@@ -255,12 +254,11 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
 
         # Metadata round-trips with the model_psf array reconstructed
         # via ``decode_metadata``'s ``array_keys`` handling.
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
-        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
-        self.assertIn("psf", model.metadata)
-        self.assertIn("bands", model.metadata)
+        self.assertIsNotNone(model.model_psf)
+        self.assertIsInstance(model.model_psf, np.ndarray)
+        self.assertEqual(model.model_psf.shape, (15, 15))
+        self.assertIsNotNone(model.psf)
+        self.assertIsNotNone(model.bands)
 
         # The isolated source survives the full ``IsolatedSourceData``
         # round-trip: shape and integer peak (post-IO-1), and a
@@ -368,11 +366,10 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
 
         model = mes.io.utils.read_scarlet_model(buf)
         self.assertEqual(len(model.blends), len(jm["blends"]))
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
+        self.assertIsNotNone(model.model_psf)
+        self.assertIsInstance(model.model_psf, np.ndarray)
         self.assertEqual(
-            list(model.metadata["model_psf"].shape), model_psf_shape
+            list(model.model_psf.shape), model_psf_shape
         )
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
