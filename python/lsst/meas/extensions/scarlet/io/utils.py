@@ -26,9 +26,11 @@ from io import BytesIO
 import logging
 import json
 from typing import Any, BinaryIO, cast
+import warnings
 import zipfile
 
 import numpy as np
+from deprecated.sphinx import deprecated
 from pydantic_core import from_json
 
 import lsst.scarlet.lite as scl
@@ -67,13 +69,36 @@ __all__ = [
     "loadBlend",
 ]
 
-# The name of the band in an monochome blend.
-# This is used as a placeholder since the band is not used in the
-# monochromatic model.
-monochromaticBand = "dummy"
-monochromaticBands = (monochromaticBand,)
+# Placeholder band label used by the deprecated
+# `monochromaticDataToScarlet` flow. New code uses the real band name
+# from `modelData.metadata["bands"]`. Kept under a private name and
+# surfaced under the deprecated public names via the module
+# `__getattr__` below.
+_MONOCHROMATIC_BAND = "dummy"
+_MONOCHROMATIC_BANDS = (_MONOCHROMATIC_BAND,)
 
 
+def __getattr__(name: str) -> Any:
+    if name in ("monochromaticBand", "monochromaticBands"):
+        warnings.warn(
+            f"`{name}` is deprecated and will be removed after v31; "
+            "callers should use the real band name from "
+            "`modelData.metadata['bands']` instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return _MONOCHROMATIC_BAND if name == "monochromaticBand" else _MONOCHROMATIC_BANDS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+@deprecated(
+    reason=(
+        "Use `ScarletBlendData.minimal_data_to_blend(...)[band]` from "
+        "`lsst.scarlet.lite` instead. Will be removed after v31."
+    ),
+    version="v30.0",
+    category=FutureWarning,
+)
 def monochromaticDataToScarlet(
     blendData: scl.io.ScarletBlendData,
     bandIndex: int,
@@ -98,7 +123,7 @@ def monochromaticDataToScarlet(
     sources = []
     # Use a dummy band, since we are only extracting a monochromatic model
     # that will be turned into a HeavyFootprint.
-    bands = monochromaticBands
+    bands = _MONOCHROMATIC_BANDS
     for sourceId, sourceData in blendData.sources.items():
         components: list[scl.Component] = []
         # There is no need to distinguish factorized components from regular
@@ -175,11 +200,9 @@ def updateCatalogFootprints(
         This should only be true when the input catalog schema already
         contains those columns.
     """
-    # All of the blends should have the same PSF,
-    # so we extract it from the first blend data.
     if len(modelData.blends) == 0:
         if len(modelData.isolated) == 0:
-            return NoWorkFound("Scarlet model data is empty")
+            raise NoWorkFound("Scarlet model data is empty")
         # All of the sources must have been isolated so there is nothing
         # to do in this function. This is rare but it does occasionally
         # happen in fields that only have u-band images.
@@ -187,10 +210,9 @@ def updateCatalogFootprints(
     if modelData.metadata is None:
         raise ValueError("Scarlet model data does not contain metadata")
     bands = modelData.metadata["bands"]
-    try:
-        bandIndex = bands.index(band)
-    except ValueError:
+    if band not in bands:
         raise NoWorkFound(f"Band '{band}' not found in scarlet model data")
+    bandIndex = bands.index(band)
     modelPsf = modelData.metadata["model_psf"]
     observedPsf = modelData.metadata["psf"][bandIndex][None, :, :]
 
@@ -205,14 +227,16 @@ def updateCatalogFootprints(
         observation = buildMonochromaticObservation(
             modelPsf=modelPsf,
             observedPsf=observedPsf,
+            band=band,
             scarletBox=bbox,
             footprint=spans,
             imageForRedistribution=imageForRedistribution,
         )
 
         updateBlendRecords(
+            modelData=modelData,
             blendData=blendData,
-            bandIndex=bandIndex,
+            band=band,
             catalog=catalog,
             observation=observation,
             updateFluxColumns=updateFluxColumns,
@@ -226,6 +250,7 @@ def updateCatalogFootprints(
 def buildMonochromaticObservation(
     modelPsf: np.ndarray,
     observedPsf: np.ndarray,
+    band: str,
     scarletBox: Box,
     footprint: np.ndarray | None,
     imageForRedistribution: MaskedImage | Exposure | None = None,
@@ -238,6 +263,8 @@ def buildMonochromaticObservation(
         The 2D model of the PSF.
     observedPsf :
         The observed PSF model for the catalog.
+    band :
+        Name of the band the observation represents.
     scarletBox :
         The bounding box for the scarlet observation.
     footprint :
@@ -253,6 +280,7 @@ def buildMonochromaticObservation(
         The observation for the entire image
     """
     bbox = utils.scarletBoxToBBox(scarletBox)
+    bands = (band,)
 
     if imageForRedistribution is not None:
         cutout = imageForRedistribution[bbox]
@@ -270,12 +298,12 @@ def buildMonochromaticObservation(
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
             convolution_mode="real",
-            bands=monochromaticBands,
+            bands=bands,
             bbox=scarletBox,
         )
     else:
         observation = scl.Observation.empty(
-            bands=monochromaticBands,
+            bands=bands,
             psfs=observedPsf,
             model_psf=modelPsf[None, :, :],
             bbox=scarletBox,
@@ -285,7 +313,7 @@ def buildMonochromaticObservation(
 
 
 def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.floating:
-    """Calculate the fraction of pixels with no data in a Footprint
+    """Calculate the fraction of pixels with valid data in a Footprint
 
     Parameters
     ----------
@@ -293,10 +321,13 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
         The footprint to check for missing data.
     maskImage : `lsst.afw.image.MaskX`
         The mask image with the ``NO_DATA`` bit set.
+
     Returns
     -------
     coverage : `float`
-        The fraction of pixels in `footprint` where the ``NO_DATA`` bit is set.
+        The fraction of pixels in `footprint` where the ``NO_DATA`` bit
+        is **not** set (i.e. the fraction with valid data). Backs the
+        ``deblend_dataCoverage`` catalog column.
     """
     # Store the value of "NO_DATA" from the mask plane.
     noDataInt = 2 ** maskImage.getMaskPlaneDict()["NO_DATA"]
@@ -304,8 +335,10 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
     # Calculate the coverage in the footprint
     bbox = footprint.getBBox()
     if bbox.area == 0:
-        # The source has no footprint, so it has no coverage
-        return 0
+        # The source has no footprint, so it has no coverage.
+        # Returning a ``np.float64`` (not a Python ``int``) honors the
+        # ``-> np.floating`` annotation.
+        return np.float64(0.0)
     spans = footprint.spans.asArray()
     totalArea = footprint.getArea()
     mask = maskImage[bbox].array & noDataInt
@@ -315,8 +348,9 @@ def calculateFootprintCoverage(footprint: afwFootprint, maskImage: MaskX) -> np.
 
 
 def updateBlendRecords(
+    modelData: LsstScarletModelData,
     blendData: scl.io.ScarletBlendData | scl.io.HierarchicalBlendData,
-    bandIndex: int,
+    band: str,
     catalog: SourceCatalog,
     observation: scl.Observation,
     updateFluxColumns: bool,
@@ -326,14 +360,20 @@ def updateBlendRecords(
 
     Parameters
     ----------
+    modelData :
+        The full persisted scarlet model data. Its top-level
+        ``metadata`` (``model_psf``, ``psf``, ``bands``) is used to
+        reconstruct each child blend at full band-multiplicity before
+        slicing to ``band``.
     blendData :
         Persistable data for a single blend or hierarchical blend.
-    bandIndex :
-        The number of the band to extract.
+    band :
+        Name of the band to extract.
     catalog :
         The catalog that is being updated.
     observation :
-        The observation of the blend.
+        The observation of the blend in ``band``. Its ``bands`` tuple
+        should be ``(band,)``.
     updateFluxColumns :
         Whether or not to update the `deblend_*` columns in the catalog.
         This should only be true when the input catalog schema already
@@ -345,13 +385,20 @@ def updateBlendRecords(
     """
     useFlux = imageForRedistribution is not None
 
-    # Create a blend with the parent and all of its children.
+    # Reconstruct each child sub-blend from its persisted form, slice
+    # down to the requested band, and collect the per-band sources into
+    # a single Blend tied to the caller's redistribution observation.
     sources = []
     if isinstance(blendData, scl.io.HierarchicalBlendData):
-        for blendId in blendData.children:
-            _blendData = cast(scl.io.ScarletBlendData, blendData.children[blendId])
-            blend = monochromaticDataToScarlet(_blendData, bandIndex, observation)
-            sources.extend(blend.sources)
+        for _blendData in blendData.children.values():
+            full_blend = cast(
+                scl.io.ScarletBlendData, _blendData
+            ).minimal_data_to_blend(
+                model_psf=modelData.metadata["model_psf"][None, :, :],
+                psf=modelData.metadata["psf"],
+                bands=modelData.metadata["bands"],
+            )
+            sources.extend(full_blend[band].sources)
 
     if len(sources) == 0:
         # No sources to update, so we can skip the rest of the function.
@@ -366,8 +413,6 @@ def updateBlendRecords(
         blend.conserve_flux()
 
     # Set the metrics for the blend.
-    # TODO: remove this once DM-34558 runs all deblender metrics
-    # in a separate task.
     if updateFluxColumns:
         setDeblenderMetrics(blend)
 
@@ -426,9 +471,19 @@ def updateBlendRecords(
                 y = peak["i_y"]
                 logger.warning(
                     f"Source {srcId} at {x},{y} could not set the peak flux with error:",
-                    exc_info=1,
+                    exc_info=True,
                 )
                 sourceRecord.set("deblend_peak_instFlux", np.nan)
+
+            # The blend here is single-band, so every ``source.metrics``
+            # array has one entry — the value for ``band``.
+            metrics = source.metrics  # type: ignore[attr-defined]
+            sourceRecord.set("deblend_maxOverlap", metrics.maxOverlap[0])
+            sourceRecord.set("deblend_fluxOverlap", metrics.fluxOverlap[0])
+            sourceRecord.set(
+                "deblend_fluxOverlapFraction", metrics.fluxOverlapFraction[0]
+            )
+            sourceRecord.set("deblend_blendedness", metrics.blendedness[0])
         else:
             sourceRecord.setFootprint(heavy)
 
@@ -448,13 +503,14 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
     """
     metadata = zip_dict.pop('metadata', None)
     version = zip_dict.pop('version', scl.io.migration.PRE_SCHEMA)
-    if metadata is None:
-        model_psf = zip_dict.pop('psf')
-        psf_shape = zip_dict.pop('psf_shape')
-        metadata = {
-            'psf': model_psf,
-            'psfShape': psf_shape,
-        }
+    # Top-level legacy keys (e.g. ``psf`` / ``psfShape`` from a
+    # pre-``metadata`` archive) are passed through to the migration
+    # in ``LsstScarletModelData._to_1_0_0``, which synthesizes a
+    # proper ``metadata`` dict.
+    legacy_extras = {}
+    for legacy_key in ('psf', 'psfShape'):
+        if legacy_key in zip_dict:
+            legacy_extras[legacy_key] = zip_dict.pop(legacy_key)
     blends = {}
     isolated = {}
     for key, value in zip_dict.items():
@@ -467,12 +523,15 @@ def build_scarlet_model(zip_dict: dict[str, Any]) -> LsstScarletModelData:
         else:
             raise ValueError(f"Found unknown file '{value}' in scarlet model data")
 
-    return LsstScarletModelData.parse_obj({
+    payload: dict[str, Any] = {
         'version': version,
         'isolated': isolated,
         'blends': blends,
-        'metadata': metadata,
-    })
+    }
+    if metadata is not None:
+        payload['metadata'] = metadata
+    payload.update(legacy_extras)
+    return LsstScarletModelData.parse_obj(payload)
 
 
 def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) -> LsstScarletModelData:
@@ -506,10 +565,10 @@ def read_scarlet_model(path_or_stream: str, blend_ids: list[int] | None = None) 
             with zip_file.open('metadata') as f:
                 metadata = from_json(f.read())
                 unzipped_files['metadata'] = metadata
-        except ValueError:
+        except KeyError:
             # The metadata file is not present, so we will
             # assume that the model is in the legacy format.
-            filenames += ['psf', 'psf_shape']
+            filenames += ['psf', 'psfShape']
         try:
             with zip_file.open('version') as f:
                 version = from_json(f.read())
@@ -533,7 +592,7 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
 
     Parameters
     ----------
-    model_data : `lsst.scarelt.lite.io.LsstScarletModelData`
+    model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
 
     Returns
@@ -552,17 +611,10 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
         str(source_id): json.dumps(source_data)
         for source_id, source_data in json_model['isolated'].items()
     })
-    # Support for legacy models
-    if 'psf' in json_model:
-        data.update({
-            'psf_shape': json.dumps(json_model['psfShape']),
-            'psf': json.dumps(json_model['psf']),
-        })
-    else:
-        data.update({
-            'metadata': json.dumps(json_model['metadata']),
-            'version': json.dumps(json_model['version']),
-        })
+    data.update({
+        'metadata': json.dumps(json_model['metadata']),
+        'version': json.dumps(json_model['version']),
+    })
     return data
 
 
@@ -571,7 +623,7 @@ def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstScarletM
 
     Parameters
     ----------
-    model_data : `lsst.scarlet.lite.io.LsstScarletModelData`
+    model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
 
     Returns
@@ -595,12 +647,12 @@ def scarlet_model_to_lsst_scarlet_model(model_data: scl.io.ScarletModelData) -> 
 
     Returns
     -------
-    result : `lsst.scarlet.lite.io.LsstScarletModelData`
+    result : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
     """
     return LsstScarletModelData(
         blends=model_data.blends,
-        metadata=None,
+        metadata=model_data.metadata if model_data.metadata is not None else {},
     )
 
 
@@ -646,47 +698,103 @@ class ScarletModelDelegate(StorageClassDelegate):
         raise AttributeError(f"Unsupported component: {componentName}")
 
     def handleParameters(self, inMemoryDataset: Any, parameters: Mapping[str, Any] | None = None) -> Any:
+        # The base class signature permits ``parameters=None`` and
+        # treats both ``None`` and ``{}`` as "no parameters". Mirror
+        # that here: the dispatch path in
+        # ``daf_butler.datastore.generic_base.post_process_get`` does
+        # filter empty parameters before calling, but in-memory and
+        # disassembled-composite reads pass ``None``/``{}`` through.
+        if not parameters:
+            return inMemoryDataset
         if "blend_id" in parameters:
             blend_ids = lsst_utils.iteration.ensure_iterable(parameters["blend_id"])
             blends = {blend_id: inMemoryDataset.blends[blend_id] for blend_id in blend_ids}
             inMemoryDataset.blends = blends
-        elif parameters is not None:
+        else:
             raise ValueError(f"Unsupported parameters: {parameters}")
         return inMemoryDataset
 
 
-def loadBlend(blendData: scl.io.ScarletBlendData, model_psf: np.ndarray, mCoadd: MultibandExposure):
+def loadBlend(
+    blendData: scl.io.ScarletBlendData,
+    model_psf: np.ndarray | None = None,
+    mCoadd: MultibandExposure = None,  # type: ignore[assignment]
+    modelData: LsstScarletModelData | None = None,
+):
     """Load a blend from the persisted data
 
     Parameters
     ----------
     blendData:
         The persisted scarlet BlendData to load into the blend.
-    model_psf:
-        The psf of the model in each band. This should be 2D, as scarlet
-        lite assumes that the PSF is the same for all bands.
     mCoadd:
         The coadd image to use for the observation attached to the blend.
         This is required in order to create a difference kernel to convolve
         the model into an observed seeing.
+    modelData:
+        The full persisted scarlet model data. When provided, the
+        per-band ``psf`` and 2D ``model_psf`` stored in
+        ``modelData.metadata`` are used to build the observation —
+        these are the same PSFs the deblender saw during fitting and
+        give a more faithful round-trip than re-deriving them from
+        the coadd.
+    model_psf:
+        The 2D model-space PSF (deprecated). Retained for backward
+        compatibility with the pre-``modelData`` signature; will be
+        removed after v31. Passing it emits a ``FutureWarning``.
 
     Returns
     -------
     blend : `scarlet.lite.Blend`
         The blend object loaded from the persisted data.
+    afw_box : `lsst.geom.Box2I`
+        The afw bounding box covering the blend.
     """
-    psf, _ = utils.computePsfKernelImage(mCoadd, blendData.psf_center)
+    if model_psf is not None:
+        warnings.warn(
+            "The `model_psf` parameter to `loadBlend` is deprecated and "
+            "will be removed after v31; pass `modelData` instead so the "
+            "PSFs from the fit can be reused directly.",
+            FutureWarning, stacklevel=2,
+        )
+    if mCoadd is None:
+        raise ValueError("`mCoadd` is required to load a blend from persisted data")
+
+    psfs: np.ndarray
+    if modelData is not None:
+        if modelData.metadata is None:
+            raise ValueError(
+                "`modelData.metadata` must be populated to use the "
+                "`modelData` branch of `loadBlend`."
+            )
+        bands = tuple(modelData.metadata["bands"])
+        psfs = modelData.metadata["psf"]
+        actual_model_psf = modelData.metadata["model_psf"][None, :, :]
+    elif model_psf is not None:
+        # Legacy path: derive per-band PSFs from the coadd at the
+        # blend's stored ``psf_center``. Modern ``ScarletBlendData``
+        # no longer carries ``psf_center`` or ``bands`` attributes, so
+        # this branch only works against legacy-zip-read blends.
+        psfs, _ = utils.computePsfKernelImage(mCoadd, blendData.psf_center)  # type: ignore[attr-defined]
+        bands = tuple(blendData.bands)  # type: ignore[attr-defined]
+        actual_model_psf = model_psf[None, :, :]
+    else:
+        raise ValueError(
+            "loadBlend requires `modelData` (preferred) or `model_psf` "
+            "to construct the observation."
+        )
+
     bbox = Box(blendData.shape, origin=blendData.origin)
     afw_box = Box2I(Point2I(bbox.origin[::-1]), Extent2I(bbox.shape[::-1]))
-    coadd = mCoadd[blendData.bands, afw_box]
+    coadd = mCoadd[bands, afw_box]
     observation = scl.Observation(
         images=coadd.image.array,
         variance=coadd.variance.array,
         weights=np.ones(coadd.image.array.shape, dtype=np.float32),
-        psfs=psf,
-        model_psf=model_psf[None, :, :],
+        psfs=psfs,
+        model_psf=actual_model_psf,
         convolution_mode='real',
-        bands=mCoadd.bands,
+        bands=bands,
         bbox=bbox,
     )
     return blendData.to_blend(observation), afw_box

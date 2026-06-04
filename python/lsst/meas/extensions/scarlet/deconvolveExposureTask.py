@@ -29,6 +29,7 @@ import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import lsst.scarlet.lite as scl
 import numpy as np
+from deprecated.sphinx import deprecated
 
 from . import utils
 
@@ -41,10 +42,10 @@ __all__ = [
 ]
 
 
-def calculate_update_step(
+def calculateUpdateStep(
     observation: scl.Observation,
-    min_scale: float = 0.01,
-    default_scale: float = 0.1,
+    minScale: float = 0.01,
+    defaultScale: float = 0.1,
 ) -> float:
     """Calculate the scale factor for the update step in deconvolution.
 
@@ -57,10 +58,10 @@ def calculate_update_step(
     observation :
         Scarlet lite Observation.
 
-    min_scale :
+    minScale :
         Minimum allowed scale factor.
 
-    default_scale :
+    defaultScale :
         Default scale factor to return if noise level is non-finite.
 
     Returns
@@ -68,25 +69,52 @@ def calculate_update_step(
     scale : float
         Scale factor for the update step.
     """
-    # Calculate sparsity as fraction of pixels significantly above noise
-    noise_level = observation.noise_rms[0]
+    # Calculate sparsity as fraction of unmasked pixels significantly
+    # above noise. Pixels with zero weight (border, NO_DATA, BAD) are
+    # excluded from both numerator and denominator so heavily masked
+    # inputs are not biased toward a small step.
+    noiseLevel = observation.noise_rms[0]
     # Guard against non-finite or non-positive noise levels
-    if noise_level <= 0 or not np.isfinite(noise_level):
-        return default_scale
-    signal_mask = observation.images.data > 3*noise_level
-    signal_pixels = np.sum(signal_mask)
-    sparsity = signal_pixels / observation.images.data.size
+    if noiseLevel <= 0 or not np.isfinite(noiseLevel):
+        return defaultScale
+    image = observation.images.data[0]
+    validMask = observation.weights.data[0] > 0
+    validPixels = np.sum(validMask)
+    if validPixels == 0:
+        return defaultScale
+    signalMask = (image > 3*noiseLevel) & validMask
+    signalPixels = np.sum(signalMask)
+    sparsity = signalPixels / validPixels
 
-    if np.any(signal_mask):
-        median_signal = np.median(observation.images.data[signal_mask])
-        snr = median_signal / noise_level
+    if np.any(signalMask):
+        medianSignal = np.median(image[signalMask])
+        snr = medianSignal / noiseLevel
     else:
         snr = 1.0
 
     # Scale factor that decreases with sparsity and increases with SNR
     scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
 
-    return max(min_scale, scale)
+    return max(minScale, scale)
+
+
+@deprecated(
+    reason=(
+        "Use `calculateUpdateStep` instead; the snake_case name is kept "
+        "as a shim. Will be removed after v31."
+    ),
+    version="v30.0",
+    category=FutureWarning,
+)
+def calculate_update_step(
+    observation: scl.Observation,
+    min_scale: float = 0.01,
+    default_scale: float = 0.1,
+) -> float:
+    """Deprecated snake_case alias for `calculateUpdateStep`."""
+    return calculateUpdateStep(
+        observation, minScale=min_scale, defaultScale=default_scale,
+    )
 
 
 class DeconvolveExposureConnections(
@@ -241,15 +269,24 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             Deconvolved exposure
         """
         observation = self._buildObservation(coadd, catalog, band)
-        self.bbox = coadd.getBBox()
 
-        # Deconvolve.
-        # Store the loss history for debugging purposes.
-        model, self.loss = self._deconvolve(observation, catalog)
+        # Build the per-pixel footprint mask from the catalog, if one
+        # was supplied, so the deconvolution loop only needs to know
+        # about the mask itself rather than how it was derived.
+        if catalog is not None:
+            bbox = coadd.getBBox()
+            width, height = bbox.getDimensions()
+            x0, y0 = bbox.getMin()
+            footprintImage = afwDet.footprintsToNumpy(
+                catalog, shape=(height, width), xy0=(x0, y0)
+            )
+        else:
+            footprintImage = None
 
-        # Store the model in an Exposure
+        model, loss = self._deconvolve(observation, footprintImage=footprintImage)
+
         exposure = self._modelToExposure(model.data[0], coadd)
-        return pipeBase.Struct(deconvolved=exposure)
+        return pipeBase.Struct(deconvolved=exposure, loss=loss)
 
     def _buildObservation(
         self,
@@ -316,7 +353,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     def _deconvolve(
         self,
         observation: scl.Observation,
-        catalog: afwTable.SourceCatalog | None = None,
+        footprintImage: np.ndarray | None = None,
     ) -> tuple[scl.Image, list[float]]:
         """Deconvolve the observed image.
 
@@ -324,30 +361,30 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         ----------
         observation :
             Scarlet lite Observation.
-        catalog :
-            Catalog of sources detected in the deconvolved image.
-            This is used to mask the deconvolved image so that
-            the deconvolved footprints detected downstream will always
-            fit inside of the original footprints.
+        footprintImage :
+            Per-pixel mask matching ``observation.images.shape[1:]``.
+            When supplied, the deconvolved model is multiplied by this
+            mask after each iteration so the recovered footprints stay
+            inside the input footprints.
         """
         model = observation.images.copy()
         loss = []
-        step = calculate_update_step(observation)
-        if catalog is not None:
-            width, height = self.bbox.getDimensions()
-            x0, y0 = self.bbox.getMin()
-            footprintImage = afwDet.footprintsToNumpy(catalog, shape=(height, width), xy0=(x0, y0))
+        step = calculateUpdateStep(observation)
         for n in range(self.config.maxIter):
-            residual = observation.images - observation.convolve(model)
-            loss.append(-0.5 * np.sum(residual.data**2))
-            update = observation.convolve(residual, grad=True)
+            # cache=True reuses the FFT plan across iterations; the
+            # image shape is stable inside the loop so this is a free
+            # speedup at zero correctness cost.
+            residual = observation.images - observation.convolve(model, cache=True)
+            if np.all(~np.isfinite(residual.data)):
+                self.log.warning(f"Residual is non-finite at iteration {n}, stopping deconvolution")
+                loss.append(-np.inf)
+                break
+            loss.append(-0.5 * np.nansum(residual.data**2))
+            update = observation.convolve(residual, grad=True, cache=True)
             update.data[:] *= step
             model += update
             model.data[(model.data < 0) | ~np.isfinite(model.data)] = 0
-            if catalog is not None:
-                # Ensure that the deconvolved model footprints fit
-                # inside of the original footprints by setting regions
-                # outside of the original footprints to zero.
+            if footprintImage is not None:
                 model.data[:] *= footprintImage
 
             # Check for a diverging model
@@ -362,12 +399,24 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         return model, loss
 
     def _modelToExposure(self, model: np.ndarray, coadd: afwImage.Exposure) -> afwImage.Exposure:
-        """Convert a scarlet lite Image to an Exposure.
+        """Convert a deconvolved image array to an Exposure.
+
+        The output exposure's mask is a deep copy of the input coadd's
+        mask, and its variance plane is fresh and filled with ``inf``.
+        Convolution-then-deconvolution alters the per-pixel noise
+        covariance, so the input coadd's variance no longer describes
+        the deconvolved pixel values; the infinite variance signals
+        "no information about the noise here" and naturally zero-weights
+        these pixels under any inverse-variance scheme. Downstream
+        consumers that need a variance plane must supply their own.
 
         Parameters
         ----------
-        image :
-            Scarlet lite Image.
+        model :
+            Deconvolved image array.
+        coadd :
+            Input coadd exposure; its image dtype, bbox, ``ExposureInfo``,
+            and mask contents are reused.
         """
         image = afwImage.Image(
             array=model,
@@ -375,10 +424,17 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             deep=False,
             dtype=coadd.image.array.dtype,
         )
+        # Deep-copy the mask and build a fresh inf-filled variance so
+        # the output exposure doesn't alias the input coadd's planes.
+        # The variance is deliberately invalidated because the input's
+        # variance does not describe the deconvolved pixel values.
+        mask = coadd.mask.clone()
+        variance = coadd.variance.Factory(coadd.variance.getBBox())
+        variance.array[:] = np.inf
         maskedImage = afwImage.MaskedImage(
             image=image,
-            mask=coadd.mask,
-            variance=coadd.variance,
+            mask=mask,
+            variance=variance,
             dtype=coadd.image.array.dtype,
         )
         exposure = afwImage.Exposure(

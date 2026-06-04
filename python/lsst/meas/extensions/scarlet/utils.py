@@ -1,3 +1,6 @@
+import logging
+import warnings
+
 import lsst.geom as geom
 import lsst.scarlet.lite as scl
 import numpy as np
@@ -13,6 +16,21 @@ from lsst.afw.image.utils import projectImage
 from lsst.afw.table import SourceCatalog
 from lsst.geom import Box2I, Point2D, Point2I
 from lsst.pipe.base import NoWorkFound
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "defaultBadPixelMasks",
+    "scarletBoxToBBox",
+    "bboxToScarletBox",
+    "nonzeroBandSupport",
+    "multiband_convolve",
+    "computePsfKernelImage",
+    "computeNearestPsf",
+    "computeNearestPsfMultiBand",
+    "buildObservation",
+    "calcChi2",
+]
 
 defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
 
@@ -64,6 +82,30 @@ def bboxToScarletBox(bbox: geom.Box2I, xy0: geom.Point2I = geom.Point2I()) -> sc
     return scl.Box((bbox.getHeight(), bbox.getWidth()), origin)
 
 
+def nonzeroBandSupport(data: np.ndarray) -> np.ndarray:
+    """Return the per-pixel support of a multi-band model.
+
+    A pixel is in the support whenever any band's value is non-zero.
+    This is the canonical "spatial extent of a model across bands"
+    test; the alternative idioms ``data > 0`` and
+    ``np.max(data, axis=0) != 0`` either exclude negative-valued
+    pixels outright or exclude pixels whose largest band value is
+    exactly zero, both of which under-count the true spatial extent.
+
+    Parameters
+    ----------
+    data :
+        A ``(bands, height, width)`` array of model values.
+
+    Returns
+    -------
+    support :
+        A ``(height, width)`` boolean mask, ``True`` at pixels where
+        at least one band is non-zero.
+    """
+    return np.any(data != 0, axis=0)
+
+
 def multiband_convolve(images: np.ndarray, psfs: np.ndarray) -> np.ndarray:
     """Convolve a multi-band image with the PSF in each band.
 
@@ -95,6 +137,11 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
     ----------
     psfCenter : `tuple` or `Point2I` or `Point2D`
         The location `(x, y)` used as the center of the PSF.
+    catalog :
+        Deprecated and ignored. Retained for signature stability; will
+        be removed after v31. Passing a non-``None`` value emits a
+        ``FutureWarning``. For nearest-PSF fallback at a different
+        location, call ``computeNearestPsfMultiBand`` instead.
 
     Returns
     -------
@@ -104,6 +151,13 @@ def computePsfKernelImage(mExposure, psfCenter, catalog=None):
         The exposure, updated to only use bands that
         successfully generated a PSF image.
     """
+    if catalog is not None:
+        warnings.warn(
+            "The `catalog` parameter to `computePsfKernelImage` is "
+            "deprecated and ignored; it will be removed after v31. "
+            "For nearest-PSF fallback, use `computeNearestPsfMultiBand`.",
+            FutureWarning, stacklevel=2,
+        )
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
 
@@ -129,7 +183,7 @@ def computeNearestPsf(
     catalog: SourceCatalog,
     band: str | None = None,
     psfCenter: Point2D | None = None,
-) -> tuple[np.ndarray, Point2I, float]:
+) -> tuple[np.ndarray, Point2D, float] | tuple[None, None, None]:
     """Create a PSF image at the nearest valid location
 
     Sometimes not all locations in an image can generate a PSF image so the
@@ -205,67 +259,204 @@ def computeNearestPsf(
             pass
     if psf is None:
         return None, None, None
-    newLocation = Point2I(x[ref_index], y[ref_index])
+    newLocation = Point2D(x[ref_index], y[ref_index])
     diff = np.sqrt(diff_x[ref_index]**2 + diff_y[ref_index]**2)
 
     return psf, newLocation, diff
 
 
+def _sortedCatalogPositions(
+    catalog: SourceCatalog | None,
+    psfCenter: Point2D,
+) -> list[Point2D]:
+    """Catalog peak positions, sorted by distance from ``psfCenter``."""
+    if catalog is None:
+        return []
+    xs: list[float] = []
+    ys: list[float] = []
+    for src in catalog:
+        for peak in src.getFootprint().peaks:
+            xs.append(peak["i_x"])
+            ys.append(peak["i_y"])
+    if not xs:
+        return []
+    xs_a = np.asarray(xs)
+    ys_a = np.asarray(ys)
+    xc, yc = psfCenter
+    order = np.argsort((xs_a - xc) ** 2 + (ys_a - yc) ** 2)
+    return [Point2D(float(xs_a[i]), float(ys_a[i])) for i in order]
+
+
 def computeNearestPsfMultiBand(
     mExposure: MultibandExposure,
     psfCenter: tuple[int, int] | geom.Point2I | geom.Point2D,
-    catalog: SourceCatalog,
-) -> tuple[np.ndarray, MultibandExposure]:
-    """Compute the image in each band at the location nearest to the PSF Center
+    catalog: SourceCatalog | None,
+) -> tuple[MultibandImage | None, MultibandExposure | None]:
+    """Compute a multiband PSF kernel image at or near the requested center.
 
-    If the PSF cannot be generated in all bands then `mExposure` is updated
-    to use only the bands that successfully generated a PSF image.
+    The PSF kernel is computed at ``psfCenter`` in every band where the
+    PSF model is valid there — this is the hot path and the only work
+    done when no fallback is needed. For any band whose PSF is invalid
+    at ``psfCenter``, the function walks ``catalog`` peak positions
+    sorted by distance from the requested center and accepts the first
+    position that works in every failing band as a common fallback.
+    If that fallback location also works in the bands that already
+    succeeded at the center, the function "upgrades" by sampling every
+    band at that one location, so the multiband PSF is genuinely at a
+    single sky point; otherwise the successful bands keep their center
+    PSF and only the failing bands use the common fallback, and a
+    warning is logged. When no single fallback works for every failing
+    band, each failing band falls back to its own nearest valid
+    catalog position (per-band fallback), and a warning is logged.
+    Bands with no valid PSF anywhere are dropped from the returned
+    multiband exposure, matching the historical incomplete-PSF
+    behavior.
+
+    PSF computations are not duplicated: each ``(band, position)`` pair
+    is evaluated at most once, and at function return the kept PSFs are
+    held one per band.
 
     Parameters
     ----------
     mExposure :
         The multi-band exposure.
     psfCenter :
-        The location `(x, y)` used as the center of the PSF.
+        The location ``(x, y)`` used as the center of the PSF.
     catalog :
-        The source catalog.
+        Source catalog whose peak positions are candidate fallback
+        locations. If `None`, no fallback search is performed and a
+        band whose PSF is invalid at ``psfCenter`` is dropped.
+
+    Returns
+    -------
+    mPsf :
+        The multiband PSF kernel image, or `None` if no band produced a
+        valid PSF.
+    mExposure :
+        The input exposure restricted to bands that produced a valid
+        PSF.
     """
-    psfs = {}
-    incomplete = False
-    for band in mExposure.bands:
-        psf, psfCenter, diff = computeNearestPsf(
-            mExposure[band,],
-            catalog,
-            band,
-            psfCenter,
-        )
-        if psf is None:
-            incomplete = True
+    if not isinstance(psfCenter, Point2D):
+        psfCenter = Point2D(*psfCenter)
+
+    bands = tuple(mExposure.bands)
+
+    # Stage 1: try every band at the requested center.
+    psfs: dict = {}
+    locations: dict[str, Point2D] = {}
+    failingBands: list[str] = []
+    for band in bands:
+        try:
+            psfs[band] = mExposure[band,].getPsf().computeKernelImage(psfCenter)
+            locations[band] = psfCenter
+        except InvalidPsfError:
+            failingBands.append(band)
+
+    if failingBands:
+        # Stage 2: walk catalog candidates sorted by distance from the
+        # requested center and accept the first that works for every
+        # failing band. The bands that already succeeded at the center
+        # are not part of the search — their PSFs are already at a
+        # strictly better position than any fallback could provide.
+        candidates = _sortedCatalogPositions(catalog, psfCenter)
+        commonLocation: Point2D | None = None
+        commonPsfs: dict = {}
+        # The closest valid PSF found so far for each failing band,
+        # populated as we walk the candidate list. If no single
+        # candidate works for every failing band, these are the per-
+        # band fallbacks. Each ``(band, position)`` is evaluated at
+        # most once across the walk.
+        closestPsfs: dict = {}
+        closestLocations: dict = {}
+        for pos in candidates:
+            tentative: dict = {}
+            allOk = True
+            for band in failingBands:
+                try:
+                    psf = (
+                        mExposure[band,].getPsf().computeKernelImage(pos)
+                    )
+                except InvalidPsfError:
+                    # Mark the candidate as not common, but keep trying
+                    # the remaining bands at this candidate so a band
+                    # that *is* valid here still gets the chance to be
+                    # cached at its true closest position.
+                    allOk = False
+                    continue
+                tentative[band] = psf
+                if band not in closestPsfs:
+                    closestPsfs[band] = psf
+                    closestLocations[band] = pos
+            if allOk:
+                commonLocation = pos
+                commonPsfs = tentative
+                break
+
+        if commonLocation is not None:
+            # Stage 2 upgrade: if the common fallback is also valid in
+            # the bands that succeeded at the center, switch every band
+            # to it so the multiband PSF is sampled at a single sky
+            # location. Otherwise, keep center PSFs for the successful
+            # bands and use the fallback only for the failing ones.
+            upgradePsfs: dict = {}
+            canUpgrade = True
+            for band in psfs:
+                try:
+                    upgradePsfs[band] = (
+                        mExposure[band,].getPsf().computeKernelImage(commonLocation)
+                    )
+                except InvalidPsfError:
+                    canUpgrade = False
+                    break
+
+            if canUpgrade:
+                psfs = {**upgradePsfs, **commonPsfs}
+            else:
+                logger.warning(
+                    "Multiband PSF falls back at two locations: bands %s at "
+                    "the requested center %s; bands %s at %s.",
+                    list(psfs), psfCenter, failingBands, commonLocation,
+                )
+                for band in failingBands:
+                    psfs[band] = commonPsfs[band]
         else:
-            psfs[band] = psf
+            # No common fallback location: use the per-band closest
+            # PSFs that the candidate walk already collected. Bands
+            # without any valid PSF in the walk are absent from
+            # closestPsfs and will be dropped below.
+            psfs.update(closestPsfs)
+            locations.update(closestLocations)
+            if any(b in psfs for b in failingBands):
+                logger.warning(
+                    "Multiband PSF: no single fallback location works for "
+                    "every band; per-band fallback locations %s.",
+                    {b: locations[b] for b in bands if b in psfs},
+                )
 
     if len(psfs) == 0:
         return None, None
 
+    # Project each kept band's PSF onto the union bbox so the multiband
+    # image has consistent shape across bands.
     left = np.min([psf.getBBox().getMinX() for psf in psfs.values()])
     bottom = np.min([psf.getBBox().getMinY() for psf in psfs.values()])
     right = np.max([psf.getBBox().getMaxX() for psf in psfs.values()])
     top = np.max([psf.getBBox().getMaxY() for psf in psfs.values()])
     bbox = Box2I(Point2I(left, bottom), Point2I(right, top))
 
-    psf_images = [projectImage(psf, bbox) for psf in psfs.values()]
+    # Ensure that the returned multiband PSF and exposure only contain
+    # the bands for which a valid PSF was found, in the same order as the
+    # input exposure's bands.
+    bandsKept = tuple(b for b in bands if b in psfs)
+    psf_images = [projectImage(psfs[b], bbox) for b in bandsKept]
+    mPsf = MultibandImage.fromImages(bandsKept, psf_images)
 
-    mPsf = MultibandImage.fromImages(list(psfs.keys()), psf_images)
-
-    if incomplete:
-        bands = mPsf.bands
-        mExposure = mExposure[bands,]
-
-        if len(bands) == 1:
-            # Only a single band generated a PSF, so the MultibandExposure
-            # became a single band ExposureF.
-            # Convert the result back into a MultibandExposure.
-            mExposure = MultibandExposure.fromExposures(bands, [mExposure])
+    if len(bandsKept) < len(bands):
+        mExposure = mExposure[bandsKept,]
+        if len(bandsKept) == 1:
+            # ``mExposure[(band,),]`` for a single band returns an
+            # ExposureF rather than a MultibandExposure; wrap it back.
+            mExposure = MultibandExposure.fromExposures(bandsKept, [mExposure])
 
     return mPsf.array, mExposure
 
@@ -333,7 +524,11 @@ def buildObservation(
 
     # Use the inverse variance as the weights
     if useWeights:
-        weights = 1 / mExposure.variance.array
+        # Zero/NaN variance produces inf/NaN weights here; the next line
+        # zeros them deliberately. Silence the spurious RuntimeWarnings
+        # the division would otherwise emit on those pixels.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weights = 1 / mExposure.variance.array
         weights[~np.isfinite(weights)] = 0
     else:
         weights = np.ones_like(mExposure.image.array)

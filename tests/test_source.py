@@ -19,15 +19,20 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from unittest import TestCase
+import unittest
 
 import numpy as np
 
+import lsst.afw.image as afwImage
+import lsst.geom as geom
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
+import lsst.utils.tests
+from lsst.afw.detection import Footprint, PeakTable
+from lsst.afw.geom import SpanSet
 
 
-class ScarletTestCase(TestCase):
+class ScarletTestCase(lsst.utils.tests.TestCase):
     """A base TestCase for scarlet tests.
     """
     def setUp(self) -> None:
@@ -164,3 +169,99 @@ class ScarletTestCase(TestCase):
         with self.assertRaises(IndexError):
             # Users must provide a Box, not a tuple, for spatial dimensions
             source[0, 1]
+
+    def test_from_footprint_roundtrip(self):
+        """``IsolatedSource.from_footprint`` produces a source whose
+        peak and bbox match the input afw Footprint.
+
+        Uses a circular 7×7 mask so the bbox is a real bounding box
+        rather than coincident with the footprint shape, and so the
+        peak position is non-trivially distinct from the bbox origin.
+        """
+        bands = tuple("gri")
+        h, w = 7, 7
+        y0, x0 = 5, 3  # bbox origin in (y, x)
+
+        circle = scl.utils.get_circle_mask(h, dtype=np.int32)
+        afw_mask = afwImage.Mask(circle, xy0=geom.Point2I(x0, y0))
+        footprint = Footprint(SpanSet.fromMask(afw_mask), PeakTable.makeMinimalSchema())
+        peak_y, peak_x = y0 + h // 2, x0 + w // 2
+        footprint.addPeak(peak_x, peak_y, 100.0)
+
+        # 3-band 20×20 coadd of ones; ``from_footprint`` will mask
+        # the coadd's data with the footprint spans inside the bbox.
+        image_shape = (3, 20, 20)
+        masked = afwImage.MultibandMaskedImage.fromArrays(
+            bands,
+            np.ones(image_shape, dtype=np.float32),
+            None,
+            np.ones(image_shape, dtype=np.float32),
+        )
+        coadds = [
+            afwImage.Exposure(img, dtype=img.image.array.dtype) for img in masked
+        ]
+        mCoadd = afwImage.MultibandExposure.fromExposures(bands, coadds)
+
+        source = mes.source.IsolatedSource.from_footprint(
+            footprint, mCoadd, dtype=np.float32
+        )
+
+        self.assertTupleEqual(source.peak, (peak_y, peak_x))
+        self.assertTupleEqual(source.bbox.origin, (y0, x0))
+        self.assertTupleEqual(source.bbox.shape, (h, w))
+
+    def test_to_data_from_data_roundtrip(self):
+        """``to_data`` → ``IsolatedSourceData.to_source`` against an
+        observation matching the source's model recovers the source's
+        model data, peak, and bbox origin.
+
+        Uses a circular morph so ``span_array`` is not trivially
+        all-True; reconstruction must actually mask by the span set.
+        """
+        bands = tuple("gri")
+        morph = scl.utils.get_circle_mask(15, dtype=np.float32)
+        spectrum = np.arange(1, 1 + len(bands), dtype=np.float32)
+        model_data = morph[None, :, :] * spectrum[:, None, None]
+        peak = (27, 32)
+        bbox = scl.Box((15, 15), (20, 25))
+        model_image = scl.Image(model_data, yx0=bbox.origin, bands=bands)
+
+        source = mes.source.IsolatedSource(model=model_image, peak=peak)
+        data = source.to_data()
+
+        self.assertTupleEqual(data.origin, bbox.origin)
+        self.assertTupleEqual(data.peak, peak)
+        np.testing.assert_array_equal(data.span_array, morph > 0)
+
+        # Round-trip via to_source: build an Observation whose images
+        # equal the source model (a delta PSF makes the observation
+        # bypass any convolution).
+        psfs = np.zeros((len(bands), 1, 1), dtype=np.float32)
+        psfs[:, 0, 0] = 1.0
+        observation = scl.Observation.empty(
+            bands=bands,
+            psfs=psfs,
+            model_psf=psfs[:1],
+            bbox=bbox,
+            dtype=np.float32,
+        )
+        observation.images = model_image
+
+        source2 = data.to_source(observation)
+
+        self.assertTupleEqual(source2.peak, peak)
+        self.assertTupleEqual(source2.bbox.origin, bbox.origin)
+        np.testing.assert_array_equal(source2.get_model().data, model_data)
+
+
+def setup_module(module):
+    lsst.utils.tests.init()
+
+
+class MemoryTester(lsst.utils.tests.MemoryTestCase):
+    pass
+
+
+if __name__ == "__main__":
+    lsst.utils.tests.init()
+    unittest.main()

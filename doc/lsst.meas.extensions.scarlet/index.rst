@@ -22,6 +22,7 @@ Using lsst.meas.extensions.scarlet
    overview.rst
    catalog.rst
    models.rst
+   changes.rst
 
 .. _lsst.meas.extensions.scarlet-contributing:
 

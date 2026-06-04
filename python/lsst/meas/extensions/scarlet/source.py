@@ -31,6 +31,8 @@ from lsst.afw.detection import Footprint
 from lsst.afw.image import MultibandExposure
 import lsst.scarlet.lite as scl
 
+from .utils import nonzeroBandSupport
+
 if TYPE_CHECKING:
     from .io import IsolatedSourceData
 
@@ -48,7 +50,7 @@ class IsolatedSource(scl.source.SourceBase):
         ----------
         model :
             The 3D (band, y, x) model of the source.
-        center :
+        peak :
             The (y, x) coordinates of the peak pixel within the model.
         metadata :
             Optional metadata to store with the source.
@@ -105,7 +107,7 @@ class IsolatedSource(scl.source.SourceBase):
         footprint_array = footprint.spans.asArray((height, width), (x0, y0))
         # Create the 3D model array by multiplying the footprint by each band
         # of the multiband coadd.
-        model_array = np.ndarray((len(mCoadd.bands), height, width), dtype=dtype)
+        model_array = np.empty((len(mCoadd.bands), height, width), dtype=dtype)
         for bidx, band in enumerate(mCoadd.bands):
             model_array[bidx] = mCoadd[band, bbox].image.array * footprint_array
         # Create the model
@@ -135,7 +137,7 @@ class IsolatedSource(scl.source.SourceBase):
         model :
             The 3D (band, y, x) model of the source.
         """
-        return self.component._model
+        return self.component.get_model()
 
     def to_data(self) -> IsolatedSourceData:
         """Convert to a ScarletSourceData representation.
@@ -147,7 +149,7 @@ class IsolatedSource(scl.source.SourceBase):
         """
         from .io import IsolatedSourceData
 
-        span_array = np.any(self.component._model.data != 0, axis=0)
+        span_array = nonzeroBandSupport(self.component.get_model().data)
         return IsolatedSourceData(
             span_array=span_array,
             origin=self.bbox.origin,
@@ -194,21 +196,28 @@ class IsolatedSource(scl.source.SourceBase):
         return source
 
     def __getitem__(self, indices: Any) -> IsolatedSource:
-        """Get a sub-source corresponding to the given indices.
+        """Get a sub-source by slicing along the band axis.
+
+        Delegates to ``self.component[indices]``; only band labels
+        are accepted as the selector. Spatial slices and ``Box``
+        instances raise ``IndexError`` because they don't appear in
+        ``self.bands``.
 
         Parameters
         ----------
         indices : Any
-            The indices to use to slice the source model.
+            A single band label, a slice of band labels (e.g.
+            ``"g":"r"``), or a sequence of band labels.
 
         Returns
         -------
         source :
-            A new IsolatedSource that is a sub-source of this one.
+            A new IsolatedSource restricted to the selected bands.
+
         Raises
         ------
         IndexError :
-            If the index includes a `Box` or spatial indices.
+            If ``indices`` is not a valid band selector.
         """
         component = self.component[indices]
         return IsolatedSource(
