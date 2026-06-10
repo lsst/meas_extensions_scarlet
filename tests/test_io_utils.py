@@ -393,7 +393,7 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
         )
 
         np.testing.assert_array_equal(
-            blend.observation.model_psf[0],
+            blend.observation.model_psf.data[0],
             modelData.model_psf,
         )
 
