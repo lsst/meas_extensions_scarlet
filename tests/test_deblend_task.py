@@ -768,12 +768,19 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
                 self.assertFalse(
                     np.isnan(child.get("deblend_peak_instFlux"))
                 )
-                self.assertGreater(child.get("deblend_maxOverlap"), 0)
-                self.assertGreater(child.get("deblend_fluxOverlap"), 0)
-                self.assertGreater(
-                    child.get("deblend_fluxOverlapFraction"), 0
-                )
-                self.assertGreater(child.get("deblend_blendedness"), 0)
+                # These overlap/blendedness metrics must be populated
+                # (non-NaN), but may legitimately be zero for a child that
+                # does not overlap its neighbors, so assert they are
+                # populated and non-negative rather than strictly > 0.
+                for column in (
+                    "deblend_maxOverlap",
+                    "deblend_fluxOverlap",
+                    "deblend_fluxOverlapFraction",
+                    "deblend_blendedness",
+                ):
+                    value = child.get(column)
+                    self.assertFalse(np.isnan(value), msg=column)
+                    self.assertGreaterEqual(value, 0, msg=column)
 
     def test_heavy_footprint_peak_position(self):
         """The HeavyFootprint's peak position and the scarlet model's
