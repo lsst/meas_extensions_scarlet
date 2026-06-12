@@ -27,6 +27,7 @@ model recovery, and skip / failure semantics. The skip tests run
 against targeted single-blend scenes.
 """
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +42,7 @@ from lsst.afw.detection import PeakTable
 from lsst.afw.geom import SpanSet
 from lsst.afw.table import Schema
 from lsst.geom import Box2I, Point2I
+from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import (
     ScarletDeblendContext,
     ScarletDeblendTask,
@@ -49,6 +51,7 @@ from lsst.meas.extensions.scarlet.scarletDeblendTask import (
 
 import pipeline
 from scenes import SCENES
+from utils import makeStitchedPsf
 
 
 class TestDeblendTask(lsst.utils.tests.TestCase):
@@ -119,6 +122,74 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             src for src in blend.sources if src.metadata["id"] == child.getId()
         )
         return blend, source, parentFootprint
+
+    def test_deblend_stitched_psf_end_to_end(self):
+        """Detect, deconvolve and deblend a cell-coadd (stitched-PSF) scene.
+
+        Each band's constant ``GaussianPsf`` is swapped for a ``StitchedPsf``
+        that tiles the 116x116 ``multi-blend`` coadd with a 2x2 grid of 58px
+        cells (kernels matching the scene's rendered Gaussian sigmas, so the
+        recovered models are sensible). The whole pipeline then runs on the
+        spatially-varying PSF: ``DeconvolveExposureTask`` builds a stitched
+        observation, and ``ScarletDeblendTask`` slices that observation to
+        each footprint -- exercising the sub-box stitched convolution on real
+        blends. The run completes, deblends the multi-peak parents into
+        children, and persists a ``ScarletStitchedPsf`` that round-trips
+        through ``LsstScarletModelData``.
+        """
+        image = pipeline.build_image(SCENES["multi-blend"])
+        bands = image.bands
+        # 2x2 grid of 58px cells exactly tiles the 116x116 coadd; per-band
+        # sigmas match the scene's rendered image PSFs.
+        sigmas = (1.0, 1.2, 1.4)
+        stitchedCoadds = []
+        for b, band in enumerate(bands):
+            exposure = image.mCoadd[band].clone()
+            exposure.setPsf(
+                makeStitchedPsf(sigma=sigmas[b], cell=58, grid=2, kernel=41)
+            )
+            stitchedCoadds.append(exposure)
+        mCoadd = afwImage.MultibandExposure.fromExposures(bands, stitchedCoadds)
+
+        # The pixels are unchanged, so the detection catalog is reusable.
+        detection = pipeline.detect(image)
+        catalog = detection.catalog
+
+        deconvolveTask = DeconvolveExposureTask()
+        deconvolvedCoadds = [
+            deconvolveTask.run(mCoadd[band], catalog, band=band).deconvolved
+            for band in bands
+        ]
+        mDeconvolved = afwImage.MultibandExposure.fromExposures(bands, deconvolvedCoadds)
+
+        deblendTask = ScarletDeblendTask(schema=Schema(detection.schema))
+        result = deblendTask.run(mCoadd, mDeconvolved, catalog)
+
+        # The observed PSF rode all the way onto the persisted model and is
+        # the spatially-varying stitched PSF.
+        modelData = result.scarletModelData
+        self.assertIsInstance(modelData.psf, mes.ScarletStitchedPsf)
+        self.assertEqual(tuple(modelData.bands), tuple(bands))
+
+        # The multi-peak parent was deblended into children (the same
+        # structure the constant-PSF run produces on this scene).
+        objectParents = result.objectParents
+        blendedParents = objectParents[
+            (objectParents["parent"] == 0) & (objectParents["deblend_nPeaks"] > 1)
+        ]
+        self.assertGreater(len(blendedParents), 0)
+        for parent in blendedParents:
+            children = result.deblendedCatalog[
+                result.deblendedCatalog["parent"] == parent.get("id")
+            ]
+            self.assertGreater(len(children), 0)
+            self.assertFalse(parent.get("deblend_skipped"))
+
+        # The stitched PSF survives persistence through the model container.
+        restored = mes.io.LsstScarletModelData.from_dict(
+            json.loads(modelData.json())
+        )
+        self.assertIsInstance(restored.psf, mes.ScarletStitchedPsf)
 
     def test_skip_too_big(self):
         """A parent footprint exceeding ``maxFootprintArea`` is skipped

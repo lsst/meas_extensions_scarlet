@@ -14,8 +14,11 @@ from lsst.afw.image import (
 )
 from lsst.afw.image.utils import projectImage
 from lsst.afw.table import SourceCatalog
+from lsst.cell_coadds import StitchedPsf
 from lsst.geom import Box2I, Point2D, Point2I
 from lsst.pipe.base import NoWorkFound
+
+from .stitched_psf import ScarletStitchedPsf
 
 logger = logging.getLogger(__name__)
 
@@ -514,13 +517,24 @@ def buildObservation(
     # Initialize the observed PSFs
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-    if catalog is None:
-        psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
-    else:
-        psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
 
-    if psfModels is None:
-        raise NoWorkFound("No valid PSF could be obtained for building the observation")
+    bandPsfs = {band: mExposure[band,].getPsf() for band in mExposure.bands}
+    if all(isinstance(psf, StitchedPsf) for psf in bandPsfs.values()):
+        # Cell-based coadd: the PSF is genuinely discontinuous across cells,
+        # so build a spatially-varying ScarletStitchedPsf over the cell grid
+        # rather than one kernel image per band. A StitchedPsf is valid
+        # everywhere within the coadd, so no band is dropped and the
+        # nearest-PSF fallback used by the flat path is unnecessary here.
+        observedPsf: scl.Psf = ScarletStitchedPsf.from_stitched_psf(bandPsfs)
+    else:
+        if catalog is None:
+            psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
+        else:
+            psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
+
+        if psfModels is None:
+            raise NoWorkFound("No valid PSF could be obtained for building the observation")
+        observedPsf = scl.ImagePsf(psfModels, bands=tuple(mExposure.bands))
 
     # Use the inverse variance as the weights
     if useWeights:
@@ -553,8 +567,8 @@ def buildObservation(
         images=image,
         variance=mExposure.variance.array,
         weights=weights,
-        psfs=psfModels,
-        model_psf=modelPsf[None, :, :],
+        psf=observedPsf,
+        model_psf=scl.ImagePsf(modelPsf[None, :, :]),
         convolution_mode=convolutionType,
         bands=mExposure.bands,
         bbox=bboxToScarletBox(mExposure.getBBox()),
