@@ -33,8 +33,10 @@ import lsst.scarlet.lite as scl
 import numpy as np
 from lsst.images.cells import CellCoadd
 from deprecated.sphinx import deprecated
+from lsst.cell_coadds import StitchedPsf
 
 from . import utils
+from .stitched_psf import ScarletStitchedPsf
 
 log = logging.getLogger(__name__)
 
@@ -376,16 +378,29 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         image = coadd.image.array.copy()
         # Set non-finite pixels to zero
         image[~np.isfinite(image)] = 0.0
-        psfCenter = coadd.getBBox().getCenter()
-        if catalog is not None:
-            psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
-            if psf is None:
-                # There were no valid locations from
-                # which a PSF could be obtained
-                raise pipeBase.NoWorkFound("No valid PSF could be obtained for deconvolution")
-            psf = psf.array
+
+        coaddPsf = coadd.getPsf()
+        if isinstance(coaddPsf, StitchedPsf):
+            # Cell-based coadd: the PSF is genuinely discontinuous across
+            # cells, so build a spatially-varying ScarletStitchedPsf over the
+            # cell grid instead of a single kernel image. A StitchedPsf can be
+            # evaluated everywhere within the coadd, so the catalog-based
+            # nearest-PSF fallback used by the flat path is unnecessary here.
+            observedPsf: scl.Psf = ScarletStitchedPsf.from_stitched_psf(
+                {band: coaddPsf}, dtype=image.dtype
+            )
         else:
-            psf = coadd.getPsf().computeKernelImage(psfCenter).array
+            psfCenter = coadd.getBBox().getCenter()
+            if catalog is not None:
+                psf, _, _ = utils.computeNearestPsf(coadd, catalog, band, psfCenter)
+                if psf is None:
+                    # There were no valid locations from
+                    # which a PSF could be obtained
+                    raise pipeBase.NoWorkFound("No valid PSF could be obtained for deconvolution")
+                psf = psf.array
+            else:
+                psf = coaddPsf.computeKernelImage(psfCenter).array
+            observedPsf = scl.ImagePsf(psf[None], bands=bands)
 
         badPixelMasks = utils.defaultBadPixelMasks
         badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
@@ -396,8 +411,8 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             images=image[None],
             variance=coadd.variance.array.copy()[None],
             weights=weights[None],
-            psfs=psf[None],
-            model_psf=model_psf[None],
+            psf=observedPsf,
+            model_psf=scl.ImagePsf(model_psf[None]),
             convolution_mode="fft",
             bands=bands,
             bbox=utils.bboxToScarletBox(coadd.getBBox()),

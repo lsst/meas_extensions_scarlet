@@ -34,6 +34,7 @@ import warnings
 
 import lsst.afw.image as afwImage
 import lsst.geom as geom
+from lsst.afw.detection import GaussianPsf
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
@@ -43,10 +44,12 @@ from lsst.meas.extensions.scarlet.deconvolveExposureTask import (
     calculateUpdateStep,
     calculate_update_step,
 )
+from lsst.meas.extensions.scarlet import ScarletStitchedPsf
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 
 import pipeline
 from scenes import SCENES
+from utils import makeStitchedPsf
 
 
 class TestDeconvolveTask(lsst.utils.tests.TestCase):
@@ -350,6 +353,63 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         out.variance.array[5, 5] = 999.0
         self.assertEqual(coadd.mask.array[5, 5], 0)
         self.assertEqual(coadd.variance.array[5, 5], 5.0)
+
+    def test_build_observation_stitched_psf(self):
+        """A coadd carrying a ``StitchedPsf`` builds a stitched observation.
+
+        When the input is a cell-based coadd (its PSF is an
+        ``lsst.cell_coadds.StitchedPsf``), ``_buildObservation`` builds a
+        spatially-varying ``ScarletStitchedPsf`` over the cell grid instead of
+        wrapping a single kernel image. A flat coadd (a ``GaussianPsf``) still
+        takes the constant ``ImagePsf`` path. Both observed PSFs match the
+        coadd dtype, so the difference kernel is non-trivial.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        rng = np.random.RandomState(5)
+        coadd.image.array[:] = rng.rand(size, size).astype(np.float32)
+        coadd.variance.array[:] = 1.0
+
+        task = DeconvolveExposureTask()
+
+        coadd.setPsf(makeStitchedPsf(sigma=1.2, cell=cell, grid=grid))
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(observation.psf, ScarletStitchedPsf)
+        self.assertIsInstance(observation.diff_kernel, ScarletStitchedPsf)
+        self.assertEqual(observation.psf.dtype, coadd.image.array.dtype)
+
+        # A flat coadd keeps the constant-PSF path.
+        coadd.setPsf(GaussianPsf(11, 11, 1.2))
+        flat = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(flat.psf, scl.ImagePsf)
+
+    def test_deconvolve_stitched_psf_end_to_end(self):
+        """``run`` deconvolves a cell-coadd (stitched-PSF) exposure.
+
+        Exercises the spatially-varying forward convolution and its adjoint
+        (the gradient pass) through the full deconvolution loop, confirming the
+        stitched PSF drops into the optimizer the same way a constant PSF does.
+        The recovered model is finite and preserves the input bounding box.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        # A single bright source so the deconvolver has signal to recover.
+        coadd.image.array[:] = 0.0
+        coadd.image.array[size // 2, size // 2] = 100.0
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(makeStitchedPsf(sigma=1.4, cell=cell, grid=grid))
+
+        task = DeconvolveExposureTask()
+        result = task.run(coadd, catalog=None, band="g")
+
+        self.assertEqual(result.deconvolved.getBBox(), bbox)
+        self.assertTrue(np.all(np.isfinite(result.deconvolved.image.array)))
+        # The deconvolver concentrates flux near the source center.
+        self.assertGreater(result.deconvolved.image.array[size // 2, size // 2], 0)
 
     def test_deconvolve_with_nan_input(self):
         """A NaN pixel in the input does not propagate to the

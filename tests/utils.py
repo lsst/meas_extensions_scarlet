@@ -21,9 +21,13 @@
 
 from typing import Sequence
 
+import lsst.geom as geom
 import lsst.scarlet.lite as scl
 import numpy as np
 import lsst.meas.extensions.scarlet as mes
+from lsst.afw.detection import GaussianPsf
+from lsst.cell_coadds import GridContainer, StitchedPsf, UniformGrid
+from lsst.skymap import Index2D
 
 
 class DeblenderTestModel:
@@ -86,6 +90,57 @@ class PsfModel(DeblenderTestModel):
         self.morph = np.zeros(bbox.shape, dtype=np.float32)
         _center = (self.morph.shape[0]-1)//2, (self.morph.shape[1]-1)//2
         self.morph[*_center] = 1
+
+
+def makeStitchedPsf(
+    sigma: float = 1.0,
+    cell: int = 15,
+    grid: int = 2,
+    kernel: int = 11,
+    origin: tuple[int, int] = (0, 0),
+) -> StitchedPsf:
+    """Build a single-band ``lsst.cell_coadds.StitchedPsf`` of Gaussians.
+
+    Every cell carries the same normalized Gaussian kernel, so the PSF is
+    uniform across the grid; ``sigma`` makes the per-band kernels of a
+    multiband stack distinguishable. This mirrors the per-band ``StitchedPsf``
+    that ``StitchedCoadd.asExposure`` attaches to a stitched cell coadd, so an
+    ``Exposure`` carrying it exercises the spatially-varying PSF path in
+    ``buildObservation`` / ``DeconvolveExposureTask._buildObservation``.
+
+    Parameters
+    ----------
+    sigma :
+        The Gaussian sigma of the per-cell kernel.
+    cell :
+        The side length of each (square) grid cell.
+    grid :
+        The number of cells along each axis.
+    kernel :
+        The side length of each (square) PSF kernel image.
+    origin :
+        The ``(x, y)`` minimum of the grid's bounding box.
+
+    Returns
+    -------
+    result :
+        The assembled single-band stitched PSF, spanning
+        ``[origin, origin + cell * grid)`` on each axis.
+    """
+    uniformGrid = UniformGrid(
+        geom.Extent2I(cell, cell),
+        Index2D(x=grid, y=grid),
+        padding=0,
+        min=geom.Point2I(*origin),
+    )
+    images = GridContainer(Index2D(x=grid, y=grid))
+    kernelImage = GaussianPsf(kernel, kernel, sigma).computeKernelImage(
+        geom.Point2D(0, 0)
+    )
+    for iy in range(grid):
+        for ix in range(grid):
+            images[Index2D(x=ix, y=iy)] = kernelImage
+    return StitchedPsf(images, uniformGrid)
 
 
 def initData(
