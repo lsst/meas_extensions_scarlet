@@ -215,9 +215,8 @@ def updateCatalogFootprints(
     bands = modelData.bands
     if band not in bands:
         raise NoWorkFound(f"Band '{band}' not found in scarlet model data")
-    bandIndex = bands.index(band)
     modelPsf = modelData.model_psf
-    observedPsf = modelData.psf[bandIndex][None, :, :]
+    observedPsf = modelData.psf[band]
 
     # Flux re-distribution may mix depth=1 blends, so we iterate over the
     # completely flux separated parents to ensure that the full models
@@ -257,8 +256,8 @@ def updateCatalogFootprints(
 
 
 def buildMonochromaticObservation(
-    modelPsf: np.ndarray,
-    observedPsf: np.ndarray,
+    modelPsf: scl.Psf,
+    observedPsf: scl.Psf,
     band: str,
     scarletBox: Box,
     footprint: np.ndarray | None,
@@ -269,9 +268,10 @@ def buildMonochromaticObservation(
     Parameters
     ----------
     modelPsf :
-        The 2D model of the PSF.
+        The band-less model-space `~lsst.scarlet.lite.Psf`.
     observedPsf :
-        The observed PSF model for the catalog.
+        The observed `~lsst.scarlet.lite.Psf` for the catalog, restricted to
+        ``band``.
     band :
         Name of the band the observation represents.
     scarletBox :
@@ -304,8 +304,8 @@ def buildMonochromaticObservation(
             images=cutout.image.array[None, :, :],
             variance=cutout.variance.array[None, :, :],
             weights=weights[None, :, :],
-            psfs=observedPsf,
-            model_psf=modelPsf[None, :, :],
+            psf=observedPsf,
+            model_psf=modelPsf,
             convolution_mode="real",
             bands=bands,
             bbox=scarletBox,
@@ -313,8 +313,8 @@ def buildMonochromaticObservation(
     else:
         observation = scl.Observation.empty(
             bands=bands,
-            psfs=observedPsf,
-            model_psf=modelPsf[None, :, :],
+            psf=observedPsf,
+            model_psf=modelPsf,
             bbox=scarletBox,
             dtype=modelPsf.dtype,
         )
@@ -403,7 +403,7 @@ def updateBlendRecords(
             full_blend = cast(
                 scl.io.ScarletBlendData, _blendData
             ).minimal_data_to_blend(
-                model_psf=modelData.model_psf[None, :, :],
+                model_psf=modelData.model_psf,
                 psf=modelData.psf,
                 bands=modelData.bands,
             )
@@ -791,7 +791,8 @@ def loadBlend(
     if mCoadd is None:
         raise ValueError("`mCoadd` is required to load a blend from persisted data")
 
-    psfs: np.ndarray
+    psfs: scl.Psf | np.ndarray
+    actual_model_psf: scl.Psf | np.ndarray
     if modelData is not None:
         if modelData.bands is None or modelData.psf is None or modelData.model_psf is None:
             raise ValueError(
@@ -800,7 +801,7 @@ def loadBlend(
             )
         bands = tuple(modelData.bands)
         psfs = modelData.psf
-        actual_model_psf = modelData.model_psf[None, :, :]
+        actual_model_psf = modelData.model_psf
     elif model_psf is not None:
         # Legacy path: derive per-band PSFs from the coadd at the
         # blend's stored ``psf_center``. Modern ``ScarletBlendData``
@@ -822,7 +823,7 @@ def loadBlend(
         images=coadd.image.array,
         variance=coadd.variance.array,
         weights=np.ones(coadd.image.array.shape, dtype=np.float32),
-        psfs=psfs,
+        psf=psfs,
         model_psf=actual_model_psf,
         convolution_mode='real',
         bands=bands,

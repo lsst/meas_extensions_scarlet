@@ -110,7 +110,7 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
 
         blendData = parentBlendData.children[child["deblend_blendId"]]
         full_blend = blendData.minimal_data_to_blend(
-            model_psf=modelData.model_psf[None, :, :],
+            model_psf=modelData.model_psf,
             psf=modelData.psf,
             bands=modelData.bands,
         )

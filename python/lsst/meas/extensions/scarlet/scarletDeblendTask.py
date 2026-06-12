@@ -1155,9 +1155,11 @@ class ScarletDeblendTask(pipeBase.Task):
 
         # Initialize the persistable ScarletModelData object
         modelData = io.LsstScarletModelData(
+            isolated={},
+            blends={},
             bands=context.observation.bands,
-            model_psf=context.observation.model_psf.get_image().data,
-            psf=context.observation.psf.get_image().data,
+            model_psf=context.observation.model_psf,
+            psf=context.observation.psf,
         )
 
         if self.config.persistIsolated:

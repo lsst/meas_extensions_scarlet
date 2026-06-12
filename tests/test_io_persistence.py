@@ -77,7 +77,8 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         )
         self.modelData = bundle.result.scarletModelData
         self.bands = self.modelData.bands
-        self.model_psf = self.modelData.model_psf[None, :, :]
+        # ``model_psf`` / ``psf`` are first-class ``Psf`` objects.
+        self.model_psf = self.modelData.model_psf
         self.psf = self.modelData.psf
         repo = self._setup_butler()
         self.butler = makeTestCollection(repo, uniqueId="test_run1")
@@ -95,9 +96,10 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         modelData2 = self.butler.get("scarlet_model_data", dataId={})
 
         np.testing.assert_almost_equal(
-            modelData2.model_psf[None, :, :], self.model_psf
+            modelData2.model_psf.get_image().data, self.model_psf.get_image().data
         )
-        np.testing.assert_almost_equal(modelData2.psf, self.psf)
+        np.testing.assert_almost_equal(modelData2.psf.data, self.psf.data)
+        self.assertEqual(tuple(modelData2.bands), tuple(self.bands))
         self.assertEqual(len(modelData2.blends), len(self.modelData.blends))
 
         for parentId in self.modelData.blends.keys():
@@ -163,12 +165,21 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
                 self._test_blend(blendData1, blendData2, self.model_psf, self.psf, self.bands)
 
     def test_legacy_model(self):
-        """A pre-``metadata`` (v29) archive loads and promotes its
-        ``psf`` / ``psfShape`` into the typed ``model_psf`` attribute.
+        """A pre-``metadata`` (v29) archive loads and promotes its top-level
+        model PSF into the typed ``model_psf`` attribute.
 
+        v29 archives stored the observed PSF and bands *per blend*, with only a
+        model PSF at the model level, so the loaded model has no model-level
+        ``psf`` or ``bands`` (they stay ``None``) and reconstruction falls back
+        to the per-blend PSFs.
         """
         model, butler = self._load_legacy_model("v29_models.json", "v29")
         self.assertEqual(len(model.blends), 2)
+        # The top-level model PSF was promoted to a typed attribute; the
+        # observed PSF and bands were per-blend, so they stay unset.
+        self.assertIsNotNone(model.model_psf)
+        self.assertIsNone(model.psf)
+        self.assertIsNone(model.bands)
         self.assertNotIn("psfShape", model.metadata or {})
         self._assert_single_blend_load(butler, 3495976385350991873)
 
@@ -208,13 +219,13 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         model, butler = self._load_legacy_model("v31a_models.json", "v31a")
 
         # The migration chain promoted the model to the current schema.
-        self.assertEqual(model.version, "1.0.2")
+        self.assertEqual(model.version, "1.0.3")
         self.assertEqual(len(model.blends), 3)
         self.assertEqual(len(model.isolated), 1)
 
         # Model-level fields are now typed attributes.
         self.assertEqual(tuple(model.bands), ("g", "r", "i"))
-        self.assertEqual(model.psf.shape, (3, 41, 41))
+        self.assertEqual(model.psf.data.shape, (3, 41, 41))
 
         # Every parent became a typed blend; legacy_spans is False since the
         # archive carried real footprint spans.
@@ -327,14 +338,14 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         """``read_scarlet_model`` reads a legacy-format zip that has no
         ``metadata`` entry.
 
-        Legacy archives store the model PSF as top-level ``psf`` /
-        ``psfShape`` entries instead of a ``metadata`` entry.
-        ``zipfile.ZipFile.open`` raises ``KeyError`` (not ``ValueError``)
-        for a missing entry, so the legacy fallback was unreachable and
-        such archives crashed on read. Regression test for finding C-3
-        of the ``audits/audit-2026-05-05.md`` audit; also pins the IO-17
-        fix that the legacy load now produces a ``metadata['model_psf']``
-        numpy array.
+        Pre-``metadata`` (v29) archives store the model PSF as top-level
+        ``psf`` / ``psfShape`` entries instead of a ``metadata`` entry.
+        ``zipfile.ZipFile.open`` raises ``KeyError`` (not ``ValueError``) for a
+        missing entry, so the legacy fallback must stay reachable rather than
+        crashing the read (regression test for finding C-3 of the
+        ``audits/audit-2026-05-05.md`` audit). The top-level model PSF is
+        promoted to the typed ``model_psf`` attribute; the observed PSF was
+        per-blend, so model-level ``psf`` stays ``None``.
         """
         bundle = pipeline.deblend(
             pipeline.deconvolve(
@@ -342,26 +353,30 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             )
         )
         jm = bundle.result.scarletModelData.as_dict()
+        # The modern model keeps its PSFs in ``metadata`` as ``ImagePsfData``
+        # dicts; unpack the model PSF back into the legacy raw-array form (a
+        # 2D, band-less array), as a v29 archive stored it.
+        model_psf = lsst.scarlet.lite.io.utils.json_to_numpy(
+            jm["metadata"]["model_psf"]
+        )[0]
 
-        # Repackage the model in the legacy layout: one entry per blend
-        # plus a top-level model PSF, and crucially no ``metadata`` entry.
+        # Repackage the model in the legacy layout: one entry per blend plus a
+        # top-level model PSF, and crucially no ``metadata`` entry.
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             for blendId, blendData in jm["blends"].items():
                 zf.writestr(str(blendId), json.dumps(blendData))
-            model_psf = jm["metadata"]["model_psf"]
-            model_psf_shape = list(np.asarray(model_psf).shape)
-            zf.writestr("psf", json.dumps(model_psf))
-            zf.writestr("psfShape", json.dumps(model_psf_shape))
+            zf.writestr("psf", json.dumps(model_psf.tolist()))
+            zf.writestr("psfShape", json.dumps(list(model_psf.shape)))
         buf.seek(0)
 
         model = mes.io.utils.read_scarlet_model(buf)
         self.assertEqual(len(model.blends), len(jm["blends"]))
-        self.assertIsNotNone(model.model_psf)
-        self.assertIsInstance(model.model_psf, np.ndarray)
-        self.assertEqual(
-            list(model.model_psf.shape), model_psf_shape
-        )
+        # The top-level model PSF was promoted to a typed attribute; the
+        # observed PSF was per-blend, so it stays unset.
+        self.assertIsInstance(model.model_psf, lsst.scarlet.lite.Psf)
+        self.assertEqual(list(model.model_psf.shape), list(model_psf.shape))
+        self.assertIsNone(model.psf)
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
         # Test that two ScarletBlendData objects are equal
@@ -386,8 +401,16 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
 
     def _load_legacy_model(self, filename, unique):
-        """Ingest a legacy JSON model test context and return
-        ``(model, butler)``.
+        """Ingest a legacy JSON model fixture and return ``(model, butler)``.
+
+        Wraps the boilerplate every legacy-archive test shares: stand up a
+        repo, register an ``old_scarlet_model_data`` dataset backed by the
+        ``LsstScarletModelData`` storage class, ingest ``data/<filename>`` with
+        the JSON formatter, and ``get`` it back through the full migration
+        chain. Also asserts the one invariant every legacy fixture must
+        satisfy -- the model PSF round-trips as a ``(15, 15)`` band-less
+        `~lsst.scarlet.lite.Psf`. Both pre-schema v29 archives (whose top-level
+        model PSF is promoted) and v30+ archives load this way.
 
         Parameters
         ----------
@@ -419,7 +442,7 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         butler.ingest(dataset)
 
         model = butler.get("old_scarlet_model_data", dataId={})
-        self.assertIsInstance(model.model_psf, np.ndarray)
+        self.assertIsInstance(model.model_psf, lsst.scarlet.lite.Psf)
         self.assertEqual(model.model_psf.shape, (15, 15))
         return model, butler
 
