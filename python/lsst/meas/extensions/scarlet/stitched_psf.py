@@ -385,14 +385,22 @@ class ScarletStitchedPsf(Psf):
         for index in self._images.keys():
             kernel = self._images[index]
             box = self._cell_box(index)
+            # The image may be a sub-region of the full grid (the deblender
+            # slices the observation to each footprint), so only the cells
+            # overlapping it contribute; the rest are skipped and the cell box
+            # is clipped to the image for the output assignment.
+            if not box.intersects(image.bbox):
+                continue
+            clipped = box & image.bbox
             radius = (kernel.shape[0] // 2, kernel.shape[1] // 2)
             pad_box = box.grow(radius)
             # Slice the model over the grown cell box; ``project`` zero-fills
-            # only where the halo extends past the global image bounds.
+            # where the halo extends past the image bounds.
             sub = image.project(bbox=pad_box)
             convolved = kernel.convolve(sub, mode=mode, cache=cache)
-            # Crop back to the cell and assign -- cells partition the output.
-            result[box] = convolved[box]
+            # Crop to the cell (clipped to the image) and assign -- cells
+            # partition the output.
+            result[clipped] = convolved[clipped]
         return result
 
     def grad(self, image: Image, mode: str | None = None, cache: bool = False) -> Image:
@@ -430,13 +438,21 @@ class ScarletStitchedPsf(Psf):
         for index in self._images.keys():
             kernel = self._images[index]
             box = self._cell_box(index)
+            # Mirror ``convolve``: the gradient image may be a sub-region of
+            # the full grid, so skip non-overlapping cells and restrict the
+            # residual to the overlap. Clipping both directions to the image
+            # keeps the adjoint the exact transpose of the forward.
+            if not box.intersects(image.bbox):
+                continue
+            clipped = box & image.bbox
             radius = (kernel.shape[0] // 2, kernel.shape[1] // 2)
             pad_box = box.grow(radius)
-            # Restrict the residual to the unpadded cell, then zero-pad it to
+            # Restrict the residual to the (clipped) cell, then zero-pad it to
             # the grown box so the adjoint convolution can spread into it.
-            sub = image[box].project(bbox=pad_box)
+            sub = image[clipped].project(bbox=pad_box)
             convolved = kernel.grad(sub, mode=mode, cache=cache)
-            # Keep the full halo and accumulate it (scatter-add) -- this, not a
-            # crop-and-assign, is what makes the operator the true transpose.
+            # Keep the full halo and accumulate it (scatter-add) -- ``insert``
+            # clips it to the image bounds. This, not a crop-and-assign, is
+            # what makes the operator the true transpose.
             result.insert(convolved, op=operator.add)
         return result

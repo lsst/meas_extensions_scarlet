@@ -260,6 +260,38 @@ class ScarletStitchedPsfTestCase(lsst.utils.tests.TestCase):
         adjoint = float(np.sum(x.data * self.psf.grad(y, mode="real").data))
         self.assertFloatsAlmostEqual(forward, adjoint, rtol=1e-10)
 
+    def test_adjoint_subbox(self):
+        """``grad`` stays the transpose of ``convolve`` on a sub-box image.
+
+        The deblender slices the observation (and thus convolves) over each
+        footprint's bounding box rather than the whole coadd, so the stitched
+        convolution must accept an image that is a *sub-region* of the grid:
+        cells outside it are skipped and partially-overlapping cells are
+        clipped to it. The load-bearing property -- ``<A x, y> == <x, A^T y>``
+        -- must still hold exactly, here on a box that straddles all four
+        cells of the 2x2 partition. Before this was handled, ``convolve``
+        raised ``IndexError`` assigning a full-cell box into the smaller
+        image.
+        """
+        # A box offset from the origin, straddling the cell boundary at CELL.
+        subbox = scl.Box((CELL, CELL), origin=(CELL // 2, CELL // 2))
+        x = Image(
+            self.rng.rand(len(BANDS), *subbox.shape).astype(np.float64),
+            bands=BANDS,
+            yx0=subbox.origin,
+        )
+        y = Image(
+            self.rng.rand(len(BANDS), *subbox.shape).astype(np.float64),
+            bands=BANDS,
+            yx0=subbox.origin,
+        )
+        for mode in ("fft", "real"):
+            convolved = self.psf.convolve(x, mode=mode)
+            self.assertEqual(convolved.bbox, subbox)
+            forward = float(np.sum(convolved.data * y.data))
+            adjoint = float(np.sum(x.data * self.psf.grad(y, mode=mode).data))
+            self.assertFloatsAlmostEqual(forward, adjoint, rtol=1e-10)
+
     def test_uniform_equivalent_to_image_psf(self):
         """A uniform stitched field equals a single ``ImagePsf`` convolution.
 
