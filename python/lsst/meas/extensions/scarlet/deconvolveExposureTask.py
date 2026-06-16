@@ -24,8 +24,10 @@ import logging
 
 import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
+import lsst.afw.math as afwMath
 import lsst.afw.table as afwTable
 import lsst.images as imgs
+import lsst.meas.algorithms as measAlg
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
@@ -101,6 +103,33 @@ def calculateUpdateStep(
     scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
 
     return max(minScale, scale)
+
+
+def scarletImagePsfToLsst(psf: scl.ImagePsf) -> measAlg.KernelPsf:
+    """Convert a scarlet lite `ImagePsf` to an LSST `Psf`.
+
+    The deconvolved model lives in scarlet's model frame, whose PSF is
+    a single fixed kernel image rather than a spatially-varying model.
+    A `~lsst.meas.algorithms.KernelPsf` wrapping a
+    `~lsst.afw.math.FixedKernel` is the LSST representation of exactly
+    that: one image-based kernel that is constant across the exposure.
+
+    Parameters
+    ----------
+    psf :
+        Single-band scarlet lite image PSF. Only the first band is used;
+        scarlet's model PSF is band-independent.
+
+    Returns
+    -------
+    lsstPsf : `lsst.meas.algorithms.KernelPsf`
+        The LSST PSF wrapping the same kernel image.
+    """
+    # FixedKernel needs a contiguous double-precision ImageD; the kernel
+    # image must have odd dimensions, which scarlet's model PSF always does.
+    kernelImage = afwImage.ImageD(np.ascontiguousarray(psf.data[0], dtype=np.float64))
+    kernel = afwMath.FixedKernel(kernelImage)
+    return measAlg.KernelPsf(kernel)
 
 
 @deprecated(
@@ -344,7 +373,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
         model, loss = self._deconvolve(observation, footprintImage=footprintImage)
 
-        deconvolved = self._modelToExposure(model.data[0], coadd)
+        deconvolved = self._modelToExposure(model.data[0], coadd, observation.model_psf)
         if futureInputImage:
             deconvolved = imgs.MaskedImage.from_legacy(
                 deconvolved.maskedImage,
@@ -477,7 +506,12 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
         return model, loss
 
-    def _modelToExposure(self, model: np.ndarray, coadd: afwImage.Exposure) -> afwImage.Exposure:
+    def _modelToExposure(
+        self,
+        model: np.ndarray,
+        coadd: afwImage.Exposure,
+        modelPsf: scl.ImagePsf,
+    ) -> afwImage.Exposure:
         """Convert a deconvolved image array to an Exposure.
 
         The output exposure's mask is a deep copy of the input coadd's
@@ -489,6 +523,12 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         these pixels under any inverse-variance scheme. Downstream
         consumers that need a variance plane must supply their own.
 
+        The deconvolved image lives in scarlet's model frame, so its PSF
+        is the narrow model PSF used during deconvolution rather than the
+        input coadd's observed PSF. That model PSF is converted to an LSST
+        `~lsst.afw.detection.Psf` and attached to the output exposure,
+        overriding the observed PSF carried over in ``ExposureInfo``.
+
         Parameters
         ----------
         model :
@@ -496,6 +536,9 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         coadd :
             Input coadd exposure; its image dtype, bbox, ``ExposureInfo``,
             and mask contents are reused.
+        modelPsf :
+            Scarlet lite model-frame PSF that the deconvolved image is
+            matched to; attached to the output exposure as an LSST PSF.
         """
         image = afwImage.Image(
             array=model,
@@ -516,9 +559,17 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             variance=variance,
             dtype=coadd.image.array.dtype,
         )
+        # Copy-construct a fresh ExposureInfo rather than sharing the
+        # coadd's by reference: the components (WCS, filter, etc.) are
+        # carried over, but the copy is decoupled so the setPsf below
+        # swaps the output's PSF without mutating the input coadd's.
+        exposureInfo = afwImage.ExposureInfo(coadd.getInfo())
         exposure = afwImage.Exposure(
             maskedImage=maskedImage,
-            exposureInfo=coadd.getInfo(),
+            exposureInfo=exposureInfo,
             dtype=coadd.image.array.dtype,
         )
+        # Replace the observed PSF inherited from the coadd's ExposureInfo
+        # with the model-frame PSF the deconvolved image is matched to.
+        exposure.setPsf(scarletImagePsfToLsst(modelPsf))
         return exposure

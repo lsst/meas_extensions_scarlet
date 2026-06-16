@@ -144,16 +144,21 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 )
 
     def test_deconvolve_preserves_image_metadata(self):
-        """Deconvolved output preserves bbox, PSF, and WCS from input.
+        """Deconvolved output preserves bbox and WCS, and carries the
+        model-frame PSF.
 
         For each band, the deconvolved exposure has the same bounding
-        box as its input coadd, the same WCS (deconvolution is per-pixel,
-        no geometric change), and a PSF whose kernel image matches the
-        input PSF's (the task does not synthesize a new PSF).
+        box as its input coadd and the same WCS (deconvolution is
+        per-pixel, no geometric change). Its PSF, however, is the narrow
+        scarlet model PSF the image was deconvolved to -- not the input
+        coadd's wider observed PSF -- and attaching it must leave the
+        input coadd's own PSF untouched.
         """
         image = pipeline.build_image(SCENES["multi-blend"])
         detection = pipeline.detect(image)
         deconv = pipeline.deconvolve(detection)
+
+        model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 
         for band in image.bands:
             in_exp = image.mCoadd[band]
@@ -161,12 +166,20 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
             self.assertEqual(out_exp.getBBox(), in_exp.getBBox())
             self.assertEqual(out_exp.getWcs(), in_exp.getWcs())
 
+            # The output PSF is the model-frame PSF, not the observed one.
             out_psf = out_exp.getPsf()
             self.assertIsNotNone(out_psf)
+            np.testing.assert_array_almost_equal(
+                out_psf.computeKernelImage(out_psf.getAveragePosition()).array,
+                model_psf,
+            )
+            # The input coadd's observed PSF is left intact.
             in_psf = in_exp.getPsf()
-            np.testing.assert_array_equal(
-                out_psf.computeImage(out_psf.getAveragePosition()).array,
-                in_psf.computeImage(in_psf.getAveragePosition()).array,
+            self.assertFalse(
+                np.array_equal(
+                    in_psf.computeKernelImage(in_psf.getAveragePosition()).array,
+                    model_psf,
+                )
             )
 
     def test_deconvolve_breaks_on_nonfinite_residual(self):
@@ -339,20 +352,37 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         edge_bit = coadd.mask.getPlaneBitMask("EDGE")
         coadd.mask.array[0, 0] = edge_bit
 
+        # The input coadd carries an observed PSF that must not be
+        # disturbed when the output adopts the model-frame PSF.
+        coadd.setPsf(GaussianPsf(15, 15, 1.0))
+
         task = DeconvolveExposureTask()
         model = np.full((16, 16), 2.0, dtype=coadd.image.array.dtype)
-        out = task._modelToExposure(model, coadd)
+        modelPsf = scl.ImagePsf(
+            scl.utils.integrated_circular_gaussian(sigma=0.8)[None]
+        )
+        out = task._modelToExposure(model, coadd, modelPsf)
 
         # Pre-existing mask bits survive the copy.
         self.assertTrue(out.mask.array[0, 0] & edge_bit != 0)
         # Variance plane is invalidated by filling with inf.
         np.testing.assert_array_equal(out.variance.array, np.inf)
 
+        # The output carries the model-frame PSF, converted to an LSST PSF.
+        outPsf = out.getPsf()
+        self.assertIsNotNone(outPsf)
+        np.testing.assert_array_almost_equal(
+            outPsf.computeKernelImage(outPsf.getAveragePosition()).array,
+            modelPsf.data[0],
+        )
+
         # Mutating the output mask/variance does not affect the input.
         out.mask.array[5, 5] |= edge_bit
         out.variance.array[5, 5] = 999.0
         self.assertEqual(coadd.mask.array[5, 5], 0)
         self.assertEqual(coadd.variance.array[5, 5], 5.0)
+        # Attaching the model PSF to the output left the input's PSF intact.
+        self.assertEqual(coadd.getPsf().getSigma(), 1.0)
 
     def test_build_observation_stitched_psf(self):
         """A coadd carrying a ``StitchedPsf`` builds a stitched observation.
