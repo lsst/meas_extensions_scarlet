@@ -385,6 +385,30 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         flat = task._buildObservation(coadd, catalog=None, band="g")
         self.assertIsInstance(flat.psf, scl.ImagePsf)
 
+    def test_build_observation_stitched_psf_opt_out(self):
+        """``useStitchedPsf=False`` forces the flat path on a cell coadd.
+
+        A coadd whose PSF is a ``StitchedPsf`` normally builds a
+        ``ScarletStitchedPsf``; with ``useStitchedPsf=False`` it instead wraps
+        a single PSF kernel evaluated at the image center as a constant
+        ``ImagePsf``, the faster (less accurate) option.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        rng = np.random.RandomState(5)
+        coadd.image.array[:] = rng.rand(size, size).astype(np.float32)
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(makeStitchedPsf(sigma=1.2, cell=cell, grid=grid))
+
+        config = DeconvolveExposureTask.ConfigClass()
+        config.useStitchedPsf = False
+        task = DeconvolveExposureTask(config=config)
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(observation.psf, scl.ImagePsf)
+        self.assertNotIsInstance(observation.psf, ScarletStitchedPsf)
+
     def test_deconvolve_stitched_psf_end_to_end(self):
         """``run`` deconvolves a cell-coadd (stitched-PSF) exposure.
 

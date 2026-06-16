@@ -280,6 +280,7 @@ class ScarletDeblendContext:
             useWeights=config.useWeights,
             convolutionType=config.convolutionType,
             catalog=catalog,
+            useStitchedPsf=config.useStitchedPsf,
         )
 
         # Create the deconvolved image
@@ -533,6 +534,16 @@ class ScarletDeblendConfig(pexConfig.Config):
         doc="Type of convolution to render the model to the observations.\n"
         "- 'fft': perform convolutions in Fourier space\n"
         "- 'real': peform convolutions in real space.",
+    )
+    useStitchedPsf = pexConfig.Field[bool](
+        default=True,
+        doc="When the coadd PSF is a cell-coadd ``StitchedPsf``, build a "
+        "spatially-varying ``ScarletStitchedPsf`` that convolves each cell "
+        "with its own kernel. This is more accurate but convolves every cell "
+        "with a separate FFT, so it is far slower on a full patch. Set to "
+        "`False` to use a single PSF kernel at the image center (an "
+        "``ImagePsf``) even for cell coadds -- much faster, slightly less "
+        "accurate. Ignored for non-cell coadds, which are always flat.",
     )
     setSpectra = pexConfig.Field[bool](
         default=True,

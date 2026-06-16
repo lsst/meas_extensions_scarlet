@@ -424,6 +424,14 @@ class TestUtils(lsst.utils.tests.TestCase):
         convolved = observation.convolve(observation.images)
         self.assertEqual(convolved.shape, observation.images.shape)
 
+        # Opting out forces the flat path even for this cell coadd.
+        flat = mes.utils.buildObservation(
+            modelPsf, Point2I(size // 2, size // 2), mCoadd, useStitchedPsf=False
+        )
+        self.assertIsInstance(flat.psf, scl.ImagePsf)
+        self.assertNotIsInstance(flat.psf, mes.ScarletStitchedPsf)
+        self.assertEqual(flat.psf.bands, bands)
+
     def _generateGoodPsf(self, sigma: float = 1.0):
         # Generate a PSF and Image of the PSF
         psfRadius = 20

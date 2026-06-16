@@ -229,6 +229,16 @@ class DeconvolveExposureConfig(
         optional=False,
         default="legacy",
     )
+    useStitchedPsf = pexConfig.Field[bool](
+        doc="When the coadd PSF is a cell-coadd ``StitchedPsf``, build a "
+        "spatially-varying ``ScarletStitchedPsf`` that convolves each cell "
+        "with its own kernel. This is more accurate but convolves every cell "
+        "with a separate FFT, so it is far slower on a full patch. Set to "
+        "`False` to use a single PSF kernel at the image center (an "
+        "``ImagePsf``) even for cell coadds -- much faster, slightly less "
+        "accurate. Ignored for non-cell coadds, which are always flat.",
+        default=True,
+    )
 
 
 class DeconvolveExposureTask(pipeBase.PipelineTask):
@@ -380,7 +390,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         image[~np.isfinite(image)] = 0.0
 
         coaddPsf = coadd.getPsf()
-        if isinstance(coaddPsf, StitchedPsf):
+        if self.config.useStitchedPsf and isinstance(coaddPsf, StitchedPsf):
             # Cell-based coadd: the PSF is genuinely discontinuous across
             # cells, so build a spatially-varying ScarletStitchedPsf over the
             # cell grid instead of a single kernel image. A StitchedPsf can be

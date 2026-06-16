@@ -473,6 +473,7 @@ def buildObservation(
     useWeights: bool = True,
     convolutionType: str = "real",
     catalog: SourceCatalog | None = None,
+    useStitchedPsf: bool = True,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
 
@@ -508,6 +509,13 @@ def buildObservation(
     catalog :
         A source catalog to use for PSFs that cannot be determined at
         the center of the image.
+    useStitchedPsf :
+        When the per-band coadd PSFs are cell-coadd ``StitchedPsf`` objects,
+        whether to build a spatially-varying `ScarletStitchedPsf` (more
+        accurate, but far slower since each cell is convolved with its own
+        FFT). If `False`, a single PSF kernel at ``psfCenter`` is used (an
+        `~lsst.scarlet.lite.ImagePsf`) even for cell coadds. Ignored for
+        non-cell coadds, which are always flat.
 
     Returns
     -------
@@ -519,7 +527,7 @@ def buildObservation(
         psfCenter = geom.Point2D(*psfCenter)
 
     bandPsfs = {band: mExposure[band,].getPsf() for band in mExposure.bands}
-    if all(isinstance(psf, StitchedPsf) for psf in bandPsfs.values()):
+    if useStitchedPsf and all(isinstance(psf, StitchedPsf) for psf in bandPsfs.values()):
         # Cell-based coadd: the PSF is genuinely discontinuous across cells,
         # so build a spatially-varying ScarletStitchedPsf over the cell grid
         # rather than one kernel image per band. A StitchedPsf is valid
