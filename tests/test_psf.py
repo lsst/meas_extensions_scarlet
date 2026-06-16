@@ -226,6 +226,25 @@ class ScarletStitchedPsfTestCase(lsst.utils.tests.TestCase):
         with self.assertRaises(ValueError):
             self.psf.get_image((SIZE + 5, SIZE + 5))
 
+    def test_convolve_frame_mismatch_raises(self):
+        """Convolving an image that misses the grid raises, not silent zeros.
+
+        The grid lives at the origin, so an image whose ``yx0`` places it far
+        away intersects no cell. Rather than silently returning an all-zero
+        array (a common coordinate-frame bug -- wrapping a coadd array at
+        ``yx0=(0, 0)`` instead of its absolute patch coordinates), both
+        ``convolve`` and ``grad`` raise a ``ValueError``.
+        """
+        away = Image(
+            self.rng.rand(len(BANDS), SIZE, SIZE).astype(np.float32),
+            bands=BANDS,
+            yx0=(1000, 1000),
+        )
+        with self.assertRaisesRegex(ValueError, "does not intersect any cell"):
+            self.psf.convolve(away)
+        with self.assertRaisesRegex(ValueError, "does not intersect any cell"):
+            self.psf.grad(away)
+
     def test_match(self):
         """``match`` returns a same-partition stitched difference kernel."""
         model_psf = ImagePsf(np.ones((1, KERNEL, KERNEL), dtype=np.float32) / KERNEL**2)
