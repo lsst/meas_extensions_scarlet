@@ -228,6 +228,9 @@ class DeconvolveExposureConfig(
         doc="Relative error threshold",
         default=1e-3,
     )
+    modelPsfSigma = pexConfig.Field[float](
+        default=0.8, doc="Define sigma for the model frame PSF"
+    )
     backgroundThreshold = pexConfig.Field[float](
         default=0,
         doc="Threshold for background subtraction. "
@@ -408,7 +411,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
         """
         bands = (band,)
-        model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
+        model_psf = scl.utils.integrated_circular_gaussian(sigma=self.config.modelPsfSigma)
 
         # Give zero weight to non-finite pixels
         weights = np.ones_like(coadd.image.array)

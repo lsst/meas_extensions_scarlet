@@ -439,6 +439,44 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         self.assertIsInstance(observation.psf, scl.ImagePsf)
         self.assertNotIsInstance(observation.psf, ScarletStitchedPsf)
 
+    def test_model_psf_sigma_config(self):
+        """``modelPsfSigma`` controls the model-frame PSF width.
+
+        The default builds the same kernel as ``sigma=0.8``; setting the
+        config to another value rebuilds the observation's model PSF and,
+        through ``run``, the PSF attached to the deconvolved exposure.
+        """
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(16, 16))
+        coadd = afwImage.ExposureF(bbox)
+        coadd.image.array[:] = 0.0
+        coadd.image.array[8, 8] = 100.0
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(GaussianPsf(15, 15, 1.0))
+
+        # The default reproduces the historical sigma=0.8 kernel.
+        default = DeconvolveExposureTask()
+        observation = default._buildObservation(coadd, catalog=None, band="g")
+        np.testing.assert_array_almost_equal(
+            observation.model_psf.data[0],
+            scl.utils.integrated_circular_gaussian(sigma=0.8),
+        )
+
+        # A non-default sigma propagates to both the observation model PSF
+        # and the PSF attached to the deconvolved exposure.
+        config = DeconvolveExposureTask.ConfigClass()
+        config.modelPsfSigma = 1.5
+        task = DeconvolveExposureTask(config=config)
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        expected = scl.utils.integrated_circular_gaussian(sigma=1.5)
+        np.testing.assert_array_almost_equal(observation.model_psf.data[0], expected)
+
+        result = task.run(coadd, catalog=None, band="g")
+        outPsf = result.deconvolved.getPsf()
+        np.testing.assert_array_almost_equal(
+            outPsf.computeKernelImage(outPsf.getAveragePosition()).array,
+            expected,
+        )
+
     def test_deconvolve_stitched_psf_end_to_end(self):
         """``run`` deconvolves a cell-coadd (stitched-PSF) exposure.
 
