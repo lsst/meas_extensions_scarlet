@@ -35,7 +35,7 @@ __all__ = [
     "calcChi2",
 ]
 
-defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
+defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE", "INEXACT_PSF", "REJECTED", "INTRP"]
 
 
 def scarletBoxToBBox(box: scl.Box, xy0: geom.Point2I = geom.Point2I()) -> geom.Box2I:

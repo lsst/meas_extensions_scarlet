@@ -236,6 +236,12 @@ class DeconvolveExposureConfig(
         doc="Threshold for background subtraction. "
         "Pixels in the fit below this threshold will be set to zero",
     )
+    badMask = pexConfig.ListField[str](
+        default=utils.defaultBadPixelMasks,
+        doc="Mask planes flagged as bad. Pixels with any of these planes set "
+        "are zero-weighted, and the residual is zeroed there during "
+        "deconvolution so they exert no pull on the fit.",
+    )
     useFootprints = pexConfig.Field[bool](
         default=True,
         doc="Use footprints to constrain the deconvolved model",
@@ -444,8 +450,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
                 psf = coaddPsf.computeKernelImage(psfCenter).array
             observedPsf = scl.ImagePsf(psf[None], bands=bands)
 
-        badPixelMasks = utils.defaultBadPixelMasks
-        badPixels = coadd.mask.getPlaneBitMask(badPixelMasks)
+        badPixels = coadd.mask.getPlaneBitMask(self.config.badMask)
         mask = coadd.mask.array & badPixels
         weights[mask > 0] = 0
 
@@ -490,6 +495,13 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
                 self.log.warning(f"Residual is non-finite at iteration {n}, stopping deconvolution")
                 loss.append(-np.inf)
                 break
+            # Zero the residual in masked pixels (bad-mask planes and
+            # non-finite pixels, both flagged by zero weight in
+            # ``_buildObservation``) so they exert no pull on the fit. The
+            # gradient is deliberately left unmasked: the convolution below
+            # still propagates flux from good pixels into the model at masked
+            # pixels, partially filling in the model there.
+            residual.data[observation.weights.data == 0] = 0
             loss.append(-0.5 * np.nansum(residual.data**2))
             update = observation.convolve(residual, grad=True, cache=True)
             update.data[:] *= step
