@@ -277,6 +277,22 @@ class DeconvolveExposureConfig(
         "accurate. Ignored for non-cell coadds, which are always flat.",
         default=True,
     )
+    useFista = pexConfig.Field[bool](
+        doc="Use FISTA (Beck & Teboulle 2009), an accelerated proximal "
+        "gradient method that adds Nesterov momentum to the gradient "
+        "descent and converges as O(1/k^2) instead of O(1/k) on this "
+        "convex least-squares problem, giving a better fit in the same "
+        "number of iterations. Set to `False` for plain gradient descent, "
+        "which additionally halves the step size whenever the loss "
+        "increases (FISTA requires a constant step, so it skips that).",
+        default=False,
+    )
+    useZeroInit = pexConfig.Field[bool](
+        doc="Initialize the deconvolved image at zero. Set to `False` to "
+        "initialize with the observed image instead, which starts the fit "
+        "closer to the (still convolved) data.",
+        default=False,
+    )
 
 
 class DeconvolveExposureTask(pipeBase.PipelineTask):
@@ -473,23 +489,94 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     ) -> tuple[scl.Image, list[float]]:
         """Deconvolve the observed image.
 
+        Fits the deconvolved image ``x`` such that ``A.x ~ data``, where
+        ``A`` is the PSF convolution carried by ``observation``. The fit
+        maximizes the Gaussian log-likelihood ``-0.5 * sum(residual**2)``
+        by proximal gradient ascent, projecting onto non-negativity (and
+        the input footprints, when supplied) after every step.
+
+        Two solvers are available, selected by ``config.useFista``:
+
+        - FISTA (the default), which adds Nesterov momentum and converges
+          as O(1/k^2). It requires a constant step size.
+        - Plain gradient ascent, which uses no momentum but halves the
+          step size whenever the loss increases, guarding against a
+          diverging model.
+
         Parameters
         ----------
         observation :
-            Scarlet lite Observation.
+            Scarlet lite Observation, providing the forward
+            (``convolve``) and adjoint (``convolve(..., grad=True)``) PSF
+            operators as well as the observed ``images`` and ``weights``.
         footprintImage :
             Per-pixel mask matching ``observation.images.shape[1:]``.
             When supplied, the deconvolved model is multiplied by this
             mask after each iteration so the recovered footprints stay
             inside the input footprints.
+
+        Returns
+        -------
+        model : `lsst.scarlet.lite.Image`
+            The deconvolved image in scarlet's model frame.
+        loss : `list` [`float`]
+            Per-iteration log-likelihood ``-0.5 * sum(residual**2)``.
         """
-        model = observation.images.copy()
-        loss = []
+        band = observation.bands[0]
+        yx0 = observation.bbox.origin
+        dtype = observation.images.dtype
         step = calculateUpdateStep(observation)
+
+        def prox(image: np.ndarray) -> np.ndarray:
+            """Project the model onto the constraint set.
+
+            Enforces non-negativity (scrubbing non-finite values to zero
+            first) and, when a footprint mask was supplied, restricts the
+            model to lie inside the input footprints.
+
+            Parameters
+            ----------
+            image :
+                Candidate model array.
+
+            Returns
+            -------
+            projected : `numpy.ndarray`
+                The constrained model array.
+            """
+            # Scrub every non-finite value (NaN and +/-inf) to zero, matching
+            # the original clamp, then enforce non-negativity. Leaving +inf as
+            # the ``nan_to_num`` default (~1.8e308) would overflow when the
+            # residual is squared for the loss.
+            projected = np.clip(np.nan_to_num(image, posinf=0, neginf=0), 0, None)
+            if footprintImage is not None:
+                projected = projected * footprintImage
+            return projected
+
+        # Initialize either at zero or at the observed image, per config.
+        if self.config.useZeroInit:
+            x = np.zeros(observation.images.shape, dtype=dtype)
+        else:
+            x = observation.images.data.copy()
+
+        # FISTA holds the iterate (and its momentum extrapolation) in a
+        # `FistaParameter`; plain gradient ascent owns ``x`` directly.
+        if self.config.useFista:
+            parameter = scl.FistaParameter(
+                x,
+                step=step,
+                grad=lambda input_grad, _x: input_grad,  # identity; update() needs a callable
+                prox=prox,
+            )
+        else:
+            parameter = None
+
+        loss = []
         for n in range(self.config.maxIter):
             # cache=True reuses the FFT plan across iterations; the
             # image shape is stable inside the loop so this is a free
             # speedup at zero correctness cost.
+            model = scl.Image(x, bands=(band,), yx0=yx0)
             residual = observation.images - observation.convolve(model, cache=True)
             if np.all(~np.isfinite(residual.data)):
                 self.log.warning(f"Residual is non-finite at iteration {n}, stopping deconvolution")
@@ -503,23 +590,33 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
             # pixels, partially filling in the model there.
             residual.data[observation.weights.data == 0] = 0
             loss.append(-0.5 * np.nansum(residual.data**2))
-            update = observation.convolve(residual, grad=True, cache=True)
-            update.data[:] *= step
-            model += update
-            model.data[(model.data < 0) | ~np.isfinite(model.data)] = 0
-            if footprintImage is not None:
-                model.data[:] *= footprintImage
-
-            # Check for a diverging model
-            if len(loss) > 1 and loss[-1] < loss[-2]:
-                step = step / 2
-                self.log.warning(f"Loss increased at iteration {n}, decreasing scale to {step}")
+            # A^T . residual is the +gradient of the log-likelihood (the
+            # ascent direction).
+            gradient = observation.convolve(residual, grad=True, cache=True)
+            if parameter is not None:
+                # FISTA's update descends (y = z - step . grad), so negate
+                # the gradient to ascend the log-likelihood. ``prox`` is
+                # applied inside ``update``.
+                parameter.update(n, -np.nan_to_num(gradient.data))
+                x = parameter.x
+            else:
+                # ``step`` is a Python float, so the arithmetic promotes to
+                # float64; cast back so the model keeps the image dtype (the
+                # FISTA path stays in dtype because ``update`` writes back
+                # into its float32 buffer in place).
+                x = prox(x + step * gradient.data).astype(dtype, copy=False)
+                # Check for a diverging model. FISTA requires a constant
+                # step, so step-halving is restricted to plain gradient
+                # ascent.
+                if len(loss) > 1 and loss[-1] < loss[-2]:
+                    step = step / 2
+                    self.log.warning(f"Loss increased at iteration {n}, decreasing scale to {step}")
 
             # Check for convergence
             if n > self.config.minIter and np.abs(loss[-1] - loss[-2]) < self.config.eRel * np.abs(loss[-1]):
                 break
 
-        return model, loss
+        return scl.Image(x, bands=(band,), yx0=yx0), loss
 
     def _modelToExposure(
         self,

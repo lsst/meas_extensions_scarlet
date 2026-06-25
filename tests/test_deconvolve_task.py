@@ -32,6 +32,7 @@ narrow model PSF only). The two existing tests cover the default
 import unittest
 import warnings
 
+import lsst.afw.detection as afwDetection
 import lsst.afw.image as afwImage
 import lsst.geom as geom
 from lsst.afw.detection import GaussianPsf
@@ -181,6 +182,82 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                     model_psf,
                 )
             )
+
+    def test_deconvolve_fista_and_zero_init_knobs(self):
+        """The ``useFista`` and ``useZeroInit`` knobs change the solver
+        without breaking the fit.
+
+        ``_deconvolve`` defaults to plain gradient ascent initialized
+        with the observed image. ``useFista`` swaps in the accelerated
+        proximal-gradient (FISTA) solver and ``useZeroInit`` starts the
+        iterate at zero instead. All four combinations must converge to
+        a finite, non-negative model that respects the supplied
+        footprint mask, and FISTA must reach a log-likelihood no worse
+        than plain gradient ascent.
+        """
+        image = pipeline.build_image(SCENES["multi-blend"])
+        detection = pipeline.detect(image)
+        band = image.bands[0]
+        coadd = image.mCoadd[band]
+
+        bbox = coadd.getBBox()
+        width, height = bbox.getDimensions()
+        x0, y0 = bbox.getMin()
+        footprintImage = afwDetection.footprintsToNumpy(
+            detection.catalog, shape=(height, width), xy0=(x0, y0)
+        )
+
+        losses = {}
+        for useFista in (False, True):
+            for useZeroInit in (False, True):
+                config = DeconvolveExposureTask.ConfigClass()
+                config.useFista = useFista
+                config.useZeroInit = useZeroInit
+                task = DeconvolveExposureTask(config=config)
+                observation = task._buildObservation(coadd, detection.catalog, band)
+                model, loss = task._deconvolve(observation, footprintImage=footprintImage)
+
+                self.assertTrue(np.all(np.isfinite(model.data)))
+                # The non-negativity proximal operator holds.
+                self.assertGreaterEqual(model.data.min(), 0)
+                # Flux only lives inside the input footprints.
+                self.assertTrue(np.all(model.data[0][footprintImage == 0] == 0))
+                losses[(useFista, useZeroInit)] = loss[-1]
+
+        # FISTA reaches a log-likelihood at least as high as plain
+        # gradient ascent from the same initialization.
+        for useZeroInit in (False, True):
+            self.assertGreaterEqual(
+                losses[(True, useZeroInit)],
+                losses[(False, useZeroInit)] - 1e-6,
+            )
+
+    def test_deconvolve_zero_init_starts_from_zero(self):
+        """``useZeroInit`` controls the first iterate of the solver.
+
+        With ``useZeroInit=True`` the deconvolved image is seeded with
+        zeros; with ``useZeroInit=False`` (the default) it is seeded with
+        the observed image. A single iteration is enough to distinguish
+        them: after one gradient step the two seeds have not yet
+        converged, so their models differ.
+        """
+        image = pipeline.build_image(SCENES["multi-blend"])
+        detection = pipeline.detect(image)
+        band = image.bands[0]
+        coadd = image.mCoadd[band]
+
+        models = {}
+        for useZeroInit in (False, True):
+            config = DeconvolveExposureTask.ConfigClass()
+            config.maxIter = 1
+            config.minIter = 0
+            config.useZeroInit = useZeroInit
+            task = DeconvolveExposureTask(config=config)
+            observation = task._buildObservation(coadd, detection.catalog, band)
+            model, _ = task._deconvolve(observation)
+            models[useZeroInit] = model.data
+
+        self.assertFalse(np.allclose(models[True], models[False]))
 
     def test_deconvolve_breaks_on_nonfinite_residual(self):
         """The deconvolution loop stops early when every residual
