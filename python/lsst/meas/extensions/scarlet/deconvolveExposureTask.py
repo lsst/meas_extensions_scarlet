@@ -51,58 +51,85 @@ __all__ = [
 
 def calculateUpdateStep(
     observation: scl.Observation,
-    minScale: float = 0.01,
-    defaultScale: float = 0.1,
+    safety: float = 1.0,
+    defaultStep: float = 0.1,
 ) -> float:
-    """Calculate the scale factor for the update step in deconvolution.
+    """Calculate the FISTA step size for deconvolution.
 
-    For most images this will be 1.0 but for images with low SNR
-    and/or high sparsity (for example LSST u-band images) the scale
-    factor will be less than 1.0.
+    The deconvolution maximizes ``-0.5 * ||A x - y||**2`` where ``A`` is
+    convolution by ``observation.diff_kernel`` (the difference kernel
+    matching the model PSF to the observed PSF). The gradient
+    ``A^T (A x - y)`` is Lipschitz with constant
+    ``L = ||A^T A||_2 = max_k |K_hat(k)|**2``, the squared peak of the
+    kernel's optical transfer function, so the largest step FISTA can take
+    without breaking its quadratic majorizer -- and thus without diverging
+    -- is ``t = 1 / L``.
+
+    The same ``1 / L`` is used for the non-FISTA (plain projected gradient
+    ascent) path. For FISTA ``1 / L`` is the tight ceiling -- its momentum
+    proof needs the per-step descent lemma, which holds only for
+    ``t <= 1 / L``. Plain gradient ascent is convergent for any
+    ``t < 2 / L`` and ``t <= 1 / L`` additionally guarantees monotone
+    improvement, so ``1 / L`` is a safe (mildly conservative) step there
+    rather than a hard limit. Do not raise the step toward ``2 / L`` to
+    speed up gradient ascent: the two solvers share this value, and that
+    would push FISTA past its stability limit. Footprint and zero-weight
+    masking only lower the effective ``L`` (``||A^T W A|| <= ||A^T A||``),
+    so ``1 / L`` stays safe for both.
+
+    The difference kernel is a `~lsst.scarlet.lite.Psf`, which exposes only
+    ``get_image(center)``; a spatially varying kernel (e.g. a
+    `ScarletStitchedPsf`) has no single array. ``L`` is therefore computed
+    from one representative cell, which is a good approximation because
+    neighboring cell PSFs differ only slightly.
 
     Parameters
     ----------
     observation :
-        Scarlet lite Observation.
-
-    minScale :
-        Minimum allowed scale factor.
-
-    defaultScale :
-        Default scale factor to return if noise level is non-finite.
+        Scarlet lite Observation. Its ``diff_kernel`` is the forward
+        convolution operator whose OTF sets the Lipschitz constant.
+    safety :
+        Factor in ``(0, 1]`` applied to the theoretical step. ``1.0`` is the
+        exact stability limit.
+    defaultStep :
+        Step returned when ``L`` cannot be computed (no difference kernel,
+        or a non-finite/non-positive spectrum).
 
     Returns
     -------
-    scale : float
-        Scale factor for the update step.
+    step : float
+        The FISTA step size ``safety / L``.
     """
-    # Calculate sparsity as fraction of unmasked pixels significantly
-    # above noise. Pixels with zero weight (border, NO_DATA, BAD) are
-    # excluded from both numerator and denominator so heavily masked
-    # inputs are not biased toward a small step.
-    noiseLevel = observation.noise_rms[0]
-    # Guard against non-finite or non-positive noise levels
-    if noiseLevel <= 0 or not np.isfinite(noiseLevel):
-        return defaultScale
-    image = observation.images.data[0]
-    validMask = observation.weights.data[0] > 0
-    validPixels = np.sum(validMask)
-    if validPixels == 0:
-        return defaultScale
-    signalMask = (image > 3*noiseLevel) & validMask
-    signalPixels = np.sum(signalMask)
-    sparsity = signalPixels / validPixels
+    kernel = observation.diff_kernel
+    if kernel is None:
+        # No PSF matching: A is the identity, so L = 1 exactly.
+        return safety
 
-    if np.any(signalMask):
-        medianSignal = np.median(image[signalMask])
-        snr = medianSignal / noiseLevel
-    else:
-        snr = 1.0
+    # Reduce the kernel to a representative single-cell image through the
+    # only accessor the Psf ABC guarantees. A plain ImagePsf ignores the
+    # center; a ScarletStitchedPsf returns the cell containing it, so use the
+    # observation's center (always inside a populated cell).
+    center = tuple(int(round(c)) for c in observation.bbox.center)
+    kernelImage = kernel.get_image(center)
+    data = kernelImage.data
+    if data.ndim == 2:
+        # A band-less cell PSF comes back 2D; restore the band axis so the
+        # FFT machinery transforms the spatial axes (1, 2).
+        data = data[None]
 
-    # Scale factor that decreases with sparsity and increases with SNR
-    scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
+    # Evaluate the OTF on the same grid the convolution uses, so |K_hat|**2
+    # are the eigenvalues of the discrete operator rather than an off-grid
+    # approximation. Wrapping the representative image in an ImagePsf reuses
+    # scarlet's cached Fourier transform instead of a hand-rolled FFT.
+    axes = (1, 2)
+    fftShape = scl.fft.get_fft_shape(observation.images.shape, data.shape, axes=axes)
+    otf = scl.ImagePsf(data).fourier.fft(fftShape, axes)
+    lipschitz = float(np.max(np.abs(otf) ** 2))
 
-    return max(minScale, scale)
+    if not np.isfinite(lipschitz) or lipschitz <= 0:
+        return defaultStep
+
+    return safety / lipschitz
 
 
 def scarletImagePsfToLsst(psf: scl.ImagePsf) -> measAlg.KernelPsf:
@@ -134,8 +161,8 @@ def scarletImagePsfToLsst(psf: scl.ImagePsf) -> measAlg.KernelPsf:
 
 @deprecated(
     reason=(
-        "Use `calculateUpdateStep` instead; the snake_case name is kept "
-        "as a shim. Will be removed after v31."
+        "Use `calculateUpdateStep` instead; the snake_case name and old API"
+        "is kept as a shim. Will be removed after v31."
     ),
     version="v30.0",
     category=FutureWarning,
@@ -145,10 +172,55 @@ def calculate_update_step(
     min_scale: float = 0.01,
     default_scale: float = 0.1,
 ) -> float:
-    """Deprecated snake_case alias for `calculateUpdateStep`."""
-    return calculateUpdateStep(
-        observation, minScale=min_scale, defaultScale=default_scale,
-    )
+    """Calculate the scale factor for the update step in deconvolution.
+
+    For most images this will be 1.0 but for images with low SNR
+    and/or high sparsity (for example LSST u-band images) the scale
+    factor will be less than 1.0.
+
+    Parameters
+    ----------
+    observation :
+        Scarlet lite Observation.
+
+    min_scale :
+        Minimum allowed scale factor.
+
+    default_scale :
+        Default scale factor to return if noise level is non-finite.
+
+    Returns
+    -------
+    scale : float
+        Scale factor for the update step.
+    """
+    # Calculate sparsity as fraction of unmasked pixels significantly
+    # above noise. Pixels with zero weight (border, NO_DATA, BAD) are
+    # excluded from both numerator and denominator so heavily masked
+    # inputs are not biased toward a small step.
+    noiseLevel = observation.noise_rms[0]
+    # Guard against non-finite or non-positive noise levels
+    if noiseLevel <= 0 or not np.isfinite(noiseLevel):
+        return default_scale
+    image = observation.images.data[0]
+    validMask = observation.weights.data[0] > 0
+    validPixels = np.sum(validMask)
+    if validPixels == 0:
+        return default_scale
+    signalMask = (image > 3*noiseLevel) & validMask
+    signalPixels = np.sum(signalMask)
+    sparsity = signalPixels / validPixels
+
+    if np.any(signalMask):
+        medianSignal = np.median(image[signalMask])
+        snr = medianSignal / noiseLevel
+    else:
+        snr = 1.0
+
+    # Scale factor that decreases with sparsity and increases with SNR
+    scale = min(1.0, (sparsity * np.sqrt(snr)) / 0.1)
+
+    return max(min_scale, scale)
 
 
 class DeconvolveExposureConnections(

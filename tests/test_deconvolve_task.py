@@ -30,6 +30,7 @@ narrow model PSF only). The two existing tests cover the default
 """
 
 import unittest
+import unittest.mock
 import warnings
 
 import lsst.afw.detection as afwDetection
@@ -306,28 +307,80 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         self.assertLess(len(loss), config.maxIter)
         self.assertFalse(np.isfinite(loss[-1]))
 
-    def test_calculate_update_step_excludes_masked_pixels(self):
-        """``calculateUpdateStep`` divides by the count of unmasked
-        pixels rather than the full image size.
+    def test_calculate_update_step_lipschitz(self):
+        """``calculateUpdateStep`` returns the Lipschitz FISTA step
+        ``safety / L`` with ``L = max_k |K_hat(k)|**2``.
 
-        The previous implementation computed ``sparsity =
-        np.sum(signal_mask) / image.size``; the denominator counted
-        every pixel in the array even when many of them carried zero
-        weight (border, NO_DATA, BAD). On heavily masked inputs such
-        as tract edges this artificially shrinks ``sparsity`` and in
-        turn the update step. The fix restricts both numerator and
-        denominator to pixels with non-zero weight, so the sparsity
-        reflects the fraction of *valid* pixels carrying signal.
+        When the observed PSF equals the model PSF the difference kernel
+        is the identity (a delta), so its optical transfer function is
+        unity everywhere and ``L = 1`` exactly. The step is then the
+        ``safety`` factor itself, and because the step is ``safety / L``
+        it scales linearly with ``safety``.
+        """
+        shape = (1, 32, 32)
+        psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        # Observed PSF == model PSF -> identity difference kernel -> L = 1.
+        observation = scl.Observation(
+            images=np.ones(shape, dtype=np.float32),
+            variance=np.ones(shape, dtype=np.float32),
+            weights=np.ones(shape, dtype=np.float32),
+            psf=scl.ImagePsf(psf[None]),
+            model_psf=scl.ImagePsf(psf[None]),
+            bands=("dummy",),
+            convolution_mode="fft",
+        )
+
+        step = calculateUpdateStep(observation)
+        self.assertAlmostEqual(step, 1.0, places=5)
+        self.assertTrue(np.isfinite(step))
+
+        # The step is safety / L, so it scales linearly with safety.
+        self.assertAlmostEqual(calculateUpdateStep(observation, safety=0.5), 0.5, places=5)
+        self.assertAlmostEqual(
+            calculateUpdateStep(observation, safety=0.5),
+            0.5 * step,
+            places=6,
+        )
+
+    def test_calculate_update_step_default_when_no_kernel(self):
+        """``calculateUpdateStep`` returns ``safety`` when there is no
+        difference kernel.
+
+        With no PSF matching the forward operator ``A`` is the identity,
+        so ``L = 1`` and the step is the bare ``safety`` factor. A
+        ``Mock`` standing in for the observation supplies
+        ``diff_kernel=None`` directly, exercising the early return without
+        constructing a full PSF-less observation.
+        """
+        observation = unittest.mock.Mock(diff_kernel=None)
+        self.assertEqual(calculateUpdateStep(observation), 1.0)
+        self.assertEqual(calculateUpdateStep(observation, safety=0.25), 0.25)
+
+    def test_calculate_update_step_legacy_excludes_masked_pixels(self):
+        """The legacy ``calculate_update_step`` divides by the count of
+        unmasked pixels rather than the full image size.
+
+        The original sparsity/SNR scale algorithm now lives only in the
+        deprecated ``calculate_update_step`` (``calculateUpdateStep``
+        having moved to the Lipschitz step). An even earlier
+        implementation computed ``sparsity = np.sum(signal_mask) /
+        image.size``; the denominator counted every pixel in the array
+        even when many of them carried zero weight (border, NO_DATA,
+        BAD). On heavily masked inputs such as tract edges this
+        artificially shrinks ``sparsity`` and in turn the update step.
+        The retained algorithm restricts both numerator and denominator
+        to pixels with non-zero weight, so the sparsity reflects the
+        fraction of *valid* pixels carrying signal.
 
         Two observations are built that differ only in their weight
         plane: ``full`` has weights ``1`` everywhere; ``half`` masks
         the bottom half of the image (which contains no signal). A
         signal-amplitude/noise pair is chosen so the resulting scale
-        does not saturate at the ``1.0`` cap. Under the previous
-        formula both observations yielded the same step (the denominator
-        ignored the mask); under the fix the masked observation yields
-        a step that is roughly twice as large because the denominator
-        halves while the signal count is preserved.
+        does not saturate at the ``1.0`` cap. Without the mask-aware
+        denominator both observations yield the same step; with it the
+        masked observation yields a step that is roughly twice as large
+        because the denominator halves while the signal count is
+        preserved.
 
         Regression test for finding DC-8 of the
         ``audits/audit-2026-05-05.md`` audit.
@@ -351,14 +404,17 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 images=image,
                 variance=variance,
                 weights=weights,
-                psfs=psf[None],
-                model_psf=psf[None],
+                psf=scl.ImagePsf(psf[None]),
+                model_psf=scl.ImagePsf(psf[None]),
                 bands=("dummy",),
                 convolution_mode="fft",
             )
 
-        step_full = calculateUpdateStep(_make_obs(full_weights))
-        step_half = calculateUpdateStep(_make_obs(half_weights))
+        # The legacy algorithm is deprecated; suppress its FutureWarning.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            step_full = calculate_update_step(_make_obs(full_weights))
+            step_half = calculate_update_step(_make_obs(half_weights))
 
         self.assertLess(step_full, 1.0)
         self.assertGreater(step_half, step_full)
@@ -367,41 +423,53 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         # so the masked step should be ~2× larger when neither caps.
         self.assertAlmostEqual(step_half / step_full, 2.0, places=5)
 
-    def test_calculate_update_step_deprecation_wrapper(self):
-        """The snake_case ``calculate_update_step`` shim emits a
-        ``FutureWarning`` and forwards to ``calculateUpdateStep``.
+    def test_calculate_update_step_deprecation(self):
+        """``calculate_update_step`` is deprecated and runs the legacy
+        scale algorithm rather than the new Lipschitz step.
 
-        The function was renamed to match the surrounding LSST
-        camelCase style; the legacy name is retained as a thin
-        deprecation wrapper so external callers continue to work for
-        one release.
+        The snake_case name is retained for one release as a deprecated
+        shim. It no longer forwards to ``calculateUpdateStep``: that
+        function now returns the Lipschitz FISTA step, while the legacy
+        sparsity/SNR scale stayed behind under the old name. Calling it
+        must emit a single ``FutureWarning`` pointing at the new name and
+        return the legacy scale, which differs from the new step.
 
         Regression test for finding DC-10 of the
         ``audits/audit-2026-05-05.md`` audit.
         """
-        shape = (1, 8, 8)
+        shape = (1, 32, 32)
+        image = np.zeros(shape, dtype=np.float32)
+        # A signal block so the legacy scale lands strictly between its
+        # ``min_scale`` floor and the ``1.0`` cap -- a genuinely computed
+        # value, not a clamped default.
+        image[0, :4, :4] = 5.0
         psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
         observation = scl.Observation(
-            images=np.ones(shape, dtype=np.float32),
+            images=image,
             variance=np.ones(shape, dtype=np.float32),
             weights=np.ones(shape, dtype=np.float32),
-            psfs=psf[None],
-            model_psf=psf[None],
+            psf=scl.ImagePsf(psf[None]),
+            model_psf=scl.ImagePsf(psf[None]),
             bands=("dummy",),
             convolution_mode="fft",
         )
 
-        expected = calculateUpdateStep(observation)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            actual = calculate_update_step(observation)
+            legacy = calculate_update_step(observation)
 
-        self.assertEqual(actual, expected)
         deprecation_warnings = [
             w for w in caught if issubclass(w.category, FutureWarning)
         ]
         self.assertEqual(len(deprecation_warnings), 1)
         self.assertIn("calculateUpdateStep", str(deprecation_warnings[0].message))
+
+        # The legacy scale is a genuine, in-range result of the old
+        # algorithm and no longer matches the new Lipschitz step.
+        self.assertTrue(np.isfinite(legacy))
+        self.assertGreater(legacy, 0.01)
+        self.assertLess(legacy, 1.0)
+        self.assertNotAlmostEqual(legacy, calculateUpdateStep(observation))
 
     def test_model_to_exposure_decouples_mask_and_variance(self):
         """``_modelToExposure`` detaches the output mask/variance from
