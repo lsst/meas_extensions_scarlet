@@ -28,6 +28,7 @@ import numpy as np
 from numpy.typing import DTypeLike
 
 import lsst.scarlet.lite as scl
+from lsst.utils import DeprecatedDict
 
 from .hierarchical_blend_data import LEGACY_HIERARCHICAL_TYPES, LsstHierarchicalBlendData
 from .source_data import IsolatedSourceData
@@ -65,6 +66,10 @@ class LsstScarletModelData:
         A mapping of isolated source IDs to their data.
     metadata
         A dictionary of additional metadata not needed for processing.
+        This is a `~lsst.utils.DeprecatedDict`: for a deprecation period
+        it also exposes ``bands``, ``model_psf`` and
+        ``psf`` as deprecated keys (mirrors of the typed attributes), which
+        warn on access and will be removed after v31.
     bands
         The ordered band labels of the model.
     model_psf
@@ -77,7 +82,7 @@ class LsstScarletModelData:
     model_type: str = MODEL_TYPE
     blends: dict[int, scl.io.ScarletBlendBaseData]
     isolated: dict[int, IsolatedSourceData]
-    metadata: dict[str, Any] | None
+    metadata: DeprecatedDict
     version: str = CURRENT_SCHEMA
     bands: tuple[str, ...] | None
     model_psf: np.ndarray | None
@@ -93,11 +98,39 @@ class LsstScarletModelData:
         psf: np.ndarray | None = None,
     ):
         self.blends = blends if blends is not None else {}
-        self.metadata = metadata
         self.isolated = isolated if isolated is not None else {}
         self.bands = bands
         self.model_psf = model_psf
         self.psf = psf
+        self.metadata = self._build_metadata(metadata, bands, model_psf, psf)
+
+    @staticmethod
+    def _build_metadata(
+        metadata: dict[str, Any] | None,
+        bands: tuple[str, ...] | None,
+        model_psf: np.ndarray | None,
+        psf: np.ndarray | None,
+    ) -> DeprecatedDict:
+        """Wrap ``metadata`` in a `DeprecatedDict`, injecting the promoted
+        typed attributes as deprecated back-compat keys.
+        """
+        data = dict(metadata) if metadata is not None else {}
+        if bands is not None:
+            data.setdefault("bands", tuple(bands))
+        if model_psf is not None:
+            data.setdefault("model_psf", model_psf)
+        if psf is not None:
+            data.setdefault("psf", psf)
+        return DeprecatedDict(
+            data,
+            deprecations={
+                key: (
+                    f"Use the typed attribute LsstScarletModelData.{key} instead."
+                )
+                for key in ("bands", "model_psf", "psf")
+            },
+            version="v30.0",
+        )
 
     def as_dict(self) -> dict[str, Any]:
         """Convert to a dictionary for serialization

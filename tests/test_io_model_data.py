@@ -198,6 +198,20 @@ class TestModelDataMigrations(lsst.utils.tests.TestCase):
             scl.io.migration.MigrationRegistry.current[MODEL_TYPE],
         )
 
+    def test_metadata_retains_deprecated_keys(self):
+        """During the deprecation period the promoted typed attributes
+        ``bands``/``model_psf``/``psf`` remain readable through
+        ``metadata`` for backwards compatibility. Throwaway once the keys
+        are removed after v31. (Membership tests do not warn.)
+        """
+        model = model_data_module.LsstScarletModelData(
+            bands=("g", "r"),
+            model_psf=np.ones((5, 5), dtype=np.float32),
+            psf=np.ones((2, 3, 3), dtype=np.float32),
+        )
+        for key in ("bands", "model_psf", "psf"):
+            self.assertIn(key, model.metadata)
+
 
 def setup_module(module):
     lsst.utils.tests.init()
