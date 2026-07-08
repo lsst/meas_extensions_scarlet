@@ -76,9 +76,9 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             )
         )
         self.modelData = bundle.result.scarletModelData
-        self.bands = self.modelData.metadata["bands"]
-        self.model_psf = self.modelData.metadata["model_psf"][None, :, :]
-        self.psf = self.modelData.metadata["psf"]
+        self.bands = self.modelData.bands
+        self.model_psf = self.modelData.model_psf[None, :, :]
+        self.psf = self.modelData.psf
         repo = self._setup_butler()
         self.butler = makeTestCollection(repo, uniqueId="test_run1")
         self.butler.put(self.modelData, "scarlet_model_data", dataId={})
@@ -95,9 +95,9 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         modelData2 = self.butler.get("scarlet_model_data", dataId={})
 
         np.testing.assert_almost_equal(
-            modelData2.metadata["model_psf"][None, :, :], self.model_psf
+            modelData2.model_psf[None, :, :], self.model_psf
         )
-        np.testing.assert_almost_equal(modelData2.metadata["psf"], self.psf)
+        np.testing.assert_almost_equal(modelData2.psf, self.psf)
         self.assertEqual(len(modelData2.blends), len(self.modelData.blends))
 
         for parentId in self.modelData.blends.keys():
@@ -163,104 +163,29 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
                 self._test_blend(blendData1, blendData2, self.model_psf, self.psf, self.bands)
 
     def test_legacy_model(self):
-        repo = self._setup_butler()
-        storageClass = StorageClass(
-            "LsstScarletModelData",
-            pytype=mes.io.LsstScarletModelData,
-        )
-        datasetType = DatasetType(
-            "old_scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=repo.dimensions,
-        )
-        ref = DatasetRef(
-            datasetType,
-            run="test_ingestion",
-            dataId={},
-        )
-        dataset = FileDataset(
-            path=os.path.join(TESTDIR, "data", "v29_models.json"),
-            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
-            refs=[ref],
-        )
+        """A pre-``metadata`` (v29) archive loads and promotes its
+        ``psf`` / ``psfShape`` into the typed ``model_psf`` attribute.
 
-        # Ingest the legacy model into the butler
-        butler = makeTestCollection(repo, uniqueId="ingestion")
-        repo.registry.registerDatasetType(datasetType)
-        butler.ingest(dataset)
-
-        model = butler.get("old_scarlet_model_data", dataId={})
+        """
+        model, butler = self._load_legacy_model("v29_models.json", "v29")
         self.assertEqual(len(model.blends), 2)
-        # The pre-``metadata`` archive stored the model PSF as the
-        # top-level ``psf`` / ``psfShape`` entries. The legacy
-        # migration must promote those into ``metadata['model_psf']``
-        # (numpy array, reconstructed via ``array_keys``) so
-        # downstream consumers see the same shape as a modern model.
-        # Regression test for finding IO-17 of
-        # ``audits/audit-2026-05-05.md``.
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
-        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
-        self.assertNotIn("psfShape", model.metadata)
-
-        test = butler.get("old_scarlet_model_data", dataId={}, parameters={"blend_id": 3495976385350991873})
-        self.assertEqual(len(test.blends), 1)
+        self.assertNotIn("psfShape", model.metadata or {})
+        self._assert_single_blend_load(butler, 3495976385350991873)
 
     def test_v30_legacy_model(self):
         """``LsstScarletModelData`` ingested from a v30-era fixture
         round-trips intact.
-
-        ``data/v30_models.json`` snapshots the on-disk layout produced
-        by LSST release v30 — model schema ``1.0.1`` and
-        isolated-source schema ``1.0.0``. It plays the same role for
-        future schema bumps that ``v29_models.json`` plays for the
-        pre-``metadata`` layout: as long as the migration chain stays
-        complete, a v30 archive must continue to load against whatever
-        schemas a later release ships.
         """
-        repo = self._setup_butler()
-        storageClass = StorageClass(
-            "LsstScarletModelData",
-            pytype=mes.io.LsstScarletModelData,
-        )
-        datasetType = DatasetType(
-            "old_scarlet_model_data",
-            dimensions=(),
-            storageClass=storageClass,
-            universe=repo.dimensions,
-        )
-        ref = DatasetRef(
-            datasetType,
-            run="test_ingestion_v30",
-            dataId={},
-        )
-        dataset = FileDataset(
-            path=os.path.join(TESTDIR, "data", "v30_models.json"),
-            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
-            refs=[ref],
-        )
-
-        butler = makeTestCollection(repo, uniqueId="ingestion_v30")
-        repo.registry.registerDatasetType(datasetType)
-        butler.ingest(dataset)
-
-        model = butler.get("old_scarlet_model_data", dataId={})
+        model, butler = self._load_legacy_model("v30_models.json", "v30")
 
         # The multi-blend scene that generated the fixture produces
         # three parent blends and one isolated source.
         self.assertEqual(len(model.blends), 3)
         self.assertEqual(len(model.isolated), 1)
 
-        # Metadata round-trips with the model_psf array reconstructed
-        # via ``decode_metadata``'s ``array_keys`` handling.
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
-        self.assertEqual(model.metadata["model_psf"].shape, (15, 15))
-        self.assertIn("psf", model.metadata)
-        self.assertIn("bands", model.metadata)
+        # The per-band psf and band list round-trip as typed attributes.
+        self.assertIsNotNone(model.psf)
+        self.assertIsNotNone(model.bands)
 
         # The isolated source survives the full ``IsolatedSourceData``
         # round-trip: shape and integer peak (post-IO-1), and a
@@ -274,14 +199,46 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         self.assertEqual(float(iso.span_array.sum()), 119.0)
 
         # Single-blend parameter load also works on v30 archives.
+        self._assert_single_blend_load(butler, sorted(model.blends.keys())[0])
+
+    def test_v31a_legacy_model(self):
+        """A pre-DM-55109 (schema 1.0.1) archive promotes to the typed model.
+
+        """
+        model, butler = self._load_legacy_model("v31a_models.json", "v31a")
+
+        # The migration chain promoted the model to the current schema.
+        self.assertEqual(model.version, "1.0.2")
+        self.assertEqual(len(model.blends), 3)
+        self.assertEqual(len(model.isolated), 1)
+
+        # Model-level fields are now typed attributes.
+        self.assertEqual(tuple(model.bands), ("g", "r", "i"))
+        self.assertEqual(model.psf.shape, (3, 41, 41))
+
+        # Every parent became a typed blend; legacy_spans is False since the
+        # archive carried real footprint spans.
+        for blend in model.blends.values():
+            self.assertIsInstance(blend, mes.io.LsstHierarchicalBlendData)
+            self.assertFalse(blend.legacy_spans)
+
+        # Pin the first parent's promoted spans so the conversion stays
+        # bit-exact.
         first_blend_id = sorted(model.blends.keys())[0]
-        test = butler.get(
-            "old_scarlet_model_data",
-            dataId={},
-            parameters={"blend_id": first_blend_id},
-        )
-        self.assertEqual(len(test.blends), 1)
-        self.assertIn(first_blend_id, test.blends)
+        first = model.blends[first_blend_id]
+        self.assertEqual(first.span_array.shape, (29, 41))
+        self.assertEqual(first.origin, (10, 50))
+        self.assertEqual(int(first.span_array.sum()), 797)
+
+        # The isolated source round-trips unchanged through the migration.
+        iso = next(iter(model.isolated.values()))
+        self.assertEqual(iso.span_array.shape, (13, 13))
+        self.assertEqual(iso.origin, (6, 14))
+        self.assertEqual(iso.peak, (12, 20))
+        self.assertEqual(float(iso.span_array.sum()), 119.0)
+
+        # Single-blend parameter load also works on v31a archives.
+        self._assert_single_blend_load(butler, first_blend_id)
 
     def test_older_legacy_model(self):
         repo = self._setup_butler()
@@ -368,11 +325,10 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
 
         model = mes.io.utils.read_scarlet_model(buf)
         self.assertEqual(len(model.blends), len(jm["blends"]))
-        self.assertIsNotNone(model.metadata)
-        self.assertIn("model_psf", model.metadata)
-        self.assertIsInstance(model.metadata["model_psf"], np.ndarray)
+        self.assertIsNotNone(model.model_psf)
+        self.assertIsInstance(model.model_psf, np.ndarray)
         self.assertEqual(
-            list(model.metadata["model_psf"].shape), model_psf_shape
+            list(model.model_psf.shape), model_psf_shape
         )
 
     def _test_blend(self, blendData1, blendData2, model_psf, psf, bands):
@@ -396,6 +352,54 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             dtype=np.float32,
         )
         np.testing.assert_almost_equal(blend1.get_model().data, blend2.get_model().data)
+
+    def _load_legacy_model(self, filename, unique):
+        """Ingest a legacy JSON model test context and return
+        ``(model, butler)``.
+
+        Parameters
+        ----------
+        filename : str
+            Fixture name under ``tests/data``.
+        unique : str
+            Short tag making the ingestion run/collection names unique.
+        """
+        repo = self._setup_butler()
+        storageClass = StorageClass(
+            "LsstScarletModelData",
+            pytype=mes.io.LsstScarletModelData,
+        )
+        datasetType = DatasetType(
+            "old_scarlet_model_data",
+            dimensions=(),
+            storageClass=storageClass,
+            universe=repo.dimensions,
+        )
+        ref = DatasetRef(datasetType, run=f"test_ingestion_{unique}", dataId={})
+        dataset = FileDataset(
+            path=os.path.join(TESTDIR, "data", filename),
+            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
+            refs=[ref],
+        )
+
+        butler = makeTestCollection(repo, uniqueId=f"ingestion_{unique}")
+        repo.registry.registerDatasetType(datasetType)
+        butler.ingest(dataset)
+
+        model = butler.get("old_scarlet_model_data", dataId={})
+        self.assertIsInstance(model.model_psf, np.ndarray)
+        self.assertEqual(model.model_psf.shape, (15, 15))
+        return model, butler
+
+    def _assert_single_blend_load(self, butler, blend_id):
+        """A ``blend_id`` parameter load returns exactly that one blend."""
+        test = butler.get(
+            "old_scarlet_model_data",
+            dataId={},
+            parameters={"blend_id": blend_id},
+        )
+        self.assertEqual(len(test.blends), 1)
+        self.assertIn(blend_id, test.blends)
 
     def _setup_butler(self):
         # Initialize a Butler to test persistence

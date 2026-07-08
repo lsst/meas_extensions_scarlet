@@ -22,9 +22,9 @@
 """Tests for the LsstScarletModelData schema migrations."""
 
 import copy
-import importlib
 import unittest
-from unittest import mock
+
+import numpy as np
 
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
@@ -32,10 +32,9 @@ from lsst.meas.extensions.scarlet.io import model_data as model_data_module
 from lsst.meas.extensions.scarlet.io.model_data import (
     CURRENT_SCHEMA,
     MODEL_TYPE,
-    SCARLET_LITE_SCHEMA,
-    _checkScarletLiteSchema,
     _to_1_0_0,
     _to_1_0_1,
+    _to_1_0_2,
 )
 
 
@@ -125,117 +124,93 @@ class TestModelDataMigrations(lsst.utils.tests.TestCase):
         self.assertEqual(result["version"], "1.0.1")
         self.assertEqual(result["metadata"], {"footprint": None})
 
-    def test_schema_version_constants_match(self):
-        """The schema constants line up with what's actually registered
-        and with the scarlet_lite version installed.
-
-        - ``SCARLET_LITE_SCHEMA`` is the scarlet_lite schema this
-          package was last verified against; it must match
-          ``scl.io.model_data.CURRENT_SCHEMA`` (the version of
-          scarlet_lite actually installed). A drift here is what
-          the module's import-time check raises on.
-        - ``CURRENT_SCHEMA`` is the current
-          ``meas_extensions_scarlet`` model schema; it must match
-          what's recorded as current for ``MODEL_TYPE`` in the
-          migration registry.
+    def test_to_1_0_2_promotes_real_hierarchical_spans(self):
+        """``_to_1_0_2`` converts a legacy ``hierarchical`` blend that
+        carries real ``spans``/``origin`` into an ``lsst_hierarchical``
+        blend, promoting the spans verbatim with ``legacy_spans=False``.
         """
-        self.assertEqual(
-            SCARLET_LITE_SCHEMA, scl.io.model_data.CURRENT_SCHEMA
+        spans = np.zeros((5, 6), dtype=bool)
+        spans[1:4, 2:5] = True
+        child = scl.io.ScarletBlendData(origin=(10, 20), shape=(5, 6), sources={})
+        legacy = scl.io.HierarchicalBlendData(
+            children={1: child},
+            metadata={"spans": spans.astype(int), "origin": (10, 20)},
         )
+        data = {
+            "blends": {7: legacy.as_dict()},
+            "isolated": {},
+            "model_type": MODEL_TYPE,
+            "version": "1.0.1",
+            "metadata": {},
+        }
+        result = _to_1_0_2(copy.deepcopy(data))
+        self.assertEqual(result["version"], "1.0.2")
+        blend = result["blends"][7]
+        self.assertEqual(blend["blend_type"], "lsst_hierarchical")
+        converted = scl.io.ScarletBlendBaseData.from_dict(blend)
+        self.assertIsInstance(converted, model_data_module.LsstHierarchicalBlendData)
+        np.testing.assert_array_equal(converted.span_array, spans)
+        self.assertEqual(tuple(converted.origin), (10, 20))
+        self.assertFalse(converted.legacy_spans)
+
+    def test_to_1_0_2_synthesizes_missing_spans(self):
+        """When a legacy ``hierarchical`` blend has no spans, ``_to_1_0_2``
+        synthesizes a filled rectangle from the children bbox and marks it
+        ``legacy_spans=True``.
+        """
+        child = scl.io.ScarletBlendData(origin=(10, 20), shape=(5, 6), sources={})
+        legacy = scl.io.HierarchicalBlendData(children={1: child})
+        data = {
+            "blends": {7: legacy.as_dict()},
+            "isolated": {},
+            "model_type": MODEL_TYPE,
+            "version": "1.0.1",
+            "metadata": {},
+        }
+        result = _to_1_0_2(copy.deepcopy(data))
+        converted = scl.io.ScarletBlendBaseData.from_dict(result["blends"][7])
+        self.assertTrue(converted.legacy_spans)
+        self.assertEqual(converted.span_array.shape, (5, 6))
+        self.assertTrue(converted.span_array.all())
+        self.assertEqual(tuple(converted.origin), (10, 20))
+
+    def test_to_1_0_2_ignores_flat_blends(self):
+        """``_to_1_0_2`` leaves non-hierarchical (flat) top-level blends
+        untouched — they have no meas-specific spans to promote.
+        """
+        flat = scl.io.ScarletBlendData(origin=(0, 0), shape=(3, 3), sources={})
+        data = {
+            "blends": {7: flat.as_dict()},
+            "isolated": {},
+            "model_type": MODEL_TYPE,
+            "version": "1.0.1",
+            "metadata": {},
+        }
+        result = _to_1_0_2(copy.deepcopy(data))
+        self.assertEqual(result["blends"][7]["blend_type"], "blend")
+
+    def test_schema_version_constants_match(self):
+        """``CURRENT_SCHEMA`` matches what's recorded as current for
+        ``MODEL_TYPE`` in the migration registry.
+        """
         self.assertEqual(
             CURRENT_SCHEMA,
             scl.io.migration.MigrationRegistry.current[MODEL_TYPE],
         )
 
-
-class TestScarletLiteSchemaCheck(lsst.utils.tests.TestCase):
-    """Tests for the scarlet_lite schema-drift safety net.
-
-    Covers finding C-7 of the ``audits/audit-2026-05-05.md`` audit:
-    a stray trailing comma packed the version-comparison operands
-    into a tuple of lists, so the very mechanism designed to detect
-    schema drift raised ``TypeError`` instead of the intended
-    ``RuntimeError`` the first time
-    ``scl.io.model_data.CURRENT_SCHEMA`` ever differed from
-    ``SCARLET_LITE_SCHEMA``. The same block also compared the wrong
-    pair of versions (the meas_extensions schema against the pinned
-    scarlet schema, instead of the installed scarlet schema against
-    the pinned one), so even with the comma dropped the check did
-    not match what its error message claimed.
-
-    The fixed helper is a bidirectional drift guard: any mismatch
-    between installed and pinned schema strings fires, because an
-    older installed scarlet may not emit the keys this package
-    expects and a newer one may have changed them.
-    """
-
-    def test_matching_versions(self):
-        """Equal scarlet and pinned schemas → no raise."""
-        # Sanity check: the no-drift case must stay silent.
-        _checkScarletLiteSchema("1.0.0", "1.0.0")
-        _checkScarletLiteSchema("2.5.7", "2.5.7")
-
-    def test_drift_scarlet_newer_major(self):
-        """Installed scarlet ahead by a major version → RuntimeError."""
-        with self.assertRaises(RuntimeError) as cm:
-            _checkScarletLiteSchema("2.0.0", "1.5.9")
-        # Message names the installed scarlet version so the
-        # developer knows which schema to migrate to.
-        self.assertIn("2.0.0", str(cm.exception))
-
-    def test_drift_scarlet_newer_minor(self):
-        """Installed scarlet ahead by a minor version → RuntimeError."""
-        with self.assertRaises(RuntimeError) as cm:
-            _checkScarletLiteSchema("1.1.0", "1.0.5")
-        self.assertIn("1.1.0", str(cm.exception))
-
-    def test_drift_scarlet_newer_patch(self):
-        """Installed scarlet ahead by a patch version → RuntimeError."""
-        with self.assertRaises(RuntimeError) as cm:
-            _checkScarletLiteSchema("1.0.1", "1.0.0")
-        self.assertIn("1.0.1", str(cm.exception))
-
-    def test_drift_scarlet_older(self):
-        """Installed scarlet behind the pinned version → RuntimeError.
-
-        Pins the bidirectional semantics: an older installed
-        scarlet is just as much of a drift as a newer one, because
-        the keys this package's IO layer expects to read or write
-        may not exist yet in the older schema.
+    def test_metadata_retains_deprecated_keys(self):
+        """During the deprecation period the promoted typed attributes
+        ``bands``/``model_psf``/``psf`` remain readable through
+        ``metadata`` for backwards compatibility. Throwaway once the keys
+        are removed after v31. (Membership tests do not warn.)
         """
-        with self.assertRaises(RuntimeError) as cm:
-            _checkScarletLiteSchema("1.0.0", "1.0.1")
-        self.assertIn("1.0.0", str(cm.exception))
-        with self.assertRaises(RuntimeError):
-            _checkScarletLiteSchema("1.0.0", "1.1.0")
-        with self.assertRaises(RuntimeError):
-            _checkScarletLiteSchema("0.9.9", "1.0.0")
-
-    def test_check_wired_at_import(self):
-        """The check fires at module import on a real version drift.
-
-        Reproduces the dormant failure path of finding C-7 from the
-        ``audits/audit-2026-05-05.md`` audit. Patching
-        ``scl.io.model_data.CURRENT_SCHEMA`` to a newer value and
-        reloading the module re-runs the import-time check; the
-        original bug raised ``TypeError`` from the malformed
-        ``int(list)``, while the fix raises the actionable
-        ``RuntimeError`` that names the new scarlet version.
-        """
-        # Patch the installed-scarlet version to something newer
-        # than SCARLET_LITE_SCHEMA so the drift branch fires.
-        with mock.patch.object(
-            scl.io.model_data, "CURRENT_SCHEMA", "9.9.9"
-        ):
-            with self.assertRaises(RuntimeError) as cm:
-                importlib.reload(model_data_module)
-        self.assertIn("9.9.9", str(cm.exception))
-        # Restore the module to its real state for the rest of the
-        # test session — the reload above ran against the patched
-        # value but the module is now imported with the wrong (now-
-        # unpatched) state. Reloading once more rebinds everything
-        # to the genuine constants.
-        importlib.reload(model_data_module)
+        model = model_data_module.LsstScarletModelData(
+            bands=("g", "r"),
+            model_psf=np.ones((5, 5), dtype=np.float32),
+            psf=np.ones((2, 3, 3), dtype=np.float32),
+        )
+        for key in ("bands", "model_psf", "psf"):
+            self.assertIn(key, model.metadata)
 
 
 def setup_module(module):

@@ -21,82 +21,116 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import numpy as np
 from numpy.typing import DTypeLike
 
 import lsst.scarlet.lite as scl
+from lsst.utils import DeprecatedDict
 
+from .hierarchical_blend_data import LEGACY_HIERARCHICAL_TYPES, LsstHierarchicalBlendData
 from .source_data import IsolatedSourceData
 
 __all__ = ["LsstScarletModelData"]
 
-CURRENT_SCHEMA = "1.0.1"
-SCARLET_LITE_SCHEMA = "1.0.0"
+CURRENT_SCHEMA = "1.0.2"
 MODEL_TYPE = "lsst"
 scl.io.migration.MigrationRegistry.set_current(MODEL_TYPE, CURRENT_SCHEMA)
 
 
-def _checkScarletLiteSchema(scarletSchema: str, pinnedSchema: str) -> None:
-    """Raise if the installed scarlet_lite schema is not the schema
-    this package was last verified against.
+class LsstScarletModelData:
+    """A container that propagates scarlet models for an entire catalog,
+    including isolated sources.
 
-    Bidirectional drift guard. Any mismatch means the IO layer
-    cannot be trusted to round-trip data: an older installed
-    scarlet may not emit the keys this package expects, and a
-    newer one may have changed them. Either way the user gets an
-    actionable error at import time instead of a confusing failure
-    deep inside a ``from_dict`` call.
+    This mirrors `~scarlet_lite.io.ScarletModelData` but carries information
+    specific to the LSST science pipelines, and owns its schema independent
+    from future changes to the scarlet_lite model.
 
-    Parameters
-    ----------
-    scarletSchema : str
-        Schema string from the installed
-        ``scl.io.model_data.CURRENT_SCHEMA``.
-    pinnedSchema : str
-        Schema string this package was last written against
-        (``SCARLET_LITE_SCHEMA``).
-
-    Raises
-    ------
-    RuntimeError
-        If ``scarletSchema`` differs from ``pinnedSchema``.
-    """
-    if scarletSchema != pinnedSchema:
-        raise RuntimeError(
-            "Version mismatch between meas_extensions_scarlet and scarlet lite. "
-            "This requires updating SCARLET_LITE_SCHEMA, CURRENT_SCHEMA, and a migration step "
-            f"to match the ScarletModelData schema version {scarletSchema}."
-        )
-
-
-# Ensure that the ScarletModelData from scarlet lite hasn't changed.
-_checkScarletLiteSchema(scl.io.model_data.CURRENT_SCHEMA, SCARLET_LITE_SCHEMA)
-
-
-class LsstScarletModelData(scl.io.ScarletModelData):
-    """A ScarletModelData that includes isolated sources.
+    Notes
+    -----
+    The persisted LsstScarletModelData object is stored to a zip file in the
+    science pipelines, where it's parameters are keys in the zip archive.
+    Those utilities are out of the migration registry scope, so we cheat a
+    little and package some of the attributes into a ``metadata`` dict
+    only for serialization. In :meth:`__init__` we lefit those fields
+    out of ``metadata`` and into typed attributes, and in :meth:`as_dict`
+    we fold them back into the metadata blob.
 
     Attributes
     ----------
-    isolated : dict[int, IsolatedSourceData]
+    blends
+        A mapping of parent IDs to blend data.
+    isolated
         A mapping of isolated source IDs to their data.
-    version : dict[int, scl.io.ScarletBlendBaseData]
+    metadata
+        A dictionary of additional metadata not needed for processing.
+        This is a `~lsst.utils.DeprecatedDict`: for a deprecation period
+        it also exposes ``bands``, ``model_psf`` and
+        ``psf`` as deprecated keys (mirrors of the typed attributes), which
+        warn on access and will be removed after v31.
+    bands
+        The ordered band labels of the model.
+    model_psf
+        The 2D model-space PSF shared by all bands.
+    psf
+        The per-band observed PSFs, shape ``(n_bands, height, width)``.
+    version
         The schema version of the serialized data.
     """
     model_type: str = MODEL_TYPE
+    blends: dict[int, scl.io.ScarletBlendBaseData]
     isolated: dict[int, IsolatedSourceData]
+    metadata: DeprecatedDict
     version: str = CURRENT_SCHEMA
+    bands: tuple[str, ...] | None
+    model_psf: np.ndarray | None
+    psf: np.ndarray | None
 
     def __init__(
         self,
         isolated: dict[int, IsolatedSourceData] | None = None,
         blends: dict[int, scl.io.ScarletBlendBaseData] | None = None,
         metadata: dict[str, Any] | None = None,
+        bands: tuple[str, ...] | None = None,
+        model_psf: np.ndarray | None = None,
+        psf: np.ndarray | None = None,
     ):
-        super().__init__(blends=blends, metadata=metadata)
+        self.blends = blends if blends is not None else {}
         self.isolated = isolated if isolated is not None else {}
+        self.bands = bands
+        self.model_psf = model_psf
+        self.psf = psf
+        self.metadata = self._build_metadata(metadata, bands, model_psf, psf)
+
+    @staticmethod
+    def _build_metadata(
+        metadata: dict[str, Any] | None,
+        bands: tuple[str, ...] | None,
+        model_psf: np.ndarray | None,
+        psf: np.ndarray | None,
+    ) -> DeprecatedDict:
+        """Wrap ``metadata`` in a `DeprecatedDict`, injecting the promoted
+        typed attributes as deprecated back-compat keys.
+        """
+        data = dict(metadata) if metadata is not None else {}
+        if bands is not None:
+            data.setdefault("bands", tuple(bands))
+        if model_psf is not None:
+            data.setdefault("model_psf", model_psf)
+        if psf is not None:
+            data.setdefault("psf", psf)
+        return DeprecatedDict(
+            data,
+            deprecations={
+                key: (
+                    f"Use the typed attribute LsstScarletModelData.{key} instead."
+                )
+                for key in ("bands", "model_psf", "psf")
+            },
+            version="v30.0",
+        )
 
     def as_dict(self) -> dict[str, Any]:
         """Convert to a dictionary for serialization
@@ -105,16 +139,38 @@ class LsstScarletModelData(scl.io.ScarletModelData):
         -------
         result : dict[str, Any]
             The object encoded as a JSON-compatible dictionary.
+            The mechanism for serializing to a zip file is outside of the
+            migration path, so the goal is to keep the result dict relatively
+            unchanged and hide new fields in the metadata blob, and extract
+            them in from_dict. So we should try to keep the result keys
+            as static as possible:
+            - ``model_type``: The type of the model, used for dispatch in
+              the migration registry.
+            - ``blends``: The dictionary of blend data.
+            - ``isolated``: The dictionary of isolated source data.
+            - ``metadata``: The metadata blob containing additional
+              information.
+            - ``version``: The schema version of the serialized data.
         """
-        data = super().as_dict()
-        data.update(
-            {
-                "model_type": MODEL_TYPE,
-                "isolated": {k: v.as_dict() for k, v in self.isolated.items()},
-                "version": self.version,
-            }
-        )
-        return data
+        # Fold the typed attributes back into the metadata blob.
+        meta = dict(self.metadata) if self.metadata is not None else {}
+        if self.bands is not None:
+            meta["bands"] = tuple(self.bands)
+        if self.model_psf is not None:
+            meta["model_psf"] = self.model_psf
+        if self.psf is not None:
+            meta["psf"] = self.psf
+        return {
+            "model_type": MODEL_TYPE,
+            "blends": {bid: b.as_dict() for bid, b in self.blends.items()},
+            "isolated": {sid: s.as_dict() for sid, s in self.isolated.items()},
+            "metadata": scl.io.utils.encode_metadata(meta) if meta else None,
+            "version": self.version,
+        }
+
+    def json(self) -> str:
+        """Serialize the data model to a JSON formatted string."""
+        return json.dumps(self.as_dict())
 
     @classmethod
     def from_dict(cls, data: dict, dtype: DTypeLike = np.float32) -> LsstScarletModelData:
@@ -133,12 +189,37 @@ class LsstScarletModelData(scl.io.ScarletModelData):
             The reconstructed object
         """
         data = scl.io.migration.MigrationRegistry.migrate(MODEL_TYPE, data)
+        blends: dict[int, scl.io.ScarletBlendBaseData] = {}
+        for bid, blend in data.get("blends", {}).items():
+            if "blend_type" not in blend:
+                # Default to a flat blend for legacy data.
+                blend["blend_type"] = "blend"
+            try:
+                blends[int(bid)] = scl.io.ScarletBlendBaseData.from_dict(blend, dtype=dtype)
+            except KeyError:
+                raise scl.io.utils.PersistenceError(
+                    f"Unknown blend type: {blend['blend_type']} for blend ID: {bid}"
+                )
         isolated: dict[int, IsolatedSourceData] = {}
         for sid, source_data in data.get("isolated", {}).items():
             isolated[int(sid)] = IsolatedSourceData.from_dict(source_data, dtype=dtype)
-        if "metadata" not in data:
-            data["metadata"] = None
-        return super().from_dict(data, dtype=dtype, isolated=isolated)
+        metadata = scl.io.utils.decode_metadata(data.get("metadata", None))
+        bands = metadata.pop("bands", None)
+        model_psf = metadata.pop("model_psf", None)
+        psf = metadata.pop("psf", None)
+        return cls(
+            isolated=isolated,
+            blends=blends,
+            metadata=metadata,
+            bands=bands,
+            model_psf=model_psf,
+            psf=psf
+        )
+
+    @classmethod
+    def parse_obj(cls, data: dict) -> LsstScarletModelData:
+        """Construct from a python-decoded JSON object (``json.load``)."""
+        return cls.from_dict(data, dtype=np.float32)
 
 
 @scl.io.migration.migration(MODEL_TYPE, scl.io.migration.PRE_SCHEMA)
@@ -197,4 +278,36 @@ def _to_1_0_1(data: dict) -> dict:
     if data.get("metadata") is None:
         data["metadata"] = {}
     data["metadata"].setdefault("footprint", None)
+    return data
+
+
+@scl.io.migration.migration(MODEL_TYPE, "1.0.1")
+def _to_1_0_2(data: dict) -> dict:
+    """Migrate a schema version 1.0.1 model to schema version 1.0.2.
+
+    1.0.1 (and earlier) stored top-level parent blends as scarlet_lite
+    ``HierarchicalBlendData`` with the detected-parent footprint
+    (``spans``/``origin``) in the blend ``metadata`` dict. 1.0.2 promotes each
+    to ``LsstHierarchicalBlendData``, where those fields are typed attributes.
+
+    Each legacy blend is handed to
+    ``LsstHierarchicalBlendData.convert_from_hierarchical``. This runs before
+    blend dispatch in ``from_dict``, so the rewritten dicts deserialize
+    directly to the new class.
+
+    Parameters
+    ----------
+    data : dict
+        The data to migrate.
+
+    Returns
+    -------
+    result : dict
+        The migrated data.
+    """
+    blends = data.get("blends", {})
+    for bid, blend in list(blends.items()):
+        if blend.get("blend_type", "blend") in LEGACY_HIERARCHICAL_TYPES:
+            blends[bid] = LsstHierarchicalBlendData.convert_from_hierarchical(blend)
+    data["version"] = "1.0.2"
     return data

@@ -1154,11 +1154,11 @@ class ScarletDeblendTask(pipeBase.Task):
         nBands = len(context.observation.bands)
 
         # Initialize the persistable ScarletModelData object
-        modelData = io.LsstScarletModelData(metadata={
-            "model_psf": context.observation.model_psf[0],
-            "psf": context.observation.psfs,
-            "bands": context.observation.bands,
-        })
+        modelData = io.LsstScarletModelData(
+            bands=context.observation.bands,
+            model_psf=context.observation.model_psf[0],
+            psf=context.observation.psfs,
+        )
 
         if self.config.persistIsolated:
             # Add isolated sources to the model data
@@ -1340,12 +1340,11 @@ class ScarletDeblendTask(pipeBase.Task):
                     child.set(childColumn, parentRecord.get(parentColumn))
 
             # Persist the blend data
-            modelData.blends[parentRecord.getId()] = scl.io.HierarchicalBlendData(
+            modelData.blends[parentRecord.getId()] = io.LsstHierarchicalBlendData(
                 children=parentBlends,
-                metadata={
-                    "spans": parentFootprint.getSpans().asArray(),
-                    "origin": (y0, x0),
-                }
+                span_array=parentFootprint.getSpans().asArray(),
+                origin=(y0, x0),
+                legacy_spans=False,
             )
 
         nDeblendedSources = np.sum(objectCatalog["parent"] != 0)
