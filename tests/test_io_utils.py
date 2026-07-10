@@ -21,8 +21,11 @@
 
 """Tests for the helpers in ``lsst.meas.extensions.scarlet.io.utils``."""
 
+import io
+import json
 import unittest
 import warnings
+import zipfile
 
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
@@ -447,6 +450,108 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
 
         with self.assertRaises(ValueError):
             mes.io.loadBlend(blendData, modelData=modelData)
+
+
+class TestWriteScarletModelCompression(lsst.utils.tests.TestCase):
+    """Tests for compression in ``write_scarlet_model`` /
+    ``read_scarlet_model``.
+
+    ``write_scarlet_model`` now compresses archives with
+    ``zipfile.ZIP_DEFLATED`` by default. ``read_scarlet_model`` must
+    keep reading both the new compressed archives and older,
+    uncompressed (``ZIP_STORED``) ones, since the compression method is
+    stored per-member in each zip and decoded transparently on read.
+    """
+
+    def _modelData(self):
+        # ``pipeline.deblend`` is memoized per (scene, config), so this
+        # is effectively a free lookup after the first invocation.
+        bundle = pipeline.deblend(
+            pipeline.deconvolve(
+                pipeline.detect(pipeline.build_image(SCENES["multi-blend"]))
+            )
+        )
+        return bundle.result.scarletModelData
+
+    @staticmethod
+    def _compression_methods(buf):
+        # Return the set of per-member compression methods used in the
+        # archive held by ``buf``.
+        buf.seek(0)
+        with zipfile.ZipFile(buf, "r") as zf:
+            return {info.compress_type for info in zf.infolist()}
+
+    def _assert_models_equal(self, modelData1, modelData2):
+        # ``as_dict`` captures the whole model (metadata, every blend
+        # and source, and the isolated sources). ``json.dumps`` with
+        # sorted keys gives a canonical form and stringifies the int
+        # source-keys, which is the one non-value difference a JSON
+        # round-trip introduces. The numeric fields round-trip
+        # bitwise-identical, so this comparison is exact.
+        self.assertEqual(
+            json.dumps(modelData1.as_dict(), sort_keys=True),
+            json.dumps(modelData2.as_dict(), sort_keys=True),
+        )
+
+    def test_write_defaults_to_deflated(self):
+        """By default every member of the archive is DEFLATE-compressed.
+
+        Pins the "always compress going forward" contract: a fresh
+        ``write_scarlet_model`` must not leave any ``ZIP_STORED``
+        members behind.
+        """
+        modelData = self._modelData()
+        buf = io.BytesIO()
+        mes.io.utils.write_scarlet_model(buf, modelData)
+
+        methods = self._compression_methods(buf)
+        self.assertEqual(methods, {zipfile.ZIP_DEFLATED})
+
+    def test_compressed_roundtrip(self):
+        """A default (compressed) write round-trips through
+        ``read_scarlet_model``.
+        """
+        modelData = self._modelData()
+        buf = io.BytesIO()
+        mes.io.utils.write_scarlet_model(buf, modelData)
+
+        buf.seek(0)
+        modelData2 = mes.io.utils.read_scarlet_model(buf)
+        self._assert_models_equal(modelData, modelData2)
+
+    def test_reads_legacy_uncompressed_archive(self):
+        """A ``ZIP_STORED`` (uncompressed) archive still reads.
+
+        Older files were written without a compression method; the read
+        path must remain backward compatible.
+        """
+        modelData = self._modelData()
+        buf = io.BytesIO()
+        # Explicitly write an uncompressed archive to emulate a
+        # pre-compression file on disk.
+        mes.io.utils.write_scarlet_model(buf, modelData, compression=zipfile.ZIP_STORED)
+
+        self.assertEqual(self._compression_methods(buf), {zipfile.ZIP_STORED})
+
+        buf.seek(0)
+        modelData2 = mes.io.utils.read_scarlet_model(buf)
+        self._assert_models_equal(modelData, modelData2)
+
+    def test_compression_reduces_size(self):
+        """The compressed archive is smaller than the uncompressed one.
+
+        A cheap sanity check that compression is actually being applied
+        rather than merely tagged.
+        """
+        modelData = self._modelData()
+
+        stored = io.BytesIO()
+        mes.io.utils.write_scarlet_model(stored, modelData, compression=zipfile.ZIP_STORED)
+
+        deflated = io.BytesIO()
+        mes.io.utils.write_scarlet_model(deflated, modelData)
+
+        self.assertLess(len(deflated.getvalue()), len(stored.getvalue()))
 
 
 def setup_module(module):

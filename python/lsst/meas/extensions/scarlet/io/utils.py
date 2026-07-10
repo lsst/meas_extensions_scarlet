@@ -627,20 +627,37 @@ def scarlet_model_to_zip_json(model_data: LsstScarletModelData) -> dict[str, Any
     return data
 
 
-def write_scarlet_model(path_or_stream: str | BinaryIO, model_data: LsstScarletModelData):
+def write_scarlet_model(
+    path_or_stream: str | BinaryIO,
+    model_data: LsstScarletModelData,
+    compression: int = zipfile.ZIP_DEFLATED,
+    compresslevel: int | None = 6,
+):
     """Write a LsstScarletModelData instance to a zip file.
 
     Parameters
     ----------
+    path_or_stream : `str` or `BinaryIO`
+        Path to the zip file to write, or a binary stream to write into.
     model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
         LsstScarletModelData instance.
-
-    Returns
-    -------
-    zip_dict :
-        Dictionary mapping filenames to the desired file type.
+    compression : `int`, optional
+        The ``zipfile`` compression method to use. Defaults to
+        `zipfile.ZIP_DEFLATED` so that models are always compressed
+        going forward. Older, uncompressed (`zipfile.ZIP_STORED`)
+        archives remain readable by `read_scarlet_model` since the
+        compression method is stored per-member in the archive.
+    compresslevel : `int` or `None`, optional
+        The compression level passed to `zipfile.ZipFile`. Only
+        meaningful for `zipfile.ZIP_DEFLATED` (0-9) and
+        `zipfile.ZIP_BZIP2` (1-9); ignored otherwise. Defaults to 6.
     """
-    with zipfile.ZipFile(path_or_stream, 'w') as zf:
+    with zipfile.ZipFile(
+        path_or_stream,
+        "w",
+        compression=compression,
+        compresslevel=compresslevel,
+    ) as zf:
         zip_archive = scarlet_model_to_zip_json(model_data)
         for filename, data in zip_archive.items():
             zf.writestr(filename, data)
