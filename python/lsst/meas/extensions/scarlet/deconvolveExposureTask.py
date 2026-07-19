@@ -19,16 +19,19 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import dataclasses
 import logging
 
 import lsst.afw.detection as afwDet
 import lsst.afw.image as afwImage
 import lsst.afw.table as afwTable
+import lsst.images as imgs
 import lsst.pex.config as pexConfig
 import lsst.pipe.base as pipeBase
 import lsst.pipe.base.connectionTypes as cT
 import lsst.scarlet.lite as scl
 import numpy as np
+from lsst.images.cells import CellCoadd
 from deprecated.sphinx import deprecated
 
 from . import utils
@@ -164,8 +167,12 @@ class DeconvolveExposureConnections(
             # Deconvolution will not use input catalog if
             # footprints are not used
             self.inputs.remove("catalog")
-
-        if config.useCellCoadds:
+        if config.imageType == "future":
+            self.coadd = dataclasses.replace(self.coadd, storageClass="CellCoadd")
+            self.deconvolved = dataclasses.replace(self.deconvolved, storageClass="MaskedImageV2")
+            del self.coadd_cell
+            del self.background
+        elif config.useCellCoadds:
             del self.coadd
         else:
             del self.coadd_cell
@@ -203,6 +210,23 @@ class DeconvolveExposureConfig(
         doc="Use cell-based coadd instead of regular coadd?",
         default=False,
     )
+    imageType = pexConfig.ChoiceField[str](
+        "Which image type to read and write. "
+        "This option only directly affects connection storage classes and hence 'runQuantum'; the 'run' "
+        "method behavior is determined by which type is actually passed in.",
+        allowed={
+            "legacy": (
+                "Read a lsst.cell_coadds.MultipleCellCoadd and restore 'background' (if useCellCoadd) or "
+                "lsst.afw.image.Exposure (if not useCellCoadd), and write an lsst.afw.image.Exposure."
+            ),
+            "future": (
+                "Read a lsst.images.cells.CellCoadd via 'connections.coadd' and write an "
+                "lsst.images.MaskedImage.  The useCellCoadd option will be ignored."
+            ),
+        },
+        optional=False,
+        default="legacy",
+    )
 
 
 class DeconvolveExposureTask(pipeBase.PipelineTask):
@@ -219,16 +243,22 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
     def runQuantum(self, butlerQC, inputRefs, outputRefs):
         inputs = butlerQC.get(inputRefs)
 
-        # Stitch together cell-based coadds (if necessary)
-        if self.config.useCellCoadds:
-            band = inputRefs.coadd_cell.dataId['band']
-            cellCoadd = inputs.pop('coadd_cell')
-            background = inputs.pop('background')
-            coadd = cellCoadd.stitch().asExposure()
-            coadd.image -= background.getImage()
-        else:
-            coadd = inputs.pop("coadd")
-            band = inputRefs.coadd.dataId['band']
+        match self.config.imageType:
+            case "legacy":
+                if self.config.useCellCoadds:
+                    band = inputRefs.coadd_cell.dataId['band']
+                    cellCoadd = inputs.pop('coadd_cell')
+                    background = inputs.pop('background')
+                    coadd = cellCoadd.stitch().asExposure()
+                    coadd.image -= background.getImage()
+                else:
+                    coadd = inputs.pop("coadd")
+                    band = inputRefs.coadd.dataId['band']
+            case "future":
+                coadd = inputs.pop("coadd")
+                band = inputRefs.coadd.dataId['band']
+            case _:
+                raise AssertionError(f"Invalid choice {self.config.imageType!r} for imageType.")
 
         catalog = inputs.pop('catalog', None)
 
@@ -242,7 +272,7 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
     def run(
         self,
-        coadd: afwImage.Exposure,
+        coadd: afwImage.Exposure | CellCoadd,
         catalog: afwTable.SourceCatalog | None = None,
         band: str = 'dummy'
     ) -> pipeBase.Struct:
@@ -266,8 +296,25 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
         Returns
         -------
         deconvolved : `pipeBase.Struct`
-            Deconvolved exposure
+            Deconvolved exposure (if an `lsst.afw.image.Exposure` is provided;
+            an `lsst.images.MaskedImage` if an `lsst.images.cells.CellCoadd`
+            is provided).
         """
+        futureInputImage = None
+        if isinstance(coadd, CellCoadd):
+            # For now we just convert the future CellCoadd into an Exposure for
+            # the bulk of the work, and convert the result back at the end (we
+            # just convert to MaskedImage because we don't need to duplicate
+            # the structured metadata). Converting the internals to use
+            # lsst.images types would be disruptive but could take advantage of
+            # the fact that the lsst.images.CellPointSpreadFunction type knows
+            # which cells are missing and could probably do a better job of
+            # picking a decent representative PSF for the full image, but it
+            # would be cleanest to do that while rewriting some of the utility
+            # functions to work exclusively with lsst.images types, and that
+            # looks like it might be disruptive.
+            futureInputImage = coadd
+            coadd = coadd.to_legacy()
         observation = self._buildObservation(coadd, catalog, band)
 
         # Build the per-pixel footprint mask from the catalog, if one
@@ -285,8 +332,15 @@ class DeconvolveExposureTask(pipeBase.PipelineTask):
 
         model, loss = self._deconvolve(observation, footprintImage=footprintImage)
 
-        exposure = self._modelToExposure(model.data[0], coadd)
-        return pipeBase.Struct(deconvolved=exposure, loss=loss)
+        deconvolved = self._modelToExposure(model.data[0], coadd)
+        if futureInputImage:
+            deconvolved = imgs.MaskedImage.from_legacy(
+                deconvolved.maskedImage,
+                unit=futureInputImage.unit,
+                plane_map=imgs.get_legacy_deep_coadd_mask_planes(),
+                sky_projection=futureInputImage.sky_projection,
+            )
+        return pipeBase.Struct(deconvolved=deconvolved, loss=loss)
 
     def _buildObservation(
         self,
