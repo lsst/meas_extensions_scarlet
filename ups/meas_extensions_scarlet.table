@@ -11,6 +11,7 @@ setupRequired(log)
 setupRequired(pex_config)
 setupRequired(pex_exceptions)
 setupRequired(pipe_base)
+setupRequired(images)
 
 setupOptional(testdata_deblender)
 
