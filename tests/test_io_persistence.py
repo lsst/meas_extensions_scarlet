@@ -291,6 +291,34 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         self.assertEqual(len(model.blends), 2)
         self.assertEqual(len(model.isolated), 0)
 
+    def test_lsst_scarlet_model_conversion(self):
+        """Test converting an LsstScarletModelData to a ScarletModelData
+        (lossily) via the Butler.
+        """
+        repo = self._setup_butler()
+        newDatasetType = DatasetType(
+            "new_scarlet_model_data",
+            dimensions=(),
+            storageClass="LsstScarletModelData",
+            universe=repo.dimensions,
+        )
+        ref = DatasetRef(
+            newDatasetType,
+            run="test_ingestion",
+            dataId={},
+        )
+        dataset = FileDataset(
+            path=os.path.join(TESTDIR, "data", "v29_models.json"),
+            formatter="lsst.daf.butler.formatters.json.JsonFormatter",
+            refs=[ref],
+        )
+        butler = makeTestCollection(repo, uniqueId="ingestion")
+        repo.registry.registerDatasetType(newDatasetType)
+        butler.ingest(dataset)
+        model = butler.get("new_scarlet_model_data", dataId={}, storageClass="ScarletModelData")
+        self.assertIsInstance(model, lsst.scarlet.lite.io.ScarletModelData)
+        self.assertEqual(len(model.blends), 2)
+
     def test_read_legacy_zip_without_metadata(self):
         """``read_scarlet_model`` reads a legacy-format zip that has no
         ``metadata`` entry.

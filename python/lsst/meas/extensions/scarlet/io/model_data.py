@@ -221,6 +221,17 @@ class LsstScarletModelData:
         """Construct from a python-decoded JSON object (``json.load``)."""
         return cls.from_dict(data, dtype=np.float32)
 
+    def to_scarlet_model_data(self) -> scl.io.ScarletModelData:
+        """Convert to a scarlet_lite `ScarletModelData` instance (lossy).
+
+        Returns
+        -------
+        result : `scarlet_lite.io.ScarletModelData`
+            A scarlet_lite model data instance with the shared blend and
+            metadata information.
+        """
+        return scl.io.ScarletModelData(blends=self.blends, metadata=self.metadata)
+
 
 @scl.io.migration.migration(MODEL_TYPE, scl.io.migration.PRE_SCHEMA)
 def _to_1_0_0(data: dict) -> dict:
