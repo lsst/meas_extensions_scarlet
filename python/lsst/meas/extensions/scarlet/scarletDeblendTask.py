@@ -1032,11 +1032,8 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Returns
         -------
-        templateCatalogs: dict
-            Keys are the names of the bands and the values are
-            `lsst.afw.table.source.source.SourceCatalog`'s.
-            These are catalogs with heavy footprints that are the templates
-            created by the multiband templates.
+        result : `lsst.pipe.base.Struct`
+            See `deblend`; its output is returned unmodified.
         """
         # Create a table to hold object records
         table = afwTable.SourceTable.make(self.objectSchema)
@@ -1085,12 +1082,15 @@ class ScarletDeblendTask(pipeBase.Task):
 
         Returns
         -------
-        deblendedCatalog :
-            The ``deblendedCatalog`` isolated and deblended child sources.
-        scarletModelData :
-            The persistable data model for the deblender.
-        objectParents :
-            The parent catalog with deconvolved parents added.
+        result : `lsst.pipe.base.Struct`
+            A struct with the following attributes (all
+            `lsst.afw.table.SourceCatalog` instances):
+
+            - ``deblendedCatalog``: isolated and deblended child sources.
+            - ``scarletModelData``: persistable deblended model data for the
+              deblender.
+            - ``objectParents``: the parent catalog with deconvolved parents
+              added.
         """
 
         # Cull footprints if required by ci
