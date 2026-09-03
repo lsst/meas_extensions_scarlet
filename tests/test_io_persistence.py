@@ -291,6 +291,38 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         self.assertEqual(len(model.blends), 2)
         self.assertEqual(len(model.isolated), 0)
 
+    def test_lsst_scarlet_model_write_conversion(self):
+        """Test writing an LsstScarletModelData to a dataset type with
+        the old ScarletModelData storage class via the Butler.
+        """
+        model1, butler = self._load_legacy_model(
+            os.path.join(TESTDIR, "data", "v31a_models.json"),
+            "write_conversion",
+        )
+        self.assertIsInstance(model1, mes.io.LsstScarletModelData)
+        oldDatasetType = DatasetType(
+            "older_scarlet_model_data",
+            dimensions=(),
+            storageClass="ScarletModelData",
+            universe=butler.dimensions,
+        )
+        butler.registry.registerDatasetType(oldDatasetType)
+        # Write the new model with the old storage class, which should be
+        # lossless.
+        butler.put(model1, "older_scarlet_model_data", dataId={})
+        # Read it back as the new (full) type, which also should be lossless.
+        model2 = butler.get(
+            "older_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData"
+        )
+        self.assertIsInstance(model2, mes.io.LsstScarletModelData)
+        self.assertEqual(len(model2.blends), len(model1.blends))
+        self.assertEqual(set(model2.isolated), set(model1.isolated))
+        for sourceId in model1.isolated:
+            iso1 = model1.isolated[sourceId]
+            iso2 = model2.isolated[sourceId]
+            self.assertTupleEqual(iso1.origin, iso2.origin)
+            np.testing.assert_array_equal(iso1.span_array, iso2.span_array)
+
     def test_read_legacy_zip_without_metadata(self):
         """``read_scarlet_model`` reads a legacy-format zip that has no
         ``metadata`` entry.

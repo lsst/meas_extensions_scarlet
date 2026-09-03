@@ -691,6 +691,12 @@ class ScarletModelFormatter(FormatterV2):
     can_read_from_stream = True
     can_read_from_local_file = True
 
+    def can_accept(self, in_memory_dataset: Any) -> bool:
+        # This override is necessary to allow the formatter to write an
+        # LsstScarletModelData instance even when the storage class for the
+        # dataset type is the old ScarletModelData.
+        return isinstance(in_memory_dataset, LsstScarletModelData)
+
     def read_from_local_file(self, path: str, component: str | None = None, expected_size: int = -1) -> Any:
         # Override of `FormatterV2.read_from_local_file`.
         return read_scarlet_model(path)
