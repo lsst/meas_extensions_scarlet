@@ -30,10 +30,13 @@ narrow model PSF only). The two existing tests cover the default
 """
 
 import unittest
+import unittest.mock
 import warnings
 
+import lsst.afw.detection as afwDetection
 import lsst.afw.image as afwImage
 import lsst.geom as geom
+from lsst.afw.detection import GaussianPsf
 import lsst.meas.extensions.scarlet as mes
 import lsst.scarlet.lite as scl
 import lsst.utils.tests
@@ -43,10 +46,12 @@ from lsst.meas.extensions.scarlet.deconvolveExposureTask import (
     calculateUpdateStep,
     calculate_update_step,
 )
+from lsst.meas.extensions.scarlet import ScarletStitchedPsf
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
 
 import pipeline
 from scenes import SCENES
+from utils import makeStitchedPsf
 
 
 class TestDeconvolveTask(lsst.utils.tests.TestCase):
@@ -141,16 +146,21 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 )
 
     def test_deconvolve_preserves_image_metadata(self):
-        """Deconvolved output preserves bbox, PSF, and WCS from input.
+        """Deconvolved output preserves bbox and WCS, and carries the
+        model-frame PSF.
 
         For each band, the deconvolved exposure has the same bounding
-        box as its input coadd, the same WCS (deconvolution is per-pixel,
-        no geometric change), and a PSF whose kernel image matches the
-        input PSF's (the task does not synthesize a new PSF).
+        box as its input coadd and the same WCS (deconvolution is
+        per-pixel, no geometric change). Its PSF, however, is the narrow
+        scarlet model PSF the image was deconvolved to -- not the input
+        coadd's wider observed PSF -- and attaching it must leave the
+        input coadd's own PSF untouched.
         """
         image = pipeline.build_image(SCENES["multi-blend"])
         detection = pipeline.detect(image)
         deconv = pipeline.deconvolve(detection)
+
+        model_psf = scl.utils.integrated_circular_gaussian(sigma=0.8)
 
         for band in image.bands:
             in_exp = image.mCoadd[band]
@@ -158,13 +168,97 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
             self.assertEqual(out_exp.getBBox(), in_exp.getBBox())
             self.assertEqual(out_exp.getWcs(), in_exp.getWcs())
 
+            # The output PSF is the model-frame PSF, not the observed one.
             out_psf = out_exp.getPsf()
             self.assertIsNotNone(out_psf)
-            in_psf = in_exp.getPsf()
-            np.testing.assert_array_equal(
-                out_psf.computeImage(out_psf.getAveragePosition()).array,
-                in_psf.computeImage(in_psf.getAveragePosition()).array,
+            np.testing.assert_array_almost_equal(
+                out_psf.computeKernelImage(out_psf.getAveragePosition()).array,
+                model_psf,
             )
+            # The input coadd's observed PSF is left intact.
+            in_psf = in_exp.getPsf()
+            self.assertFalse(
+                np.array_equal(
+                    in_psf.computeKernelImage(in_psf.getAveragePosition()).array,
+                    model_psf,
+                )
+            )
+
+    def test_deconvolve_fista_and_zero_init_knobs(self):
+        """The ``useFista`` and ``useZeroInit`` knobs change the solver
+        without breaking the fit.
+
+        ``_deconvolve`` defaults to plain gradient ascent initialized
+        with the observed image. ``useFista`` swaps in the accelerated
+        proximal-gradient (FISTA) solver and ``useZeroInit`` starts the
+        iterate at zero instead. All four combinations must converge to
+        a finite, non-negative model that respects the supplied
+        footprint mask, and FISTA must reach a log-likelihood no worse
+        than plain gradient ascent.
+        """
+        image = pipeline.build_image(SCENES["multi-blend"])
+        detection = pipeline.detect(image)
+        band = image.bands[0]
+        coadd = image.mCoadd[band]
+
+        bbox = coadd.getBBox()
+        width, height = bbox.getDimensions()
+        x0, y0 = bbox.getMin()
+        footprintImage = afwDetection.footprintsToNumpy(
+            detection.catalog, shape=(height, width), xy0=(x0, y0)
+        )
+
+        losses = {}
+        for useFista in (False, True):
+            for useZeroInit in (False, True):
+                config = DeconvolveExposureTask.ConfigClass()
+                config.useFista = useFista
+                config.useZeroInit = useZeroInit
+                task = DeconvolveExposureTask(config=config)
+                observation = task._buildObservation(coadd, detection.catalog, band)
+                model, loss = task._deconvolve(observation, footprintImage=footprintImage)
+
+                self.assertTrue(np.all(np.isfinite(model.data)))
+                # The non-negativity proximal operator holds.
+                self.assertGreaterEqual(model.data.min(), 0)
+                # Flux only lives inside the input footprints.
+                self.assertTrue(np.all(model.data[0][footprintImage == 0] == 0))
+                losses[(useFista, useZeroInit)] = loss[-1]
+
+        # FISTA reaches a log-likelihood at least as high as plain
+        # gradient ascent from the same initialization.
+        for useZeroInit in (False, True):
+            self.assertGreaterEqual(
+                losses[(True, useZeroInit)],
+                losses[(False, useZeroInit)] - 1e-6,
+            )
+
+    def test_deconvolve_zero_init_starts_from_zero(self):
+        """``useZeroInit`` controls the first iterate of the solver.
+
+        With ``useZeroInit=True`` the deconvolved image is seeded with
+        zeros; with ``useZeroInit=False`` (the default) it is seeded with
+        the observed image. A single iteration is enough to distinguish
+        them: after one gradient step the two seeds have not yet
+        converged, so their models differ.
+        """
+        image = pipeline.build_image(SCENES["multi-blend"])
+        detection = pipeline.detect(image)
+        band = image.bands[0]
+        coadd = image.mCoadd[band]
+
+        models = {}
+        for useZeroInit in (False, True):
+            config = DeconvolveExposureTask.ConfigClass()
+            config.maxIter = 1
+            config.minIter = 0
+            config.useZeroInit = useZeroInit
+            task = DeconvolveExposureTask(config=config)
+            observation = task._buildObservation(coadd, detection.catalog, band)
+            model, _ = task._deconvolve(observation)
+            models[useZeroInit] = model.data
+
+        self.assertFalse(np.allclose(models[True], models[False]))
 
     def test_deconvolve_breaks_on_nonfinite_residual(self):
         """The deconvolution loop stops early when every residual
@@ -213,28 +307,80 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         self.assertLess(len(loss), config.maxIter)
         self.assertFalse(np.isfinite(loss[-1]))
 
-    def test_calculate_update_step_excludes_masked_pixels(self):
-        """``calculateUpdateStep`` divides by the count of unmasked
-        pixels rather than the full image size.
+    def test_calculate_update_step_lipschitz(self):
+        """``calculateUpdateStep`` returns the Lipschitz FISTA step
+        ``safety / L`` with ``L = max_k |K_hat(k)|**2``.
 
-        The previous implementation computed ``sparsity =
-        np.sum(signal_mask) / image.size``; the denominator counted
-        every pixel in the array even when many of them carried zero
-        weight (border, NO_DATA, BAD). On heavily masked inputs such
-        as tract edges this artificially shrinks ``sparsity`` and in
-        turn the update step. The fix restricts both numerator and
-        denominator to pixels with non-zero weight, so the sparsity
-        reflects the fraction of *valid* pixels carrying signal.
+        When the observed PSF equals the model PSF the difference kernel
+        is the identity (a delta), so its optical transfer function is
+        unity everywhere and ``L = 1`` exactly. The step is then the
+        ``safety`` factor itself, and because the step is ``safety / L``
+        it scales linearly with ``safety``.
+        """
+        shape = (1, 32, 32)
+        psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        # Observed PSF == model PSF -> identity difference kernel -> L = 1.
+        observation = scl.Observation(
+            images=np.ones(shape, dtype=np.float32),
+            variance=np.ones(shape, dtype=np.float32),
+            weights=np.ones(shape, dtype=np.float32),
+            psf=scl.ImagePsf(psf[None]),
+            model_psf=scl.ImagePsf(psf[None]),
+            bands=("dummy",),
+            convolution_mode="fft",
+        )
+
+        step = calculateUpdateStep(observation)
+        self.assertAlmostEqual(step, 1.0, places=5)
+        self.assertTrue(np.isfinite(step))
+
+        # The step is safety / L, so it scales linearly with safety.
+        self.assertAlmostEqual(calculateUpdateStep(observation, safety=0.5), 0.5, places=5)
+        self.assertAlmostEqual(
+            calculateUpdateStep(observation, safety=0.5),
+            0.5 * step,
+            places=6,
+        )
+
+    def test_calculate_update_step_default_when_no_kernel(self):
+        """``calculateUpdateStep`` returns ``safety`` when there is no
+        difference kernel.
+
+        With no PSF matching the forward operator ``A`` is the identity,
+        so ``L = 1`` and the step is the bare ``safety`` factor. A
+        ``Mock`` standing in for the observation supplies
+        ``diff_kernel=None`` directly, exercising the early return without
+        constructing a full PSF-less observation.
+        """
+        observation = unittest.mock.Mock(diff_kernel=None)
+        self.assertEqual(calculateUpdateStep(observation), 1.0)
+        self.assertEqual(calculateUpdateStep(observation, safety=0.25), 0.25)
+
+    def test_calculate_update_step_legacy_excludes_masked_pixels(self):
+        """The legacy ``calculate_update_step`` divides by the count of
+        unmasked pixels rather than the full image size.
+
+        The original sparsity/SNR scale algorithm now lives only in the
+        deprecated ``calculate_update_step`` (``calculateUpdateStep``
+        having moved to the Lipschitz step). An even earlier
+        implementation computed ``sparsity = np.sum(signal_mask) /
+        image.size``; the denominator counted every pixel in the array
+        even when many of them carried zero weight (border, NO_DATA,
+        BAD). On heavily masked inputs such as tract edges this
+        artificially shrinks ``sparsity`` and in turn the update step.
+        The retained algorithm restricts both numerator and denominator
+        to pixels with non-zero weight, so the sparsity reflects the
+        fraction of *valid* pixels carrying signal.
 
         Two observations are built that differ only in their weight
         plane: ``full`` has weights ``1`` everywhere; ``half`` masks
         the bottom half of the image (which contains no signal). A
         signal-amplitude/noise pair is chosen so the resulting scale
-        does not saturate at the ``1.0`` cap. Under the previous
-        formula both observations yielded the same step (the denominator
-        ignored the mask); under the fix the masked observation yields
-        a step that is roughly twice as large because the denominator
-        halves while the signal count is preserved.
+        does not saturate at the ``1.0`` cap. Without the mask-aware
+        denominator both observations yield the same step; with it the
+        masked observation yields a step that is roughly twice as large
+        because the denominator halves while the signal count is
+        preserved.
 
         Regression test for finding DC-8 of the
         ``audits/audit-2026-05-05.md`` audit.
@@ -258,14 +404,17 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
                 images=image,
                 variance=variance,
                 weights=weights,
-                psfs=psf[None],
-                model_psf=psf[None],
+                psf=scl.ImagePsf(psf[None]),
+                model_psf=scl.ImagePsf(psf[None]),
                 bands=("dummy",),
                 convolution_mode="fft",
             )
 
-        step_full = calculateUpdateStep(_make_obs(full_weights))
-        step_half = calculateUpdateStep(_make_obs(half_weights))
+        # The legacy algorithm is deprecated; suppress its FutureWarning.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            step_full = calculate_update_step(_make_obs(full_weights))
+            step_half = calculate_update_step(_make_obs(half_weights))
 
         self.assertLess(step_full, 1.0)
         self.assertGreater(step_half, step_full)
@@ -274,41 +423,53 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         # so the masked step should be ~2× larger when neither caps.
         self.assertAlmostEqual(step_half / step_full, 2.0, places=5)
 
-    def test_calculate_update_step_deprecation_wrapper(self):
-        """The snake_case ``calculate_update_step`` shim emits a
-        ``FutureWarning`` and forwards to ``calculateUpdateStep``.
+    def test_calculate_update_step_deprecation(self):
+        """``calculate_update_step`` is deprecated and runs the legacy
+        scale algorithm rather than the new Lipschitz step.
 
-        The function was renamed to match the surrounding LSST
-        camelCase style; the legacy name is retained as a thin
-        deprecation wrapper so external callers continue to work for
-        one release.
+        The snake_case name is retained for one release as a deprecated
+        shim. It no longer forwards to ``calculateUpdateStep``: that
+        function now returns the Lipschitz FISTA step, while the legacy
+        sparsity/SNR scale stayed behind under the old name. Calling it
+        must emit a single ``FutureWarning`` pointing at the new name and
+        return the legacy scale, which differs from the new step.
 
         Regression test for finding DC-10 of the
         ``audits/audit-2026-05-05.md`` audit.
         """
-        shape = (1, 8, 8)
+        shape = (1, 32, 32)
+        image = np.zeros(shape, dtype=np.float32)
+        # A signal block so the legacy scale lands strictly between its
+        # ``min_scale`` floor and the ``1.0`` cap -- a genuinely computed
+        # value, not a clamped default.
+        image[0, :4, :4] = 5.0
         psf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
         observation = scl.Observation(
-            images=np.ones(shape, dtype=np.float32),
+            images=image,
             variance=np.ones(shape, dtype=np.float32),
             weights=np.ones(shape, dtype=np.float32),
-            psfs=psf[None],
-            model_psf=psf[None],
+            psf=scl.ImagePsf(psf[None]),
+            model_psf=scl.ImagePsf(psf[None]),
             bands=("dummy",),
             convolution_mode="fft",
         )
 
-        expected = calculateUpdateStep(observation)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            actual = calculate_update_step(observation)
+            legacy = calculate_update_step(observation)
 
-        self.assertEqual(actual, expected)
         deprecation_warnings = [
             w for w in caught if issubclass(w.category, FutureWarning)
         ]
         self.assertEqual(len(deprecation_warnings), 1)
         self.assertIn("calculateUpdateStep", str(deprecation_warnings[0].message))
+
+        # The legacy scale is a genuine, in-range result of the old
+        # algorithm and no longer matches the new Lipschitz step.
+        self.assertTrue(np.isfinite(legacy))
+        self.assertGreater(legacy, 0.01)
+        self.assertLess(legacy, 1.0)
+        self.assertNotAlmostEqual(legacy, calculateUpdateStep(observation))
 
     def test_model_to_exposure_decouples_mask_and_variance(self):
         """``_modelToExposure`` detaches the output mask/variance from
@@ -336,20 +497,156 @@ class TestDeconvolveTask(lsst.utils.tests.TestCase):
         edge_bit = coadd.mask.getPlaneBitMask("EDGE")
         coadd.mask.array[0, 0] = edge_bit
 
+        # The input coadd carries an observed PSF that must not be
+        # disturbed when the output adopts the model-frame PSF.
+        coadd.setPsf(GaussianPsf(15, 15, 1.0))
+
         task = DeconvolveExposureTask()
         model = np.full((16, 16), 2.0, dtype=coadd.image.array.dtype)
-        out = task._modelToExposure(model, coadd)
+        modelPsf = scl.ImagePsf(
+            scl.utils.integrated_circular_gaussian(sigma=0.8)[None]
+        )
+        out = task._modelToExposure(model, coadd, modelPsf)
 
         # Pre-existing mask bits survive the copy.
         self.assertTrue(out.mask.array[0, 0] & edge_bit != 0)
         # Variance plane is invalidated by filling with inf.
         np.testing.assert_array_equal(out.variance.array, np.inf)
 
+        # The output carries the model-frame PSF, converted to an LSST PSF.
+        outPsf = out.getPsf()
+        self.assertIsNotNone(outPsf)
+        np.testing.assert_array_almost_equal(
+            outPsf.computeKernelImage(outPsf.getAveragePosition()).array,
+            modelPsf.data[0],
+        )
+
         # Mutating the output mask/variance does not affect the input.
         out.mask.array[5, 5] |= edge_bit
         out.variance.array[5, 5] = 999.0
         self.assertEqual(coadd.mask.array[5, 5], 0)
         self.assertEqual(coadd.variance.array[5, 5], 5.0)
+        # Attaching the model PSF to the output left the input's PSF intact.
+        self.assertEqual(coadd.getPsf().getSigma(), 1.0)
+
+    def test_build_observation_stitched_psf(self):
+        """A coadd carrying a ``StitchedPsf`` builds a stitched observation.
+
+        When the input is a cell-based coadd (its PSF is an
+        ``lsst.cell_coadds.StitchedPsf``), ``_buildObservation`` builds a
+        spatially-varying ``ScarletStitchedPsf`` over the cell grid instead of
+        wrapping a single kernel image. A flat coadd (a ``GaussianPsf``) still
+        takes the constant ``ImagePsf`` path. Both observed PSFs match the
+        coadd dtype, so the difference kernel is non-trivial.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        rng = np.random.RandomState(5)
+        coadd.image.array[:] = rng.rand(size, size).astype(np.float32)
+        coadd.variance.array[:] = 1.0
+
+        task = DeconvolveExposureTask()
+
+        coadd.setPsf(makeStitchedPsf(sigma=1.2, cell=cell, grid=grid))
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(observation.psf, ScarletStitchedPsf)
+        self.assertIsInstance(observation.diff_kernel, ScarletStitchedPsf)
+        self.assertEqual(observation.psf.dtype, coadd.image.array.dtype)
+
+        # A flat coadd keeps the constant-PSF path.
+        coadd.setPsf(GaussianPsf(11, 11, 1.2))
+        flat = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(flat.psf, scl.ImagePsf)
+
+    def test_build_observation_stitched_psf_opt_out(self):
+        """``useStitchedPsf=False`` forces the flat path on a cell coadd.
+
+        A coadd whose PSF is a ``StitchedPsf`` normally builds a
+        ``ScarletStitchedPsf``; with ``useStitchedPsf=False`` it instead wraps
+        a single PSF kernel evaluated at the image center as a constant
+        ``ImagePsf``, the faster (less accurate) option.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        rng = np.random.RandomState(5)
+        coadd.image.array[:] = rng.rand(size, size).astype(np.float32)
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(makeStitchedPsf(sigma=1.2, cell=cell, grid=grid))
+
+        config = DeconvolveExposureTask.ConfigClass()
+        config.useStitchedPsf = False
+        task = DeconvolveExposureTask(config=config)
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        self.assertIsInstance(observation.psf, scl.ImagePsf)
+        self.assertNotIsInstance(observation.psf, ScarletStitchedPsf)
+
+    def test_model_psf_sigma_config(self):
+        """``modelPsfSigma`` controls the model-frame PSF width.
+
+        The default builds the same kernel as ``sigma=0.8``; setting the
+        config to another value rebuilds the observation's model PSF and,
+        through ``run``, the PSF attached to the deconvolved exposure.
+        """
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(16, 16))
+        coadd = afwImage.ExposureF(bbox)
+        coadd.image.array[:] = 0.0
+        coadd.image.array[8, 8] = 100.0
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(GaussianPsf(15, 15, 1.0))
+
+        # The default reproduces the historical sigma=0.8 kernel.
+        default = DeconvolveExposureTask()
+        observation = default._buildObservation(coadd, catalog=None, band="g")
+        np.testing.assert_array_almost_equal(
+            observation.model_psf.data[0],
+            scl.utils.integrated_circular_gaussian(sigma=0.8),
+        )
+
+        # A non-default sigma propagates to both the observation model PSF
+        # and the PSF attached to the deconvolved exposure.
+        config = DeconvolveExposureTask.ConfigClass()
+        config.modelPsfSigma = 1.5
+        task = DeconvolveExposureTask(config=config)
+        observation = task._buildObservation(coadd, catalog=None, band="g")
+        expected = scl.utils.integrated_circular_gaussian(sigma=1.5)
+        np.testing.assert_array_almost_equal(observation.model_psf.data[0], expected)
+
+        result = task.run(coadd, catalog=None, band="g")
+        outPsf = result.deconvolved.getPsf()
+        np.testing.assert_array_almost_equal(
+            outPsf.computeKernelImage(outPsf.getAveragePosition()).array,
+            expected,
+        )
+
+    def test_deconvolve_stitched_psf_end_to_end(self):
+        """``run`` deconvolves a cell-coadd (stitched-PSF) exposure.
+
+        Exercises the spatially-varying forward convolution and its adjoint
+        (the gradient pass) through the full deconvolution loop, confirming the
+        stitched PSF drops into the optimizer the same way a constant PSF does.
+        The recovered model is finite and preserves the input bounding box.
+        """
+        cell, grid = 15, 2
+        size = cell * grid
+        bbox = geom.Box2I(geom.Point2I(0, 0), geom.Extent2I(size, size))
+        coadd = afwImage.ExposureF(bbox)
+        # A single bright source so the deconvolver has signal to recover.
+        coadd.image.array[:] = 0.0
+        coadd.image.array[size // 2, size // 2] = 100.0
+        coadd.variance.array[:] = 1.0
+        coadd.setPsf(makeStitchedPsf(sigma=1.4, cell=cell, grid=grid))
+
+        task = DeconvolveExposureTask()
+        result = task.run(coadd, catalog=None, band="g")
+
+        self.assertEqual(result.deconvolved.getBBox(), bbox)
+        self.assertTrue(np.all(np.isfinite(result.deconvolved.image.array)))
+        # The deconvolver concentrates flux near the source center.
+        self.assertGreater(result.deconvolved.image.array[size // 2, size // 2], 0)
 
     def test_deconvolve_with_nan_input(self):
         """A NaN pixel in the input does not propagate to the

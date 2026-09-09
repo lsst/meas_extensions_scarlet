@@ -47,6 +47,7 @@ from lsst.afw.table import Schema, SchemaMapper, SourceCatalog, SourceTable
 from lsst.meas.algorithms import SourceDetectionTask
 from lsst.meas.extensions.scarlet.deconvolveExposureTask import DeconvolveExposureTask
 from lsst.meas.extensions.scarlet.scarletDeblendTask import ScarletDeblendTask
+from lsst.meas.extensions.scarlet.utils import defaultBadPixelMasks
 from lsst.pipe.base import Struct
 
 from scenes import Scene
@@ -260,6 +261,15 @@ def _build_psfs() -> tuple[tuple[GaussianPsf, ...], np.ndarray, np.ndarray]:
 
 # PSF objects built once at import time and shared across every scene.
 _PSFS, _MODEL_PSF, _IMAGE_PSF = _build_psfs()
+
+
+# Register the bad-pixel mask planes the tasks reference. Production coadds
+# always carry these, but the synthetic masks built in this module start from
+# afw's default plane dictionary, which omits planes such as INEXACT_PSF and
+# REJECTED. Registering once at import keeps every Mask created afterwards --
+# including those built directly in tests -- carrying the planes.
+for _plane in defaultBadPixelMasks:
+    afwImage.Mask.addMaskPlane(_plane)
 
 
 # Memoization caches, one per stage. Keys are tuples of all upstream

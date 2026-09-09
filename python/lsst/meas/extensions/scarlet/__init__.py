@@ -26,6 +26,7 @@ from . import (
     metrics,
     scarletDeblendTask,
     source,
+    stitched_psf,
     utils,
     version,
 )
@@ -33,6 +34,7 @@ from .deconvolveExposureTask import *  # noqa: F401, F403
 from .metrics import *  # noqa: F401, F403
 from .scarletDeblendTask import *  # noqa: F401, F403
 from .source import *  # noqa: F401, F403
+from .stitched_psf import *  # noqa: F401, F403
 from .version import *  # noqa: F401, F403
 
 __all__ = [
@@ -40,5 +42,6 @@ __all__ = [
     *metrics.__all__,
     *scarletDeblendTask.__all__,
     *source.__all__,
+    *stitched_psf.__all__,
     *version.__all__,
 ]

@@ -14,8 +14,11 @@ from lsst.afw.image import (
 )
 from lsst.afw.image.utils import projectImage
 from lsst.afw.table import SourceCatalog
+from lsst.cell_coadds import StitchedPsf
 from lsst.geom import Box2I, Point2D, Point2I
 from lsst.pipe.base import NoWorkFound
+
+from .stitched_psf import ScarletStitchedPsf
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,7 @@ __all__ = [
     "calcChi2",
 ]
 
-defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE"]
+defaultBadPixelMasks = ["BAD", "NO_DATA", "SAT", "SUSPECT", "EDGE", "INEXACT_PSF", "REJECTED", "INTRP"]
 
 
 def scarletBoxToBBox(box: scl.Box, xy0: geom.Point2I = geom.Point2I()) -> geom.Box2I:
@@ -470,6 +473,7 @@ def buildObservation(
     useWeights: bool = True,
     convolutionType: str = "real",
     catalog: SourceCatalog | None = None,
+    useStitchedPsf: bool = True,
 ) -> scl.Observation:
     """Generate an Observation from a set of arguments.
 
@@ -505,6 +509,13 @@ def buildObservation(
     catalog :
         A source catalog to use for PSFs that cannot be determined at
         the center of the image.
+    useStitchedPsf :
+        When the per-band coadd PSFs are cell-coadd ``StitchedPsf`` objects,
+        whether to build a spatially-varying `ScarletStitchedPsf` (more
+        accurate, but far slower since each cell is convolved with its own
+        FFT). If `False`, a single PSF kernel at ``psfCenter`` is used (an
+        `~lsst.scarlet.lite.ImagePsf`) even for cell coadds. Ignored for
+        non-cell coadds, which are always flat.
 
     Returns
     -------
@@ -514,13 +525,24 @@ def buildObservation(
     # Initialize the observed PSFs
     if not isinstance(psfCenter, geom.Point2D):
         psfCenter = geom.Point2D(*psfCenter)
-    if catalog is None:
-        psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
-    else:
-        psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
 
-    if psfModels is None:
-        raise NoWorkFound("No valid PSF could be obtained for building the observation")
+    bandPsfs = {band: mExposure[band,].getPsf() for band in mExposure.bands}
+    if useStitchedPsf and all(isinstance(psf, StitchedPsf) for psf in bandPsfs.values()):
+        # Cell-based coadd: the PSF is genuinely discontinuous across cells,
+        # so build a spatially-varying ScarletStitchedPsf over the cell grid
+        # rather than one kernel image per band. A StitchedPsf is valid
+        # everywhere within the coadd, so no band is dropped and the
+        # nearest-PSF fallback used by the flat path is unnecessary here.
+        observedPsf: scl.Psf = ScarletStitchedPsf.from_stitched_psf(bandPsfs)
+    else:
+        if catalog is None:
+            psfModels, mExposure = computePsfKernelImage(mExposure, psfCenter)
+        else:
+            psfModels, mExposure = computeNearestPsfMultiBand(mExposure, psfCenter, catalog)
+
+        if psfModels is None:
+            raise NoWorkFound("No valid PSF could be obtained for building the observation")
+        observedPsf = scl.ImagePsf(psfModels, bands=tuple(mExposure.bands))
 
     # Use the inverse variance as the weights
     if useWeights:
@@ -553,8 +575,8 @@ def buildObservation(
         images=image,
         variance=mExposure.variance.array,
         weights=weights,
-        psfs=psfModels,
-        model_psf=modelPsf[None, :, :],
+        psf=observedPsf,
+        model_psf=scl.ImagePsf(modelPsf[None, :, :]),
         convolution_mode=convolutionType,
         bands=mExposure.bands,
         bbox=bboxToScarletBox(mExposure.getBBox()),
