@@ -285,7 +285,7 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         # Create Butler with the merged config
         # The config now contains both the repo info and
         # the storage class overrides
-        newButler = Butler.from_config(base_config, collections=butler.collections)
+        newButler = Butler.from_config(base_config, collections=butler.collections.defaults)
 
         model = newButler.get("old_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData")
         self.assertEqual(len(model.blends), 2)
