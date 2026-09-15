@@ -285,7 +285,7 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
         # Create Butler with the merged config
         # The config now contains both the repo info and
         # the storage class overrides
-        newButler = Butler.from_config(base_config, collections=butler.collections)
+        newButler = Butler.from_config(base_config, collections=butler.collections.defaults)
 
         model = newButler.get("old_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData")
         self.assertEqual(len(model.blends), 2)
@@ -300,28 +300,61 @@ class TestIoPersistence(lsst.utils.tests.TestCase):
             "write_conversion",
         )
         self.assertIsInstance(model1, mes.io.LsstScarletModelData)
-        oldDatasetType = DatasetType(
-            "older_scarlet_model_data",
-            dimensions=(),
-            storageClass="ScarletModelData",
-            universe=butler.dimensions,
+        old_types = {}
+        for name in ["put_by_name", "put_by_type", "put_by_old_ref", "put_by_new_ref"]:
+            with self.subTest(name):
+                old_type = DatasetType(
+                    name,
+                    dimensions=(),
+                    storageClass="ScarletModelData",
+                    universe=butler.dimensions,
+                )
+                butler.registry.registerDatasetType(old_type)
+                old_types[name] = old_type
+
+        # Conversion in this direction needs to look like it can work
+        # to give the formatter a chance to handle an
+        # LsstScarletModelInstance.
+        # for-loop variable leakage is intentional here; we just need to test
+        # one of these.
+        new_type = old_type.overrideStorageClass("LsstScarletModelData")
+        self.assertTrue(old_type.is_compatible_with(new_type))
+        self.assertTrue(old_type.storageClass.can_convert(new_type.storageClass))
+        # The other direction is backed by the real read converter.
+        self.assertTrue(new_type.is_compatible_with(old_type))
+
+        # Write the new model in three different ways with the old storage
+        # class, which should be lossless.
+        butler.put(model1, "put_by_name", dataId={})
+        butler.put(model1, old_types["put_by_type"], dataId={})
+        butler.put(model1, DatasetRef(old_types["put_by_old_ref"], run=butler.run, dataId={}))
+        butler.put(
+            model1,
+            DatasetRef(
+                old_types["put_by_new_ref"], run=butler.run, dataId={}
+            ).overrideStorageClass("LsstScarletModelData"),
         )
-        butler.registry.registerDatasetType(oldDatasetType)
-        # Write the new model with the old storage class, which should be
+
+        # Read each back as the new (full) type, which also should be
         # lossless.
-        butler.put(model1, "older_scarlet_model_data", dataId={})
-        # Read it back as the new (full) type, which also should be lossless.
-        model2 = butler.get(
-            "older_scarlet_model_data", dataId={}, storageClass="LsstScarletModelData"
-        )
-        self.assertIsInstance(model2, mes.io.LsstScarletModelData)
-        self.assertEqual(len(model2.blends), len(model1.blends))
-        self.assertEqual(set(model2.isolated), set(model1.isolated))
-        for sourceId in model1.isolated:
-            iso1 = model1.isolated[sourceId]
-            iso2 = model2.isolated[sourceId]
-            self.assertTupleEqual(iso1.origin, iso2.origin)
-            np.testing.assert_array_equal(iso1.span_array, iso2.span_array)
+        for name in old_types:
+            model2 = butler.get(
+                name, dataId={}, storageClass="LsstScarletModelData"
+            )
+            self.assertIsInstance(model2, mes.io.LsstScarletModelData)
+            self.assertEqual(len(model2.blends), len(model1.blends))
+            self.assertEqual(set(model2.isolated), set(model1.isolated))
+            for sourceId in model1.isolated:
+                iso1 = model1.isolated[sourceId]
+                iso2 = model2.isolated[sourceId]
+                self.assertTupleEqual(iso1.origin, iso2.origin)
+                np.testing.assert_array_equal(iso1.span_array, iso2.span_array)
+            # Reading without a storage class override cannot produce the old
+            # (never-written) type; the error should suggest how to read it.
+            with self.assertRaises(TypeError) as raisesCtx:
+                butler.get(name, dataId={})
+            self.assertIn("storageClass", str(raisesCtx.exception))
+            self.assertIn("LsstScarletModelData", str(raisesCtx.exception))
 
     def test_read_legacy_zip_without_metadata(self):
         """``read_scarlet_model`` reads a legacy-format zip that has no

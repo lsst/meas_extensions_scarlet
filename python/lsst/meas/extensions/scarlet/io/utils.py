@@ -682,6 +682,31 @@ def scarlet_model_to_lsst_scarlet_model(model_data: scl.io.ScarletModelData) -> 
     )
 
 
+def no_conversion_from_lsst_scarlet_model_data(
+    model_data: LsstScarletModelData,
+) -> scl.io.ScarletModelData:
+    """Refuse to convert a LsstScarletModelData to the old ScarletModelData.
+
+    This converter and its registration in daf_butler are necessary to allow
+    the formatter's `can_accept` to write `LsstScarletModelData` instances to
+    old dataset types that use the ``ScarletModelData`` storage class.
+
+    Parameters
+    ----------
+    model_data : `lsst.meas.extensions.scarlet.io.LsstScarletModelData`
+        The dataset that something tried to convert.
+
+    Raises
+    ------
+    TypeError
+        Always raised: no conversion exists.
+    """
+    raise TypeError(
+        "Cannot convert LsstScarletModelData to lsst.scarlet.lite.io.ScarletModelData. "
+        "Try passing storageClass='LsstScarletModelData' instead."
+    )
+
+
 class ScarletModelFormatter(FormatterV2):
     """Read and write scarlet models.
     """
