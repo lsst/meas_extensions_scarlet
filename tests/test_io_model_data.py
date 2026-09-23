@@ -213,6 +213,41 @@ class TestModelDataMigrations(lsst.utils.tests.TestCase):
             self.assertIn(key, model.metadata)
 
 
+class TestLegacyFlag(lsst.utils.tests.TestCase):
+    """The ``legacy`` flag records whether a model is missing any of the
+    model-level ``bands``/``model_psf``/``psf`` fields, which marks a pre-v30
+    archive that stored those per blend.
+    """
+
+    def _model(self, **overrides):
+        """Build a complete model, overriding individual fields for a test."""
+        kwargs = dict(
+            bands=("g", "r"),
+            model_psf=scl.ImagePsf(np.ones((1, 3, 3), dtype=np.float32)),
+            psf=scl.ImagePsf(np.ones((2, 3, 3), dtype=np.float32), bands=("g", "r")),
+        )
+        kwargs.update(overrides)
+        return model_data_module.LsstScarletModelData(**kwargs)
+
+    def test_legacy_false_when_complete(self):
+        """A model carrying all model-level fields is not legacy and logs no
+        warning.
+        """
+        with self.assertNoLogs(model_data_module.__name__, level="WARNING"):
+            model = self._model()
+        self.assertFalse(model.legacy)
+
+    def test_legacy_true_when_field_missing(self):
+        """Dropping any one of ``bands``/``model_psf``/``psf`` marks the model
+        legacy and logs a warning.
+        """
+        for field in ("bands", "model_psf", "psf"):
+            with self.subTest(field=field):
+                with self.assertLogs(model_data_module.__name__, level="WARNING"):
+                    model = self._model(**{field: None})
+                self.assertTrue(model.legacy)
+
+
 def setup_module(module):
     lsst.utils.tests.init()
 

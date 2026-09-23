@@ -40,6 +40,34 @@ import pipeline
 from scenes import SCENES
 
 
+def _dummy_model(**kwargs):
+    """Build an ``LsstScarletModelData``, filling the required PSF/band args.
+
+    The empty/sentinel-model tests below exercise guards and parameter
+    handling that never touch the PSFs, so plug in trivial placeholders for
+    the now-required ``bands`` / ``model_psf`` / ``psf`` unless overridden.
+
+    Parameters
+    ----------
+    **kwargs
+        Overrides for any ``LsstScarletModelData`` constructor argument.
+
+    Returns
+    -------
+    model : `LsstScarletModelData`
+        The constructed model.
+    """
+    defaults = dict(
+        isolated={},
+        blends={},
+        bands=("r",),
+        model_psf=scl.ImagePsf(np.ones((1, 5, 5), dtype=np.float32)),
+        psf=scl.ImagePsf(np.ones((1, 5, 5), dtype=np.float32), bands=("r",)),
+    )
+    defaults.update(kwargs)
+    return LsstScarletModelData(**defaults)
+
+
 class TestUpdateCatalogFootprints(lsst.utils.tests.TestCase):
     """Tests for the empty-input guard in
     ``lsst.meas.extensions.scarlet.io.updateCatalogFootprints``.
@@ -61,7 +89,7 @@ class TestUpdateCatalogFootprints(lsst.utils.tests.TestCase):
         empty-input case slipped past every caller. Regression test for
         finding C-2 of the ``audits/audit-2026-05-05.md`` audit.
         """
-        modelData = LsstScarletModelData()
+        modelData = _dummy_model()
         self.assertEqual(len(modelData.blends), 0)
         self.assertEqual(len(modelData.isolated), 0)
 
@@ -85,7 +113,7 @@ class TestUpdateCatalogFootprints(lsst.utils.tests.TestCase):
                 peak=(1, 1),
             )
         }
-        modelData = LsstScarletModelData(isolated=isolated)
+        modelData = _dummy_model(isolated=isolated)
         self.assertEqual(len(modelData.blends), 0)
 
         result = mes.io.updateCatalogFootprints(
@@ -151,9 +179,7 @@ class TestScarletModelDelegate(lsst.utils.tests.TestCase):
         # ``inMemoryDataset.blends`` (to slice the dict), so the
         # values can be arbitrary sentinels — no need to build real
         # ScarletBlendData objects.
-        return LsstScarletModelData(
-            blends={1: "blend-1", 2: "blend-2", 3: "blend-3"},
-        )
+        return _dummy_model(blends={1: "blend-1", 2: "blend-2", 3: "blend-3"})
 
     @staticmethod
     def _delegate():
@@ -393,8 +419,8 @@ class TestLoadBlend(lsst.utils.tests.TestCase):
         )
 
         np.testing.assert_array_equal(
-            blend.observation.model_psf[0],
-            modelData.model_psf,
+            blend.observation.model_psf.get_image().data,
+            modelData.model_psf.get_image().data,
         )
 
     def test_loadBlend_model_psf_emits_future_warning(self):

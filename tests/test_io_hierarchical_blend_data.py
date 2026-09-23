@@ -125,9 +125,11 @@ class TestLsstHierarchicalBlendData(lsst.utils.tests.TestCase):
 
     def test_updateCatalogFootprints_rejects_non_hierarchical(self):
         modelData = LsstScarletModelData(
+            isolated={},
+            blends={},
             bands=("g",),
-            model_psf=np.ones((3, 3), dtype=np.float32),
-            psf=np.ones((1, 3, 3), dtype=np.float32),
+            model_psf=scl.ImagePsf(np.ones((1, 3, 3), dtype=np.float32)),
+            psf=scl.ImagePsf(np.ones((1, 3, 3), dtype=np.float32), bands=("g",)),
         )
         modelData.blends[1] = scl.io.ScarletBlendData(
             origin=(0, 0), shape=(3, 3), sources={}

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import numpy as np
@@ -33,9 +34,11 @@ from lsst.utils import DeprecatedDict
 from .hierarchical_blend_data import LEGACY_HIERARCHICAL_TYPES, LsstHierarchicalBlendData
 from .source_data import IsolatedSourceData
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["LsstScarletModelData"]
 
-CURRENT_SCHEMA = "1.0.2"
+CURRENT_SCHEMA = "1.0.3"
 MODEL_TYPE = "lsst"
 scl.io.migration.MigrationRegistry.set_current(MODEL_TYPE, CURRENT_SCHEMA)
 
@@ -71,22 +74,32 @@ class LsstScarletModelData:
         ``psf`` as deprecated keys (mirrors of the typed attributes), which
         warn on access and will be removed after v31.
     bands
-        The ordered band labels of the model.
+        The ordered band labels of the model, or ``None`` for legacy (pre-v30)
+        archives that stored bands per blend rather than at the model level.
     model_psf
-        The 2D model-space PSF shared by all bands.
+        The band-less model-space `~lsst.scarlet.lite.Psf` shared by all bands,
+        or ``None`` if the archive carried no model-level PSF.
     psf
-        The per-band observed PSFs, shape ``(n_bands, height, width)``.
+        The observed `~lsst.scarlet.lite.Psf` (one image per band), or ``None``
+        for legacy (pre-v30) archives whose observed PSF was stored per blend.
+        Reconstruction then falls back to the per-blend PSFs.
+    legacy
+        ``True`` when the model lacks any of the model-level attributes
+        that are created and required by the current pipeline. This allows
+        legacy models to load but serve as a warning that they are not
+        fully compatible with the current pipeline.
     version
         The schema version of the serialized data.
     """
     model_type: str = MODEL_TYPE
     blends: dict[int, scl.io.ScarletBlendBaseData]
     isolated: dict[int, IsolatedSourceData]
+    bands: tuple[str, ...] | None
+    model_psf: scl.Psf | None
+    psf: scl.Psf | None
+    legacy: bool
     metadata: DeprecatedDict
     version: str = CURRENT_SCHEMA
-    bands: tuple[str, ...] | None
-    model_psf: np.ndarray | None
-    psf: np.ndarray | None
 
     def __init__(
         self,
@@ -94,25 +107,42 @@ class LsstScarletModelData:
         blends: dict[int, scl.io.ScarletBlendBaseData] | None = None,
         metadata: dict[str, Any] | None = None,
         bands: tuple[str, ...] | None = None,
-        model_psf: np.ndarray | None = None,
-        psf: np.ndarray | None = None,
+        model_psf: scl.Psf | None = None,
+        psf: scl.Psf | None = None,
     ):
         self.blends = blends if blends is not None else {}
         self.isolated = isolated if isolated is not None else {}
-        self.bands = bands
+        self.bands = tuple(bands) if bands is not None else None
         self.model_psf = model_psf
         self.psf = psf
-        self.metadata = self._build_metadata(metadata, bands, model_psf, psf)
+        # A model missing any model-level field is a legacy (pre-v30) product
+        # whose PSFs and bands lived per blend rather than at the model level.
+        self.legacy = self.bands is None or self.model_psf is None or self.psf is None
+        if self.legacy:
+            logger.warning(
+                "LsstScarletModelData is missing one or more model-level "
+                "attributes (bands, model_psf, psf) required by the current "
+                "pipeline. This legacy dataset can still be used for analysis, "
+                "but it cannot be used for processing in the current science "
+                "pipelines."
+            )
+        self.metadata = self._build_metadata(metadata, self.bands, model_psf, psf)
 
     @staticmethod
     def _build_metadata(
         metadata: dict[str, Any] | None,
         bands: tuple[str, ...] | None,
-        model_psf: np.ndarray | None,
-        psf: np.ndarray | None,
+        model_psf: scl.Psf | None,
+        psf: scl.Psf | None,
     ) -> DeprecatedDict:
-        """Wrap ``metadata`` in a `DeprecatedDict`, injecting the promoted
-        typed attributes as deprecated back-compat keys.
+        """Wrap ``metadata`` in a `DeprecatedDict`, mirroring the typed
+        attributes as deprecated back-compat keys.
+
+        The ``bands``, ``model_psf`` and ``psf`` keys mirror the typed
+        attributes (the deprecation steers callers to those), so reading one
+        from ``metadata`` returns the same object as the attribute. Any
+        `~lsst.scarlet.lite.Psf` is supported, including a spatially-varying
+        one that has no single image array.
         """
         data = dict(metadata) if metadata is not None else {}
         if bands is not None:
@@ -152,14 +182,20 @@ class LsstScarletModelData:
               information.
             - ``version``: The schema version of the serialized data.
         """
-        # Fold the typed attributes back into the metadata blob.
+        # The PSFs and band list are load-bearing model-level fields surfaced
+        # as typed attributes in memory, but they are *stored* inside the
+        # transport ``metadata`` blob (each PSF as its companion data object's
+        # dict, via the registry). Keeping them metadata-resident means the zip
+        # IO format needs no per-field keys -- they ride along in the single
+        # ``metadata`` entry. ``encode_metadata`` only special-cases ndarrays,
+        # so the PSF dicts and band list pass through untouched.
         meta = dict(self.metadata) if self.metadata is not None else {}
-        if self.bands is not None:
-            meta["bands"] = tuple(self.bands)
-        if self.model_psf is not None:
-            meta["model_psf"] = self.model_psf
         if self.psf is not None:
-            meta["psf"] = self.psf
+            meta["psf"] = self.psf.to_data().as_dict()
+        if self.model_psf is not None:
+            meta["model_psf"] = self.model_psf.to_data().as_dict()
+        if self.bands is not None:
+            meta["bands"] = list(self.bands)
         return {
             "model_type": MODEL_TYPE,
             "blends": {bid: b.as_dict() for bid, b in self.blends.items()},
@@ -203,17 +239,33 @@ class LsstScarletModelData:
         isolated: dict[int, IsolatedSourceData] = {}
         for sid, source_data in data.get("isolated", {}).items():
             isolated[int(sid)] = IsolatedSourceData.from_dict(source_data, dtype=dtype)
-        metadata = scl.io.utils.decode_metadata(data.get("metadata", None))
-        bands = metadata.pop("bands", None)
-        model_psf = metadata.pop("model_psf", None)
-        psf = metadata.pop("psf", None)
+        metadata = scl.io.utils.decode_metadata(data.get("metadata", None)) or {}
+        # The PSFs and bands are stored inside the transport metadata (legacy
+        # archives have them rewritten into this shape by the migration chain).
+        # Lift them back out into typed attributes, leaving only residual
+        # metadata behind so the attributes stay the single source of truth.
+        # Pre-v30 (DP1) archives have no model-level observed ``psf`` or
+        # ``bands`` (those were stored per blend), so these stay ``None`` and
+        # reconstruction falls back to the per-blend PSFs.
+        psf_data = metadata.pop("psf", None)
+        psf = (
+            scl.io.PsfBaseData.from_dict(psf_data, dtype=dtype).to_psf()
+            if psf_data is not None else None
+        )
+        model_psf_data = metadata.pop("model_psf", None)
+        model_psf = (
+            scl.io.PsfBaseData.from_dict(model_psf_data, dtype=dtype).to_psf()
+            if model_psf_data is not None else None
+        )
+        bands_data = metadata.pop("bands", None)
+        bands = tuple(bands_data) if bands_data is not None else None
         return cls(
             isolated=isolated,
             blends=blends,
-            metadata=metadata,
-            bands=bands,
+            metadata=metadata or None,
+            psf=psf,
             model_psf=model_psf,
-            psf=psf
+            bands=bands,
         )
 
     @classmethod
@@ -224,15 +276,27 @@ class LsstScarletModelData:
 
 @scl.io.migration.migration(MODEL_TYPE, scl.io.migration.PRE_SCHEMA)
 def _to_1_0_0(data: dict) -> dict:
-    """Migrate a pre-schema model to schema version 1.0.0
+    """Migrate a pre-schema model to schema version 1.0.0.
 
-    There were no changes to this data model in v1.0.0 but we need
-    to provide a way to migrate pre-schema data.
+    Pre-``metadata`` (v29) archives are legacy base
+    `~lsst.scarlet.lite.io.ScarletModelData` products: an
+    `LsstScarletModelData` with model-level typed PSF/band fields did not
+    exist yet. They stored only the *model* PSF at the model level (top-level
+    ``psf`` / ``psfShape`` entries) and kept the observed PSF and bands *per
+    blend* (`ScarletBlendData` carried ``psf`` / ``bands`` / ``psf_center``),
+    with no single catalog-wide observed PSF.
+
+    The top-level model PSF is promoted into the modern ``metadata`` shape,
+    so ``decode_metadata`` can reconstruct the array via ``array_keys``.
+    There is no model-level observed ``psf`` or ``bands`` to recover, so they
+    stay unset (``LsstScarletModelData.psf`` / ``.bands`` are ``None`` for
+    such archives) and reconstruction falls back to the per-blend PSFs.
 
     Parameters
     ----------
     data : dict
         The data to migrate.
+
     Returns
     -------
     result : dict
@@ -243,11 +307,10 @@ def _to_1_0_0(data: dict) -> dict:
     if "model_type" not in data:
         data["model_type"] = MODEL_TYPE
     data["isolated"] = {}
-    # Pre-``metadata`` archives stored the model PSF as top-level
-    # ``psf`` / ``psfShape`` entries. Promote them into the modern
-    # ``metadata`` shape so ``decode_metadata`` can reconstruct the
-    # array via ``array_keys``. Mirrors scarlet_lite's pre-schema
-    # ``scarlet_model`` migration.
+    # Pre-``metadata`` archives stored the model PSF as top-level ``psf`` /
+    # ``psfShape`` entries. Promote them into the modern ``metadata`` shape so
+    # ``decode_metadata`` can reconstruct the array via ``array_keys``. Mirrors
+    # scarlet_lite's pre-schema ``scarlet_model`` migration.
     if "metadata" not in data and "psfShape" in data:
         data["metadata"] = {
             "model_psf": data.pop("psf"),
@@ -310,4 +373,63 @@ def _to_1_0_2(data: dict) -> dict:
         if blend.get("blend_type", "blend") in LEGACY_HIERARCHICAL_TYPES:
             blends[bid] = LsstHierarchicalBlendData.convert_from_hierarchical(blend)
     data["version"] = "1.0.2"
+    return data
+
+
+@scl.io.migration.migration(MODEL_TYPE, "1.0.2")
+def _to_1_0_3(data: dict) -> dict:
+    """Migrate a schema version 1.0.2 model to schema version 1.0.3.
+
+    1.0.2 (and earlier) stored the model and observed PSFs inside the
+    transported ``metadata`` dict as raw ``array_keys``-encoded arrays. 1.0.3
+    keeps the PSFs (and the ``bands`` list) metadata-resident, but rewrites
+    each PSF array *in place* into its `ImagePsfData` dict form so it
+    round-trips through the PSF registry like a modern model. ``bands`` is a
+    plain list, so it is left untouched. The migration is the one place where
+    reading the legacy ``array_keys`` PSF arrays is correct.
+
+    The migration runs before ``decode_metadata``, so each PSF array is still
+    in its encoded ``<key>`` / ``<key>_shape`` / ``<key>_dtype`` form.
+
+    Parameters
+    ----------
+    data : dict
+        The data to migrate.
+
+    Returns
+    -------
+    result : dict
+        The migrated data.
+    """
+    metadata = data.get("metadata")
+    if metadata:
+        array_keys = list(metadata.get("array_keys", []))
+        bands = list(metadata.get("bands", []))
+        for key in ("psf", "model_psf"):
+            if key not in metadata or key not in array_keys:
+                continue
+            shape = metadata.pop(f"{key}_shape", None)
+            if shape is None:
+                shape = metadata.pop(f"{key}Shape", None)
+            dtype = metadata.pop(f"{key}_dtype", "float32")
+            # The model PSF is band-less; normalize a 2D legacy array to a
+            # ``(1, height, width)`` broadcast cube. The observed PSF carries
+            # the model bands.
+            if key == "model_psf" and shape is not None and len(shape) == 2:
+                shape = [1, *shape]
+            metadata[key] = {
+                "psf_type": "image",
+                "bands": bands if key == "psf" else [],
+                "padding": 3,
+                "version": "1.0.0",
+                "dtype": dtype,
+                "shape": shape,
+                "data": metadata[key],
+            }
+            array_keys = [k for k in array_keys if k != key]
+        if array_keys:
+            metadata["array_keys"] = array_keys
+        else:
+            metadata.pop("array_keys", None)
+    data["version"] = "1.0.3"
     return data

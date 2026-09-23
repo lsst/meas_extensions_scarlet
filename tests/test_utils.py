@@ -36,6 +36,8 @@ from lsst.afw.table import SourceCatalog, SourceTable
 from lsst.geom import Extent2I, Point2D, Point2I
 from lsst.pipe.base import NoWorkFound
 
+from utils import makeStitchedPsf
+
 
 class BadPsf(Psf):
     def __init__(self, validPoint: Point2D, psf: GaussianPsf):
@@ -385,6 +387,50 @@ class TestUtils(lsst.utils.tests.TestCase):
         # Test that building the observation fails even with a catalog
         with self.assertRaises(NoWorkFound):
             mes.utils.buildObservation(modelPsf, Point2I(25, 25), mCoadd, catalog=catalog)
+
+    def test_buildObservation_stitched_psf(self):
+        """A multiband coadd of ``StitchedPsf`` exposures builds a stitched
+        observation.
+
+        When every band's exposure carries an ``lsst.cell_coadds.StitchedPsf``
+        (a cell-based coadd), ``buildObservation`` assembles the per-band cell
+        PSFs into one spatially-varying ``ScarletStitchedPsf`` over the shared
+        grid rather than sampling a single kernel image per band. The observed
+        PSF and the resulting difference kernel are both stitched, carry the
+        coadd's bands, and convolve over the coadd frame.
+        """
+        bands = tuple("gr")
+        cell, grid = 15, 2
+        size = cell * grid
+        coadds = []
+        for i, _band in enumerate(bands):
+            masked = afwImage.MaskedImage(Extent2I(size, size), dtype=np.float32)
+            coadd = afwImage.Exposure(masked, dtype=np.float32)
+            coadd.variance.array[:] = 1.0
+            coadd.setPsf(makeStitchedPsf(sigma=1.0 + 0.5 * i, cell=cell, grid=grid))
+            coadds.append(coadd)
+        mCoadd = afwImage.MultibandExposure.fromExposures(bands, coadds)
+
+        modelPsf = scl.utils.integrated_circular_gaussian(sigma=0.8).astype(np.float32)
+        observation = mes.utils.buildObservation(
+            modelPsf, Point2I(size // 2, size // 2), mCoadd
+        )
+
+        self.assertIsInstance(observation.psf, mes.ScarletStitchedPsf)
+        self.assertIsInstance(observation.diff_kernel, mes.ScarletStitchedPsf)
+        self.assertEqual(observation.psf.bands, bands)
+        self.assertEqual(tuple(observation.bands), bands)
+        # The stitched difference kernel convolves over the coadd frame.
+        convolved = observation.convolve(observation.images)
+        self.assertEqual(convolved.shape, observation.images.shape)
+
+        # Opting out forces the flat path even for this cell coadd.
+        flat = mes.utils.buildObservation(
+            modelPsf, Point2I(size // 2, size // 2), mCoadd, useStitchedPsf=False
+        )
+        self.assertIsInstance(flat.psf, scl.ImagePsf)
+        self.assertNotIsInstance(flat.psf, mes.ScarletStitchedPsf)
+        self.assertEqual(flat.psf.bands, bands)
 
     def _generateGoodPsf(self, sigma: float = 1.0):
         # Generate a PSF and Image of the PSF

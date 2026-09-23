@@ -4,6 +4,7 @@
 #   the "base" package.
 setupRequired(base)
 setupRequired(afw)
+setupRequired(cell_coadds)
 setupRequired(meas_algorithms)
 setupRequired(log)
 setupRequired(scarlet_lite)

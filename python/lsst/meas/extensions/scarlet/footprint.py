@@ -128,7 +128,7 @@ def scarletModelToHeavy(
     # account for all of the flux after convolution.
 
     # Get the PSF size and radii to grow the box
-    py, px = blend.observation.psfs.shape[1:]
+    py, px = blend.observation.psf.shape
     dh = py // 2
     dw = px // 2
 
