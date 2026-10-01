@@ -46,6 +46,7 @@ from lsst.meas.extensions.scarlet.scarletDeblendTask import (
     ScarletDeblendTask,
     deblend,
 )
+from lsst.meas.extensions.scarlet.utils import nonzeroBandSupport
 
 import pipeline
 from scenes import SCENES
@@ -119,6 +120,19 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
             src for src in blend.sources if src.metadata["id"] == child.getId()
         )
         return blend, source, parentFootprint
+
+    def _neighbor_overlap(self, blend, source):
+        # Neighbor flux on ``source``'s support, summed one neighbor at a
+        # time rather than via ``blend.get_model()`` as in
+        # ``setDeblenderMetrics``. Returns per-band (max, sum).
+        model = source.get_model()
+        support = nonzeroBandSupport(model.data)
+        neighbors = np.zeros(model.data.shape, dtype=float)
+        for other in blend.sources:
+            if other is not source:
+                neighbors += other.get_model().project(bbox=model.bbox).data
+        onSupport = neighbors[:, support]
+        return onSupport.max(axis=1, initial=0.0), onSupport.sum(axis=1)
 
     def test_skip_too_big(self):
         """A parent footprint exceeding ``maxFootprintArea`` is skipped
@@ -755,25 +769,46 @@ class TestDeblendTask(lsst.utils.tests.TestCase):
         the ``deblend_dataCoverage`` branch is also covered.
         Regression test for finding DB-7 of the
         ``audits/audit-2026-05-05.md`` audit.
+
+        The overlap columns are compared against neighbor flux
+        recomputed from the scarlet sources, since a child in a
+        multi-peak parent need not overlap any neighbor in a given band
+        (its neighbors' models can be zero on its support).
         """
         bundle = self._deblend(SCENES["multi-blend"])
         band = bundle.image.bands[0]
         self._attach_band_footprints(bundle, band, useFlux=True)
 
-        for _, child in self._iter_multipeak_children(bundle):
+        nOverlapping = 0
+        for parent, child in self._iter_multipeak_children(bundle):
             with self.subTest(childId=child.getId()):
                 self.assertFalse(child.get("deblend_zeroFlux"))
-                self.assertGreater(child.get("deblend_dataCoverage"), 0)
-                self.assertGreater(child.get("deblend_scarletFlux"), 0)
+                self.assertGreater(child.get("deblend_dataCoverage"), 0.0)
+                self.assertGreater(child.get("deblend_scarletFlux"), 0.0)
                 self.assertFalse(
                     np.isnan(child.get("deblend_peak_instFlux"))
                 )
-                self.assertGreater(child.get("deblend_maxOverlap"), 0)
-                self.assertGreater(child.get("deblend_fluxOverlap"), 0)
-                self.assertGreater(
-                    child.get("deblend_fluxOverlapFraction"), 0
+                blend, source, _ = self._scarlet_blend_for_child(
+                    bundle, parent, child, band
                 )
-                self.assertGreater(child.get("deblend_blendedness"), 0)
+                maxOverlap, fluxOverlap = self._neighbor_overlap(blend, source)
+                # Tolerances allow for the float32 catalog columns.
+                np.testing.assert_allclose(
+                    child.get("deblend_maxOverlap"), maxOverlap[0],
+                    rtol=1e-5, atol=1e-7,
+                )
+                np.testing.assert_allclose(
+                    child.get("deblend_fluxOverlap"), fluxOverlap[0],
+                    rtol=1e-5, atol=1e-6,
+                )
+                self.assertFalse(
+                    np.isnan(child.get("deblend_fluxOverlapFraction"))
+                )
+                self.assertFalse(np.isnan(child.get("deblend_blendedness")))
+                nOverlapping += fluxOverlap[0] > 0
+        # Guard against a scene in which no child overlaps a neighbor,
+        # which would make the comparisons above trivially zero.
+        self.assertGreater(nOverlapping, 0)
 
     def test_heavy_footprint_peak_position(self):
         """The HeavyFootprint's peak position and the scarlet model's
