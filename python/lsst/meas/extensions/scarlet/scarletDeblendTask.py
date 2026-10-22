@@ -771,8 +771,7 @@ class ScarletDeblendTask(pipeBase.Task):
         self.toCopyFromParent = [
             name
             for item in self.objectSchema
-            if ((name := item.field.getName()).startswith("merge_footprint")
-                or (name := item.field.getName()).startswith("merge_peak"))
+            if (name := item.field.getName()).startswith("merge_footprint")
         ]
 
         # Any pseudoColumn must be present on the deblender schema —
